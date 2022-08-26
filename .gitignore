@@ -1,3 +1,9 @@
 ref
 *.o
 *.so
+build
+.ccls-cache
+compile_commands.json
+compile_commands.*.json
+.vscode
+.gdb_history

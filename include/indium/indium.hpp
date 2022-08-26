@@ -1,0 +1,21 @@
+#pragma once
+
+#include <indium/base.hpp>
+#include <indium/binary-archive.hpp>
+#include <indium/buffer.hpp>
+#include <indium/command-buffer.hpp>
+#include <indium/command-encoder.hpp>
+#include <indium/command-queue.hpp>
+#include <indium/device.hpp>
+#include <indium/drawable.hpp>
+#include <indium/init.hpp>
+#include <indium/library.hpp>
+#include <indium/linked-functions.hpp>
+#include <indium/pipeline.hpp>
+#include <indium/rasterization-rate.hpp>
+#include <indium/render-command-encoder.hpp>
+#include <indium/render-pass.hpp>
+#include <indium/render-pipeline.hpp>
+#include <indium/texture.hpp>
+#include <indium/types.hpp>
+#include <indium/vertex-descriptor.hpp>
