@@ -2,6 +2,7 @@ project(indium)
 cmake_minimum_required(VERSION 3.20)
 
 find_package(Vulkan REQUIRED)
+find_package(LLVM REQUIRED CONFIG)
 
 add_library(indium SHARED
 	src/indium/buffer.cpp
@@ -26,7 +27,17 @@ add_library(indium_kit SHARED
 
 add_library(indium_kit_private INTERFACE)
 
-set_target_properties(indium indium_kit indium_private indium_kit_private
+add_library(iridium SHARED
+	src/iridium/air.cpp
+	src/iridium/iridium.cpp
+	src/iridium/spirv.cpp
+)
+
+add_executable(mtl2spv
+	src/mtl2spv/mtl2spv.cpp
+)
+
+set_target_properties(indium indium_kit indium_private indium_kit_private iridium mtl2spv
 	PROPERTIES
 		CXX_STANDARD 17
 		CXX_STANDARD_REQUIRED ON
@@ -39,6 +50,10 @@ target_include_directories(indium PUBLIC
 
 target_include_directories(indium_kit PUBLIC
 	${Vulkan_INCLUDE_DIRS}
+	include
+)
+
+target_include_directories(iridium PUBLIC
 	include
 )
 
@@ -59,6 +74,14 @@ target_include_directories(indium PRIVATE
 target_include_directories(indium_kit PRIVATE
 	private-include
 )
+
+target_include_directories(iridium PRIVATE
+	private-include
+	${LLVM_INCLUDE_DIRS}
+)
+
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+target_compile_definitions(iridium PRIVATE ${LLVM_DEFINITIONS_LIST})
 
 target_link_libraries(indium PRIVATE
 	${Vulkan_LIBRARIES}
@@ -86,7 +109,18 @@ target_link_libraries(indium_kit_private INTERFACE
 	indium_private
 )
 
-install(TARGETS indium indium_kit LIBRARY)
+llvm_map_components_to_libnames(llvm_libs support core bitreader)
+
+target_link_libraries(iridium PRIVATE
+	${llvm_libs}
+)
+
+target_link_libraries(mtl2spv PRIVATE
+	iridium
+)
+
+install(TARGETS indium indium_kit iridium LIBRARY)
+install(TARGETS mtl2spv RUNTIME)
 install(DIRECTORY include/ DESTINATION include)
 
 add_subdirectory(test)

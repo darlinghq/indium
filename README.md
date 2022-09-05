@@ -42,3 +42,13 @@ code that uses Indium and not for actual use e.g. in an ABI-compatible
 implementation of Metal that uses Indium. Most of the MetalKit API requires
 implementation details that an ABI-compatible implementation of Metal would need
 to implement itself.
+
+## Iridium
+
+Iridium is a library that can be used independently of Indium for translating
+pre-compiled Metal shaders (in the AIR format) to SPIR-V shaders that Indium
+can use.
+
+Indium uses Iridium internally to translate shaders at runtime, but a CLI tool
+for translating shaders called `mtl2spv` is also included in this repository,
+mainly for testing purposes.
