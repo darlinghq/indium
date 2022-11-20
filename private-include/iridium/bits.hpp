@@ -235,10 +235,9 @@ namespace Iridium {
 
 				if (remSpace < extraSize) {
 					// we need to reallocate the buffer
-					auto newSize = _allocationSize * 2;
-					if (newSize == 0) {
-						newSize = 1;
-					}
+					auto minSize = _allocationSize + (extraSize - remSpace);
+					// TODO: maybe round this up to a power of 2
+					auto newSize = minSize;
 
 					auto tmp = realloc(_data, newSize);
 					if (!tmp) {
@@ -335,6 +334,11 @@ namespace Iridium {
 		size_t writeRaw(const void* data, size_t length) {
 			resizeToFitWrite(length);
 			return ByteWriter::writeRaw(data, length);
+		};
+
+		void resizeAndSkip(size_t count) {
+			resizeToFitWrite(count);
+			ByteView::skip(count);
 		};
 	};
 

@@ -8,6 +8,7 @@
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <optional>
 
 namespace Iridium {
 	namespace SPIRV {
@@ -38,6 +39,9 @@ namespace Iridium {
 
 		enum class BuiltinID: uint32_t {
 			Position = 0,
+			PointSize = 1,
+			ClipDistance = 3,
+			CullDistance = 4,
 			VertexID = 5,
 			VertexIndex = 42,
 		};
@@ -47,7 +51,17 @@ namespace Iridium {
 			Input = 1,
 			Uniform = 2,
 			Output = 3,
+			Function = 7,
 			StorageBuffer = 12,
+		};
+
+		enum class Capability: uint32_t {
+			Shader = 1,
+			Float16 = 9,
+			Float64 = 10,
+			Int64 = 11,
+			Int16 = 22,
+			Int8 = 39,
 		};
 
 		struct Decoration {
@@ -78,6 +92,7 @@ struct std::hash<Iridium::SPIRV::Decoration> {
 namespace Iridium {
 	namespace SPIRV {
 		using ResultID = uint32_t;
+		constexpr ResultID ResultIDInvalid = 0;
 
 		struct EntryPoint {
 			ExecutionModel executionModel;
@@ -88,28 +103,92 @@ namespace Iridium {
 
 		struct Type {
 			// not an enum class on purpose
-			enum BackingType {
+			enum class BackingType {
 				Void,
 				Boolean,
 				Integer,
 				FloatingPoint,
 				Structure,
+				Vector,
+				Matrix,
+				Function,
+				Pointer,
+				RuntimeArray,
 			};
+
+			struct VoidTag {};
+			struct BooleanTag {};
+			struct IntegerTag {};
+			struct FloatTag {};
+			struct StructureTag {};
+			struct VectorTag {};
+			struct MatrixTag {};
+			struct FunctionTag {};
+			struct PointerTag {};
+			struct RuntimeArrayTag {};
 
 			struct Member;
 
 			BackingType backingType = BackingType::Structure;
-			size_t rowCount = 0;
-			size_t columnCount = 0;
-			std::vector<Member> members;
+
+			size_t scalarWidth = 0;
+
+			bool integerIsSigned = false;
+
+			size_t vectorMatrixEntryCount = 0;
+
+			std::vector<Member> structureMembers;
+
 			StorageClass pointerStorageClass;
-			bool isPointer = false;
+
+			ResultID pointerVectorMatrixArrayTargetType = ResultIDInvalid;
+
+			ResultID functionReturnType = ResultIDInvalid;
+			std::vector<ResultID> functionParameterTypes;
 
 			Type() {};
-			explicit Type(BackingType _backingType, size_t _rowCount = 0, size_t _columnCount = 0):
-				backingType(_backingType),
-				rowCount(_rowCount),
-				columnCount(_columnCount)
+			explicit Type(const VoidTag&):
+				backingType(BackingType::Void)
+				{};
+			explicit Type(const BooleanTag&):
+				backingType(BackingType::Boolean)
+				{};
+			explicit Type(const IntegerTag&, size_t width, bool isSigned):
+				backingType(BackingType::Integer),
+				scalarWidth(width),
+				integerIsSigned(isSigned)
+				{};
+			explicit Type(const FloatTag&, size_t width):
+				backingType(BackingType::FloatingPoint),
+				scalarWidth(width)
+				{};
+			explicit Type(const StructureTag&, std::vector<Member> members):
+				backingType(BackingType::Structure),
+				structureMembers(members)
+				{};
+			explicit Type(const VectorTag&, size_t componentCount, ResultID componentType):
+				backingType(BackingType::Vector),
+				vectorMatrixEntryCount(componentCount),
+				pointerVectorMatrixArrayTargetType(componentType)
+				{};
+			explicit Type(const MatrixTag&, size_t columnCount, ResultID entryType):
+				backingType(BackingType::Matrix),
+				vectorMatrixEntryCount(columnCount),
+				pointerVectorMatrixArrayTargetType(entryType)
+				{};
+			explicit Type(const FunctionTag&, ResultID returnType, std::vector<ResultID> parameterTypes):
+				backingType(BackingType::Function),
+				functionReturnType(returnType),
+				functionParameterTypes(parameterTypes)
+				{};
+			explicit Type(const PointerTag&, StorageClass storageClass, ResultID targetType):
+				backingType(BackingType::Pointer),
+				pointerStorageClass(storageClass),
+				pointerVectorMatrixArrayTargetType(targetType)
+				{};
+			explicit Type(const RuntimeArrayTag&, ResultID elementType):
+				backingType(BackingType::RuntimeArray),
+				pointerVectorMatrixArrayTargetType(elementType)
 				{};
 
 			bool operator==(const Type& other) const;
@@ -120,7 +199,7 @@ namespace Iridium {
 		};
 
 		struct Type::Member {
-			Type type;
+			ResultID id;
 			std::unordered_set<Decoration> decorations;
 
 			bool operator==(const Member& other) const;
@@ -136,13 +215,20 @@ template<>
 struct std::hash<Iridium::SPIRV::Type> {
 	size_t operator()(const Iridium::SPIRV::Type& type) const {
 		size_t result = std::hash<Iridium::SPIRV::Type::BackingType>()(type.backingType);
-		result = ((result << 1) ^ std::hash<size_t>()(type.rowCount)) >> 1;
-		result = ((result << 1) ^ std::hash<size_t>()(type.columnCount)) >> 1;
-		for (const auto& member: type.members) {
-			result = ((result << 1) ^ std::hash<Iridium::SPIRV::Type>()(member.type)) >> 1;
+		result = ((result << 1) ^ std::hash<size_t>()(type.scalarWidth)) >> 1;
+		result = ((result << 1) ^ std::hash<bool>()(type.integerIsSigned)) >> 1;
+		result = ((result << 1) ^ std::hash<size_t>()(type.vectorMatrixEntryCount)) >> 1;
+		for (const auto& member: type.structureMembers) {
+			result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(member.id)) >> 1;
 			for (const auto& decoration: member.decorations) {
 				result = ((result << 1) ^ std::hash<Iridium::SPIRV::Decoration>()(decoration)) >> 1;
 			}
+		}
+		result = ((result << 1) ^ std::hash<uint32_t>()(static_cast<uint32_t>(type.pointerStorageClass))) >> 1;
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.pointerVectorMatrixArrayTargetType)) >> 1;
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.functionReturnType)) >> 1;
+		for (const auto& param: type.functionParameterTypes) {
+			result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(param)) >> 1;
 		}
 		return result;
 	};
@@ -152,27 +238,95 @@ namespace Iridium {
 	namespace SPIRV {
 		struct GlobalVariable {
 			StorageClass storageClass;
-			Type type;
+			ResultID typeID;
+		};
+
+		struct FunctionVariable {
+			ResultID typeID;
+			ResultID initializer;
+		};
+
+		enum class Opcode: uint16_t {
+			MemoryModel = 14,
+			EntryPoint = 15,
+			Capability = 17,
+			TypeVoid = 19,
+			TypeBool = 20,
+			TypeInt = 21,
+			TypeFloat = 22,
+			TypeVector = 23,
+			TypeMatrix = 24,
+			TypeImage = 25,
+			TypeSampler = 26,
+			TypeSampledImage = 27,
+			TypeArray = 28,
+			TypeRuntimeArray = 29,
+			TypeStruct = 30,
+			TypeOpaque = 31,
+			TypePointer = 32,
+			TypeFunction = 33,
+			ConstantTrue = 41,
+			ConstantFalse = 42,
+			Constant = 43,
+			ConstantComposite = 44,
+			ConstantSampler = 45,
+			ConstantNull = 46,
+			Function = 54,
+			FunctionParameter = 55,
+			FunctionEnd = 56,
+			Variable = 59,
+			Decorate = 71,
+			MemberDecorate = 72,
+			UConvert = 113,
+			Label = 248,
+			Return = 253,
+		};
+
+		struct FunctionInfo {
+			ResultID id;
+			std::vector<ResultID> parameterIDs;
 		};
 
 		class Builder {
 		private:
+			struct PrivateFunctionInfo {
+				FunctionInfo idInfo;
+				ResultID functionType;
+				ResultID firstLabel;
+				std::unordered_map<ResultID, FunctionVariable> variables;
+			};
+
 			DynamicByteWriter _writer;
 			std::unordered_map<Type, ResultID> _typeIDs;
-			ResultID _currentResultID = 0;
+			std::unordered_map<ResultID, const Type*> _reverseTypeIDs;
+			ResultID _currentResultID = 1;
 			std::vector<EntryPoint> _entryPoints;
 			std::unordered_map<uintptr_t, ResultID> _associatedIDs;
 			std::unordered_map<ResultID, std::unordered_set<Decoration>> _decorations;
 			std::unordered_map<ResultID, GlobalVariable> _globalVariables;
+			AddressingModel _addressingModel;
+			MemoryModel _memoryModel;
+			DynamicByteWriter _constants;
+			std::unordered_map<ResultID, PrivateFunctionInfo> _functionInfos;
+			std::unordered_map<ResultID, DynamicByteWriter> _functionWriters;
+			PrivateFunctionInfo* _currentFunctionInfo = nullptr;
+			DynamicByteWriter* _currentFunctionWriter = nullptr;
+			std::unordered_set<Capability> _requiredCapabilities;
+			uint8_t _versionMajor = 1;
+			uint8_t _versionMinor = 0;
+			uint16_t _generatorID = 0;
+			uint16_t _generatorVersion = 0;
 
 			struct InstructionState {
 				size_t position;
 				uint16_t opcode;
+				DynamicByteWriter* writer;
 			};
 
-			void encodeInstructionHeader(uint16_t wordCount, uint16_t opcode);
+			void encodeInstructionHeader(DynamicByteWriter& writer, uint16_t wordCount, uint16_t opcode);
 			void encodeString(std::string_view string);
-			InstructionState beginInstruction(uint16_t opcode);
+			InstructionState beginInstruction(uint16_t opcode, DynamicByteWriter& writer);
+			InstructionState beginInstruction(Opcode opcode, DynamicByteWriter& writer);
 			void endInstruction(InstructionState&& state);
 
 		public:
@@ -180,19 +334,31 @@ namespace Iridium {
 
 			ResultID declareType(const Type& type);
 			ResultID lookupType(const Type& type) const;
+			std::optional<Type> reverseLookupType(ResultID id) const;
 
+			void setAddressingModel(AddressingModel addressingModel);
 			void setMemoryModel(MemoryModel memoryModel);
+			void setVersion(uint8_t major, uint8_t minor);
+			void setGeneratorID(uint16_t id, uint16_t version);
+
+			void requireCapability(Capability capability);
 
 			ResultID reserveResultID();
 			ResultID associateResultID(uintptr_t association);
+			void associateExistingResultID(ResultID id, uintptr_t association);
 			ResultID lookupResultID(uintptr_t association) const;
 
 			void addEntryPoint(const EntryPoint& entryPoint);
-			ResultID addGlobalVariable(const Type& type, StorageClass storageClass);
+			ResultID addGlobalVariable(ResultID typeID, StorageClass storageClass);
 			void addDecoration(ResultID resultID, const Decoration& decoration);
+			FunctionInfo declareFunction(ResultID functionType);
 
+			ResultID beginFunction(ResultID id);
+			void endFunction();
 
-			void emitHeader();
+			ResultID insertLabel();
+			void referenceGlobalVariable(ResultID id);
+			ResultID encodeUConvert(ResultID operand, ResultID typeID);
 
 			void* finalize(size_t& outputSize);
 		};

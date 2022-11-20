@@ -9,7 +9,7 @@ The current implementation targets Vulkan 1.3. This version of Vulkan includes
 several dynamic pipeline features which allow us to match the behavior of
 several similar Metal features. Alternatively, the
 `VK_EXT_extended_dynamic_state` and `VK_EXT_extended_dynamic_state2` features
-should also be neough, though support for these extensions as substitutes for
+should also be enough, though support for these extensions as substitutes for
 Vulkan 1.3 support is not currently implemented.
 
 Indium also requires timeline semaphore support (supported by most devices).

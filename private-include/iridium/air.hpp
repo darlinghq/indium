@@ -4,10 +4,12 @@
 #include <string>
 #include <unordered_map>
 #include <memory>
+#include <vector>
 
 #include <llvm-c/Core.h>
 
 #include <iridium/llvm.hpp>
+#include <iridium/spirv.hpp>
 
 namespace Iridium {
 	namespace SPIRV {
@@ -35,12 +37,16 @@ namespace Iridium {
 			LLVMValueRef _function;
 			std::string _name;
 			Type _type;
+			size_t _positionOutputIndex;
+			size_t _vertexIDInputIndex;
+			std::vector<SPIRV::ResultID> _outputValueIDs;
+			std::vector<SPIRV::ResultID> _parameterIDs;
 
 		public:
 			Function(Type type, const std::string& name, const void* bitcode, size_t bitcodeSize);
 
-			void analyze(SPIRV::Builder& builder) const;
-			void emitBody(SPIRV::Builder& builder) const;
+			void analyze(SPIRV::Builder& builder);
+			void emitBody(SPIRV::Builder& builder);
 		};
 
 		class Library {
@@ -54,7 +60,7 @@ namespace Iridium {
 
 			const Function* getFunction(const std::string& name) const;
 
-			void buildModule(SPIRV::Builder& builder) const;
+			void buildModule(SPIRV::Builder& builder);
 		};
 	};
 };
