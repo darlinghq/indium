@@ -37,8 +37,8 @@ namespace Iridium {
 			LLVMValueRef _function;
 			std::string _name;
 			Type _type;
-			size_t _positionOutputIndex;
-			size_t _vertexIDInputIndex;
+			size_t _positionOutputIndex = SIZE_MAX;
+			size_t _vertexIDInputIndex = SIZE_MAX;
 			std::vector<SPIRV::ResultID> _outputValueIDs;
 			std::vector<SPIRV::ResultID> _parameterIDs;
 
