@@ -2,12 +2,34 @@
 
 #include <cstddef>
 
+#include <vector>
+#include <unordered_map>
+#include <string>
+
 namespace Iridium {
 	void init();
 	void finit();
 
-	struct OutputInfo {
+	enum class FunctionType {
+		Vertex = 1,
+		Fragment = 2,
+	};
 
+	enum class BindingType {
+		Buffer,
+	};
+
+	struct BindingInfo {
+		BindingType type;
+	};
+
+	struct FunctionInfo {
+		FunctionType type;
+		std::vector<BindingInfo> bindings;
+	};
+
+	struct OutputInfo {
+		std::unordered_map<std::string, FunctionInfo> functionInfos;
 	};
 
 	/**

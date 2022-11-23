@@ -205,23 +205,39 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 	}
 };
 
-void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
+void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = LLVMPrintModuleToString(_module.get());
 	//std::cout << "    " << tmp << std::endl;
 	//LLVMDisposeMessage(tmp);
+
+	auto& funcInfo = outputInfo.functionInfos[_name];
 
 	auto namedMD = LLVMGetFirstNamedMetadata(_module.get());
 
 	auto voidType = builder.declareType(SPIRV::Type(SPIRV::Type::VoidTag {}));
 	auto funcType = builder.declareType(SPIRV::Type(SPIRV::Type::FunctionTag {}, voidType, {}, 8));
 	auto funcID = builder.declareFunction(funcType);
+	auto intType = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 32, true));
+	auto ptrIntType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, intType, 8));
+	auto floatTypeInst = SPIRV::Type(SPIRV::Type::FloatTag {}, 32);
+	auto floatType = builder.declareType(floatTypeInst);
+	auto vec4Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, floatType, floatTypeInst.size * 4, 16));
 
 	SPIRV::ResultID perVertexVar = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID vertexIndexVar = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID fragCoordVar = SPIRV::ResultIDInvalid;
 
 	builder.beginFunction(funcID.id);
 
+	// within this node, operand 0 refers to the vertex function,
+	// operand 1 contains information about the function's return value,
+	// and operand 2 contains information about the function's parameters.
+	std::vector<LLVMValueRef> rootInfoOperands;
+
 	if (auto vertexMD = LLVMGetNamedMetadata(_module.get(), "air.vertex", sizeof("air.vertex") - 1)) {
 		// this is a vertex shader
+
+		funcInfo.type = FunctionType::Vertex;
 
 		builder.addEntryPoint(SPIRV::EntryPoint {
 			SPIRV::ExecutionModel::Vertex,
@@ -231,11 +247,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 		});
 
 		// declare the GLSL PerVertex structure
-		auto floatTypeInst = SPIRV::Type(SPIRV::Type::FloatTag {}, 32);
-		auto floatType = builder.declareType(floatTypeInst);
 		auto perVertexStructType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, {
 			SPIRV::Type::Member {
-				builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, floatType, floatTypeInst.size * 4, 16)),
+				vec4Type,
 				0,
 				{
 					SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::Position) } },
@@ -251,9 +265,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 		builder.referenceGlobalVariable(perVertexVar);
 
 		// declare the GLSL VertexIndex input variable
-		auto intType = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 32, true));
-		auto ptrIntType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, intType, 8));
-		auto vertexIndexVar = builder.addGlobalVariable(ptrIntType, SPIRV::StorageClass::Input);
+		vertexIndexVar = builder.addGlobalVariable(ptrIntType, SPIRV::StorageClass::Input);
 
 		builder.addDecoration(vertexIndexVar, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::VertexIndex) } });
 
@@ -266,32 +278,57 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 		// operand 0 contains the info for the vertex shader
 		auto rootInfoMD = operands[0];
 
-		// within this node, operand 0 refers to the vertex function,
-		// operand 1 contains information about the function's return value,
-		// and operand 2 contains information about the function's parameters.
-		std::vector<LLVMValueRef> rootInfoOperands(LLVMGetMDNodeNumOperands(rootInfoMD));
+		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
 		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+	} else if (auto fragmentMD = LLVMGetNamedMetadata(_module.get(), "air.fragment", sizeof("air.fragment") - 1)) {
+		// this is a fragment shader
 
-		// TODO: inspect the output of some more compiled shaders; the current code is only valid for
-		//       shaders that return structures as outputs (and not nested structures either).
+		funcInfo.type = FunctionType::Fragment;
 
-		// SPIR-V doesn't allow structures to have a storage class of "output", so
-		// if the function returns a structure, we need to separate the components
-		// into separate output variables.
+		builder.addEntryPoint(SPIRV::EntryPoint {
+			SPIRV::ExecutionModel::Fragment,
+			funcID.id,
+			_name,
+			{},
+		});
 
-		auto llfuncType = LLVMGetElementType(LLVMTypeOf(_function));
-		auto funcRetType = LLVMGetReturnType(llfuncType);
-		std::vector<LLVMTypeRef> funcParamTypes(LLVMCountParamTypes(llfuncType));
-		LLVMGetParamTypes(llfuncType, funcParamTypes.data());
+		// declare the fragment coordinate input variable
+		auto ptrVec4Type = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, vec4Type, 8));
+		fragCoordVar = builder.addGlobalVariable(ptrVec4Type, SPIRV::StorageClass::Input);
 
-		if (LLVMGetTypeKind(funcRetType) != LLVMStructTypeKind) {
-			throw std::runtime_error("TODO: handle functions that don't return structures");
-		}
+		builder.addDecoration(fragCoordVar, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::FragCoord) } });
 
-		std::vector<LLVMValueRef> returnValueOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
-		LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
+		builder.referenceGlobalVariable(fragCoordVar);
 
+		// get the operands
+		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.fragment"));
+		LLVMGetNamedMetadataOperands(_module.get(), "air.fragment", operands.data());
+
+		// operand 0 contains the info for the fragment shader
+		auto rootInfoMD = operands[0];
+
+		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
+		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+	}
+
+	// TODO: inspect the output of some more compiled shaders; the current code is only valid for
+	//       shaders that return simple structures, vectors, or scalars as outputs.
+
+	// SPIR-V doesn't allow structures to have a storage class of "output", so
+	// if the function returns a structure, we need to separate the components
+	// into separate output variables.
+
+	auto llfuncType = LLVMGetElementType(LLVMTypeOf(_function));
+	auto funcRetType = LLVMGetReturnType(llfuncType);
+	std::vector<LLVMTypeRef> funcParamTypes(LLVMCountParamTypes(llfuncType));
+	LLVMGetParamTypes(llfuncType, funcParamTypes.data());
+
+	std::vector<LLVMValueRef> returnValueOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
+	LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
+
+	if (LLVMGetTypeKind(funcRetType) == LLVMStructTypeKind) {
 		// analyze return value and mark special values (like the position)
+		uint32_t location = 0;
 		for (size_t i = 0; i < returnValueOperands.size(); ++i) {
 			auto& returnValueOperand = returnValueOperands[i];
 
@@ -316,83 +353,115 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 				auto type = llvmTypeToSPIRVType(builder, LLVMStructGetTypeAtIndex(funcRetType, i));
 				auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
 				auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
+				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { location } });
+				++location;
 				_outputValueIDs.push_back(var);
 				builder.referenceGlobalVariable(var);
 			}
 		}
+	} else {
+		// TODO: handle case of returning a special variable (like air.position) with a single return value
 
-		std::vector<LLVMValueRef> parameterOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
-		LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
+		auto type = llvmTypeToSPIRVType(builder, funcRetType);
+		auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
+		auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
+		builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { 0 } });
+		_outputValueIDs.push_back(var);
+		builder.referenceGlobalVariable(var);
+	}
 
-		// analyze parameters and mark special values (like the vertex ID)
-		for (size_t i = 0; i < parameterOperands.size(); ++i) {
-			auto& parameterOperand = parameterOperands[i];
+	std::vector<LLVMValueRef> parameterOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
+	LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
 
-			// info[0] is the parameter index
-			// info[1] is the kind
-			// everything after that depends on the kind
-			std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-			LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+	// analyze parameters and mark special values (like the vertex ID)
+	uint32_t paramLocation = 0;
+	for (size_t i = 0; i < parameterOperands.size(); ++i) {
+		auto& parameterOperand = parameterOperands[i];
 
-			auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		// info[0] is the parameter index
+		// info[1] is the kind
+		// everything after that depends on the kind
+		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
+		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
-			if (kind == "air.vertex_id") {
-				_vertexIDInputIndex = i;
-				auto load = builder.encodeLoad(intType, vertexIndexVar);
-				_parameterIDs.push_back(load);
-				builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
-				builder.setResultType(load, intType);
-			} else if (kind == "air.buffer") {
-				// find the location index info
-				size_t infoIdx = 0;
-				for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-					if (LLVMIsAMDString(parameterInfo[infoIdx])) {
-						auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
+		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
-						if (str == "air.location_index") {
-							break;
-						}
+		if (kind == "air.vertex_id") {
+			_vertexIDInputIndex = i;
+			auto load = builder.encodeLoad(intType, vertexIndexVar);
+			_parameterIDs.push_back(load);
+			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(load, intType);
+		} else if (kind == "air.buffer") {
+			// find the location index info
+			size_t infoIdx = 0;
+			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
+				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
+
+					if (str == "air.location_index") {
+						break;
 					}
 				}
-
-				if (infoIdx >= parameterInfo.size()) {
-					// weird, location index info not found
-					std::runtime_error("Failed to find location index info for buffer");
-				}
-
-				uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-				auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
-
-				auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(funcParamTypes[i]));
-				auto typeInst = *builder.reverseLookupType(type);
-				auto arrTypeInst = SPIRV::Type(SPIRV::Type::RuntimeArrayTag {}, type, typeInst.size, typeInst.alignment);
-				auto arrType = builder.declareType(arrTypeInst);
-				auto blockType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, { SPIRV::Type::Member { arrType, 0, {} } }, 0, arrTypeInst.alignment));
-
-				builder.addDecoration(blockType, SPIRV::Decoration { SPIRV::DecorationType::Block, {} });
-
-				auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, blockType, 8));
-				auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::StorageBuffer);
-				auto accessType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, arrType, 8));
-				auto varArrPtr = builder.encodeAccessChain(accessType, var, { builder.declareConstantScalar<int32_t>(0) });
-
-				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { 0 } });
-				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { bindingIndex } });
-
-				builder.referenceGlobalVariable(var);
-
-				_parameterIDs.push_back(varArrPtr);
-
-				builder.associateExistingResultID(varArrPtr, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
-				builder.setResultType(varArrPtr, accessType);
 			}
+
+			if (infoIdx >= parameterInfo.size()) {
+				// weird, location index info not found
+				std::runtime_error("Failed to find location index info for buffer");
+			}
+
+			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+
+			if (bindingIndex >= funcInfo.bindings.size()) {
+				funcInfo.bindings.resize(bindingIndex + 1);
+			}
+
+			funcInfo.bindings[bindingIndex] = BindingInfo { BindingType::Buffer };
+
+			auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(funcParamTypes[i]));
+			auto typeInst = *builder.reverseLookupType(type);
+			auto arrTypeInst = SPIRV::Type(SPIRV::Type::RuntimeArrayTag {}, type, typeInst.size, typeInst.alignment);
+			auto arrType = builder.declareType(arrTypeInst);
+			auto blockType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, { SPIRV::Type::Member { arrType, 0, {} } }, 0, arrTypeInst.alignment));
+
+			builder.addDecoration(blockType, SPIRV::Decoration { SPIRV::DecorationType::Block, {} });
+
+			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, blockType, 8));
+			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::StorageBuffer);
+			auto accessType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, arrType, 8));
+			auto varArrPtr = builder.encodeAccessChain(accessType, var, { builder.declareConstantScalar<int32_t>(0) });
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { 0 } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { bindingIndex } });
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(varArrPtr);
+
+			builder.associateExistingResultID(varArrPtr, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(varArrPtr, accessType);
+		} else if (kind == "air.position") {
+			auto load = builder.encodeLoad(vec4Type, fragCoordVar);
+			_parameterIDs.push_back(load);
+			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(load, vec4Type);
+		} else if (kind == "air.fragment_input") {
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, type, 8));
+			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Input);
+			auto load = builder.encodeLoad(type, var);
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { paramLocation } });
+			++paramLocation;
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(load);
+
+			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(load, type);
 		}
-	} else if (auto fragmentMD = LLVMGetNamedMetadata(_module.get(), "air.fragment", sizeof("air.fragment") - 1)) {
-		// this is a fragment shader
-		// TODO
-		builder.encodeReturn();
-		builder.endFunction();
-		return;
 	}
 
 	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
@@ -559,27 +628,26 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 
 					// should be the same as the function return value
 					auto type = LLVMTypeOf(llval);
-
-					if (LLVMGetTypeKind(type) != LLVMStructTypeKind) {
-						throw std::runtime_error("TODO: handle functions that don't return structures");
-					}
-
-					auto structMemberCount = LLVMGetNumContainedTypes(type);
-
 					auto val = llvmValueToResultID(builder, llval);
 
-					for (size_t i = 0; i < structMemberCount; ++i) {
-						auto memberType = LLVMStructGetTypeAtIndex(type, i);
-						auto type = llvmTypeToSPIRVType(builder, memberType);
-						auto elm = builder.encodeCompositeExtract(type, val, { static_cast<uint32_t>(i) });
+					if (LLVMGetTypeKind(type) == LLVMStructTypeKind) {
+						auto structMemberCount = LLVMGetNumContainedTypes(type);
 
-						if (i == _positionOutputIndex) {
-							auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
-							auto ptr = builder.encodeAccessChain(ptrType, perVertexVar, { builder.declareConstantScalar<int32_t>(0) });
-							builder.encodeStore(ptr, elm);
-						} else {
-							builder.encodeStore(_outputValueIDs[i], elm);
+						for (size_t i = 0; i < structMemberCount; ++i) {
+							auto memberType = LLVMStructGetTypeAtIndex(type, i);
+							auto type = llvmTypeToSPIRVType(builder, memberType);
+							auto elm = builder.encodeCompositeExtract(type, val, { static_cast<uint32_t>(i) });
+
+							if (i == _positionOutputIndex) {
+								auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
+								auto ptr = builder.encodeAccessChain(ptrType, perVertexVar, { builder.declareConstantScalar<int32_t>(0) });
+								builder.encodeStore(ptr, elm);
+							} else {
+								builder.encodeStore(_outputValueIDs[i], elm);
+							}
 						}
+					} else {
+						builder.encodeStore(_outputValueIDs[0], val);
 					}
 
 					builder.encodeReturn();
@@ -592,22 +660,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder) {
 	}
 
 	builder.endFunction();
-};
-
-void Iridium::AIR::Function::emitBody(SPIRV::Builder& builder) {
-	std::cout << "function " << _name << std::endl;
-	size_t i = 0;
-
-	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
-		std::cout << "  block " << i << std::endl;
-		++i;
-		for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst != nullptr; inst = LLVMGetNextInstruction(inst)) {
-			// TEST
-			auto tmp = LLVMPrintValueToString(inst);
-			std::cout << "    " << tmp << std::endl;
-			LLVMDisposeMessage(tmp);
-		}
-	}
 };
 
 Iridium::AIR::Library::Library(const void* data, size_t size) {
@@ -697,7 +749,7 @@ const Iridium::AIR::Function* Iridium::AIR::Library::getFunction(const std::stri
 	return &it->second;
 };
 
-void Iridium::AIR::Library::buildModule(SPIRV::Builder& builder) {
+void Iridium::AIR::Library::buildModule(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	builder.requireCapability(SPIRV::Capability::Shader);
 	builder.requireCapability(SPIRV::Capability::PhysicalStorageBufferAddresses);
 	builder.setAddressingModel(SPIRV::AddressingModel::PhysicalStorageBuffer64);
@@ -705,10 +757,8 @@ void Iridium::AIR::Library::buildModule(SPIRV::Builder& builder) {
 	builder.setVersion(1, 5);
 
 	for (auto& [name, func]: _functions) {
-		func.analyze(builder);
+		func.analyze(builder, _outputInfo);
 	}
 
-	for (auto& [name, func]: _functions) {
-		func.emitBody(builder);
-	}
+	outputInfo = _outputInfo;
 };

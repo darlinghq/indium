@@ -16,12 +16,9 @@ void* Iridium::translate(const void* inputData, size_t inputSize, size_t& output
 	AIR::Library lib(inputData, inputSize);
 	SPIRV::Builder builder;
 
-	lib.buildModule(builder);
+	lib.buildModule(builder, outputInfo);
 
 	auto result = builder.finalize(outputSize);
-
-	// TODO
-	outputInfo = OutputInfo {};
 
 	return result;
 };

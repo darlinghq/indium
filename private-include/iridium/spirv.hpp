@@ -46,6 +46,8 @@ namespace Iridium {
 			ClipDistance = 3,
 			CullDistance = 4,
 			VertexID = 5,
+			FragCoord = 15,
+			PointCoord = 16,
 			VertexIndex = 42,
 		};
 
@@ -281,11 +283,17 @@ namespace Iridium {
 			ResultID initializer;
 		};
 
+		enum class ExecutionMode: uint32_t {
+			OriginUpperLeft = 7,
+			OriginLowerLeft = 8,
+		};
+
 		enum class Opcode: uint16_t {
 			Nop = 0,
 			Undef = 1,
 			MemoryModel = 14,
 			EntryPoint = 15,
+			ExecutionMode = 16,
 			Capability = 17,
 			TypeVoid = 19,
 			TypeBool = 20,
@@ -342,6 +350,7 @@ namespace Iridium {
 				ResultID functionType;
 				ResultID firstLabel;
 				std::unordered_map<ResultID, FunctionVariable> variables;
+				std::vector<ResultID> referencedGlobalVariables;
 			};
 
 			DynamicByteWriter _writer;

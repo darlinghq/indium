@@ -362,16 +362,7 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::insertLabel() {
 };
 
 void Iridium::SPIRV::Builder::referenceGlobalVariable(ResultID id) {
-	// TODO: keep track of which functions reference which global variables,
-	//       and use this info to determine which global variables are referenced by each entry point.
-	//       this is necessary because each entry point needs to reference a superset of all the global variables
-	//       used by it, including any used in functions it calls.
-	//
-	// for now, we just add the global variable reference to all entry points. not efficient, but it's spec-compliant.
-
-	for (auto& entryPoint: _entryPoints) {
-		entryPoint.referencedGlobalVariables.push_back(id);
-	}
+	_currentFunctionInfo->referencedGlobalVariables.push_back(id);
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeUConvert(ResultID typeID, ResultID operand) {
@@ -505,6 +496,13 @@ void Iridium::SPIRV::Builder::encodeReturn(ResultID value) {
 void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 	InstructionState tmp;
 
+	for (auto& entryPoint: _entryPoints) {
+		auto info = _functionInfos[entryPoint.functionID];
+		// TODO: when we add support for function calls, we'll need to keep track of which functions the entry points call (even indirectly),
+		//       so that we can obtain the full list of referenced global variables.
+		entryPoint.referencedGlobalVariables.insert(entryPoint.referencedGlobalVariables.end(), info.referencedGlobalVariables.begin(), info.referencedGlobalVariables.end());
+	}
+
 	// emit SPIR-V magic number
 	_writer.writeIntegerLE<uint32_t>(0x07230203);
 
@@ -544,6 +542,17 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 			_writer.writeIntegerLE<uint32_t>(referencedGlobalVariable);
 		}
 		endInstruction(std::move(tmp));
+	}
+
+	// now emit execution modes
+	// TODO: allow this to be configured
+	for (const auto& entryPoint: _entryPoints) {
+		if (entryPoint.executionModel == ExecutionModel::Fragment) {
+			tmp = beginInstruction(Opcode::ExecutionMode, _writer);
+			_writer.writeIntegerLE<uint32_t>(entryPoint.functionID);
+			_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(ExecutionMode::OriginUpperLeft));
+			endInstruction(std::move(tmp));
+		}
 	}
 
 	// emit type member decorations

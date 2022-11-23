@@ -64,8 +64,28 @@ int main(int argc, char** argv) {
 		outFileSPV.write(static_cast<const char*>(result), outputSize);
 		free(result);
 
-		// TODO: write output info to JSON file
-		outFileJSON << "{}" << std::endl;
+		outFileJSON << "{" << std::endl;
+		outFileJSON << "\t\"function-infos\": {" << std::endl;
+		for (auto it = outputInfo.functionInfos.begin(); it != outputInfo.functionInfos.end(); ++it) {
+			outFileJSON << "\t\t\"" << it->first << "\": {" << std::endl;
+			outFileJSON << "\t\t\t\"bindings\": [" << std::endl;
+			for (size_t i = 0; i < it->second.bindings.size(); ++i) {
+				const auto& binding = it->second.bindings[i];
+				outFileJSON << "\t\t\t\t{" << std::endl;
+				outFileJSON << "\t\t\t\t\t\"type\": \"";
+				if (binding.type == Iridium::BindingType::Buffer) {
+					outFileJSON << "buffer";
+				} else {
+					outFileJSON << "undefined";
+				}
+				outFileJSON << "\"" << std::endl;
+				outFileJSON << "\t\t\t\t}" << ((i + 1 == it->second.bindings.size()) ? "" : ",") << std::endl;
+			}
+			outFileJSON << "\t\t\t]" << std::endl;
+			outFileJSON << "\t\t}" << ((std::next(it) == outputInfo.functionInfos.end()) ? "" : ",") << std::endl;
+		}
+		outFileJSON << "\t}" << std::endl;
+		outFileJSON << "}" << std::endl;
 	} else {
 		std::cerr << "Failed to translate library" << std::endl;
 	}

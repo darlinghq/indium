@@ -10,6 +10,7 @@
 
 #include <iridium/llvm.hpp>
 #include <iridium/spirv.hpp>
+#include <iridium/iridium.hpp>
 
 namespace Iridium {
 	namespace SPIRV {
@@ -45,8 +46,7 @@ namespace Iridium {
 		public:
 			Function(Type type, const std::string& name, const void* bitcode, size_t bitcodeSize);
 
-			void analyze(SPIRV::Builder& builder);
-			void emitBody(SPIRV::Builder& builder);
+			void analyze(SPIRV::Builder& builder, OutputInfo& outputInfo);
 		};
 
 		class Library {
@@ -54,13 +54,14 @@ namespace Iridium {
 
 		private:
 			std::unordered_map<std::string, Function> _functions;
+			OutputInfo _outputInfo;
 
 		public:
 			Library(const void* data, size_t size);
 
 			const Function* getFunction(const std::string& name) const;
 
-			void buildModule(SPIRV::Builder& builder);
+			void buildModule(SPIRV::Builder& builder, OutputInfo& outputInfo);
 		};
 	};
 };
