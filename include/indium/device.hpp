@@ -12,6 +12,7 @@ namespace Indium {
 	class RenderPipelineState;
 	struct RenderPipelineDescriptor;
 	class Buffer;
+	class Library;
 
 	class Device {
 	public:
@@ -23,6 +24,7 @@ namespace Indium {
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
+		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) = 0;
 
 		// --- support api ---
 

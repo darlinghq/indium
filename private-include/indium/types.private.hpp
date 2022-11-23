@@ -234,16 +234,17 @@ namespace Indium {
 		throw BadEnumValue();
 	};
 
-	static constexpr VkAttachmentLoadOp loadActionToVkAttachmentLoadOp(LoadAction loadAction) {
+	static constexpr VkAttachmentLoadOp loadActionToVkAttachmentLoadOp(LoadAction loadAction, bool isColorAttachment) {
 		switch (loadAction) {
 			case LoadAction::DontCare: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			case LoadAction::Load:     return VK_ATTACHMENT_LOAD_OP_LOAD;
 			case LoadAction::Clear:    return VK_ATTACHMENT_LOAD_OP_CLEAR;
+			case LoadAction::Default:  return isColorAttachment ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_CLEAR;
 		}
 		throw BadEnumValue();
 	};
 
-	static constexpr VkAttachmentStoreOp storeActionToVkAttachmentStoreOp(StoreAction storeAction) {
+	static constexpr VkAttachmentStoreOp storeActionToVkAttachmentStoreOp(StoreAction storeAction, bool isColorAttachment) {
 		switch (storeAction) {
 			case StoreAction::DontCare:                   return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::Store:                      return VK_ATTACHMENT_STORE_OP_STORE;
@@ -251,6 +252,7 @@ namespace Indium {
 			case StoreAction::StoreAndMultisampleResolve: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::Unknown:                    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::CustomSampleDepthStore:     return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			case StoreAction::Default:                    return isColorAttachment ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		}
 		throw BadEnumValue();
 	};

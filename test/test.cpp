@@ -1,5 +1,4 @@
-#include "shader.frag.h"
-#include "shader.vert.h"
+#include "AAPLShaders.h"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -28,23 +27,6 @@ static const Vertex vertices[] = {
 	{ {  250,  -250 }, { 1, 0, 0, 1 } },
 	{ { -250,  -250 }, { 0, 1, 0, 1 } },
 	{ {    0,   250 }, { 0, 0, 1, 1 } },
-};
-
-static const Indium::PrivateLibrary::FunctionInfoMap vertexInfos = {
-	{ "main", {
-		Indium::FunctionType::Vertex,
-		{
-			Indium::BindingInfo { Indium::BindingType::Buffer },
-			Indium::BindingInfo { Indium::BindingType::Buffer },
-		},
-	} },
-};
-
-static const Indium::PrivateLibrary::FunctionInfoMap fragInfos = {
-	{ "main", {
-		Indium::FunctionType::Fragment,
-		{},
-	} },
 };
 
 int main(int argc, char** argv) {
@@ -87,12 +69,9 @@ int main(int argc, char** argv) {
 
 		auto layer = IndiumKit::Layer::make(surface, device, width, height);
 
-		// this next block of code is temporary; once we get a Metal-to-SPIR-V translator, we can use the public API instead
-
-		auto vertexLibrary = std::make_shared<Indium::PrivateLibrary>(std::dynamic_pointer_cast<Indium::PrivateDevice>(device), reinterpret_cast<const char*>(&shader_vert[0]), shader_vert_len, vertexInfos);
-		auto fragLibrary = std::make_shared<Indium::PrivateLibrary>(std::dynamic_pointer_cast<Indium::PrivateDevice>(device), reinterpret_cast<const char*>(&shader_frag[0]), shader_frag_len, fragInfos);
-		auto vertexFunction = vertexLibrary->newFunction("main");
-		auto fragFunction = fragLibrary->newFunction("main");
+		auto library = device->newLibrary(shader, shader_len);
+		auto vertexFunction = library->newFunction("vertexShader");
+		auto fragFunction = library->newFunction("fragmentShader");
 
 		Indium::RenderPipelineDescriptor psoDescriptor {};
 		psoDescriptor.vertexFunction = vertexFunction;
@@ -106,6 +85,7 @@ int main(int argc, char** argv) {
 		auto render = [&]() {
 			auto commandBuffer = commandQueue->commandBuffer();
 
+			// TODO: IndiumKit should provide a "current render pass descriptor"
 			Indium::RenderPassDescriptor renderPassDescriptor {};
 
 			auto drawable = layer->nextDrawable();
@@ -113,6 +93,7 @@ int main(int argc, char** argv) {
 			renderPassDescriptor.colorAttachments.emplace_back();
 			renderPassDescriptor.colorAttachments[0].texture = drawable->texture();
 			renderPassDescriptor.colorAttachments[0].storeAction = Indium::StoreAction::Store;
+			renderPassDescriptor.colorAttachments[0].loadAction = Indium::LoadAction::Clear;
 
 			auto renderEncoder = commandBuffer->renderCommandEncoder(renderPassDescriptor);
 

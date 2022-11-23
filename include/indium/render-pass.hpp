@@ -13,16 +13,16 @@
 namespace Indium {
 	struct RenderPassAttachmentDescriptor {
 		std::shared_ptr<Texture> texture;
-		size_t level;
-		size_t slice;
-		size_t depthPlane;
+		size_t level = 0;
+		size_t slice = 0;
+		size_t depthPlane = 0;
 		std::shared_ptr<Texture> resolveTexture;
-		size_t resolveLevel;
-		size_t resolveSlice;
-		size_t resolveDepthPlane;
-		LoadAction loadAction;
-		StoreAction storeAction;
-		StoreActionOptions storeActionOptions;
+		size_t resolveLevel = 0;
+		size_t resolveSlice = 0;
+		size_t resolveDepthPlane = 0;
+		LoadAction loadAction = LoadAction::Default;
+		StoreAction storeAction = StoreAction::Default;
+		StoreActionOptions storeActionOptions = StoreActionOptions::None;
 	};
 
 	struct ClearColor {
@@ -34,10 +34,10 @@ namespace Indium {
 			alpha(_alpha)
 			{};
 
-		double red;
-		double green;
-		double blue;
-		double alpha;
+		double red = 0;
+		double green = 0;
+		double blue = 0;
+		double alpha = 1;
 	};
 
 	struct RenderPassColorAttachmentDescriptor: public RenderPassAttachmentDescriptor {

@@ -85,6 +85,7 @@ target_compile_definitions(iridium PRIVATE ${LLVM_DEFINITIONS_LIST})
 
 target_link_libraries(indium PRIVATE
 	${Vulkan_LIBRARIES}
+	iridium
 )
 
 # if you're linking to the private interface, you're going to want to link to
@@ -109,11 +110,7 @@ target_link_libraries(indium_kit_private INTERFACE
 	indium_private
 )
 
-llvm_map_components_to_libnames(llvm_libs support core bitreader)
-
-target_link_libraries(iridium PRIVATE
-	${llvm_libs}
-)
+llvm_config(iridium USE_SHARED support core bitreader)
 
 target_link_libraries(mtl2spv PRIVATE
 	iridium

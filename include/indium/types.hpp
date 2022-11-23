@@ -224,6 +224,7 @@ namespace Indium {
 		DontCare = 0,
 		Load = 1,
 		Clear = 2,
+		Default = 0xff,
 	};
 
 	enum class StoreAction: size_t {
@@ -233,6 +234,7 @@ namespace Indium {
 		StoreAndMultisampleResolve = 3,
 		Unknown = 4,
 		CustomSampleDepthStore = 5,
+		Default = 0xff,
 	};
 
 	enum class StoreActionOptions: size_t {

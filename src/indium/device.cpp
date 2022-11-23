@@ -3,6 +3,9 @@
 #include <indium/command-queue.private.hpp>
 #include <indium/render-pipeline.private.hpp>
 #include <indium/buffer.private.hpp>
+#include <indium/library.private.hpp>
+
+#include <iridium/iridium.hpp>
 
 #include <set>
 #include <thread>
@@ -286,6 +289,44 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, 
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
+};
+
+std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
+	// TODO: cache translated libraries
+	size_t translatedSize = 0;
+	Iridium::OutputInfo outputInfo;
+	auto translatedData = Iridium::translate(data, length, translatedSize, outputInfo);
+	PrivateLibrary::FunctionInfoMap funcInfoMap;
+
+	for (const auto& [name, info]: outputInfo.functionInfos) {
+		auto& funcInfo = funcInfoMap[name];
+
+		switch (info.type) {
+			case Iridium::FunctionType::Fragment:
+				funcInfo.functionType = FunctionType::Fragment;
+				break;
+			case Iridium::FunctionType::Vertex:
+				funcInfo.functionType = FunctionType::Vertex;
+				break;
+		}
+
+		funcInfo.bindings.resize(info.bindings.size());
+
+		for (size_t i = 0; i < info.bindings.size(); ++i) {
+			const auto& bindingInfo = info.bindings[i];
+			auto& funcBindingInfo = funcInfo.bindings[i];
+
+			switch (bindingInfo.type) {
+				case Iridium::BindingType::Buffer:
+					funcBindingInfo.type = BindingType::Buffer;
+					break;
+			}
+		}
+	}
+
+	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, funcInfoMap);
+	free(translatedData);
+	return lib;
 };
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {

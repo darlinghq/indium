@@ -7,20 +7,12 @@ find_package(glm REQUIRED)
 
 add_executable(indium-test test.cpp)
 
-foreach(STAGE vert frag)
-	add_custom_command(
-		OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.spv"
-		COMMAND glslc "${CMAKE_CURRENT_SOURCE_DIR}/shader.${STAGE}" -o "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.spv"
-		DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shader.${STAGE}"
-		IMPLICIT_DEPENDS CXX "${CMAKE_CURRENT_SOURCE_DIR}/shader.${STAGE}"
-	)
-	add_custom_command(
-		OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.h"
-		COMMAND xxd -i -n "shader_${STAGE}" "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.spv" "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.h"
-		DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.spv"
-	)
-	target_sources(indium-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/shader.${STAGE}.h")
-endforeach()
+add_custom_command(
+	OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/AAPLShaders.h"
+	COMMAND xxd -i -n "shader" "${CMAKE_CURRENT_SOURCE_DIR}/AAPLShaders.metallib" "${CMAKE_CURRENT_BINARY_DIR}/AAPLShaders.h"
+	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/AAPLShaders.metallib"
+)
+target_sources(indium-test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/AAPLShaders.h")
 
 target_include_directories(indium-test PRIVATE
 	${GLFW_INCLUDE_DIRS}

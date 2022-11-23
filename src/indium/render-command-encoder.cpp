@@ -69,8 +69,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
 		desc.samples = VK_SAMPLE_COUNT_1_BIT;
-		desc.loadOp = loadActionToVkAttachmentLoadOp(color.loadAction);
-		desc.storeOp = storeActionToVkAttachmentStoreOp(color.storeAction);
+		desc.loadOp = loadActionToVkAttachmentLoadOp(color.loadAction, true);
+		desc.storeOp = storeActionToVkAttachmentStoreOp(color.storeAction, true);
 		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 		desc.initialLayout = (color.loadAction == LoadAction::Load) ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
