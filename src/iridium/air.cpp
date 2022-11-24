@@ -226,6 +226,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	SPIRV::ResultID perVertexVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID vertexIndexVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID fragCoordVar = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID uboPointersVar = SPIRV::ResultIDInvalid;
 
 	builder.beginFunction(funcID.id);
 
@@ -373,8 +374,67 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	std::vector<LLVMValueRef> parameterOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
 	LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
 
+	//
 	// analyze parameters and mark special values (like the vertex ID)
+	//
+
+	// first, count how many buffers we have (we'll need this later)
+	uint32_t bufferCount = 0;
+	for (size_t i = 0; i < parameterOperands.size(); ++i) {
+		auto& parameterOperand = parameterOperands[i];
+
+		// info[0] is the parameter index
+		// info[1] is the kind
+		// everything after that depends on the kind
+		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
+		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+
+		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+
+		if (kind == "air.buffer") {
+			++bufferCount;
+		}
+	}
+
+	std::vector<SPIRV::Type::Member> bufferMembers;
+	if (bufferCount > 0) {
+		// if we have buffers, add a global variable for the UBO that contains their physical addresses
+
+		uint32_t bufferIndex = 0;
+		for (size_t i = 0; i < parameterOperands.size(); ++i) {
+			auto& parameterOperand = parameterOperands[i];
+
+			// info[0] is the parameter index
+			// info[1] is the kind
+			// everything after that depends on the kind
+			std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
+			LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+
+			auto kind = llvmMDStringToStringView(parameterInfo[1]);
+
+			if (kind == "air.buffer") {
+				auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(funcParamTypes[i]));
+				auto addrPtrTypeInst = SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::PhysicalStorageBuffer, type, 8);
+				auto addrPtrType = builder.declareType(addrPtrTypeInst);
+				bufferMembers.push_back(SPIRV::Type::Member { addrPtrType, 8 * bufferIndex, {} });
+				++bufferIndex;
+			}
+		}
+
+		auto structType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, bufferMembers, bufferIndex * 8, 8));
+		auto structPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Uniform, structType, 8));
+
+		builder.addDecoration(structType, SPIRV::Decoration { SPIRV::DecorationType::Block, {} });
+
+		uboPointersVar = builder.addGlobalVariable(structPtrType, SPIRV::StorageClass::Uniform);
+		builder.referenceGlobalVariable(uboPointersVar);
+
+		builder.addDecoration(uboPointersVar, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
+		builder.addDecoration(uboPointersVar, SPIRV::Decoration { SPIRV::DecorationType::Binding, { 0 } });
+	}
+
 	uint32_t paramLocation = 0;
+	uint32_t bufferIndex = 0;
 	for (size_t i = 0; i < parameterOperands.size(); ++i) {
 		auto& parameterOperand = parameterOperands[i];
 
@@ -413,34 +473,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
 			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 
-			if (bindingIndex >= funcInfo.bindings.size()) {
-				funcInfo.bindings.resize(bindingIndex + 1);
-			}
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex });
 
-			funcInfo.bindings[bindingIndex] = BindingInfo { BindingType::Buffer };
+			auto ptrType = bufferMembers[bufferIndex].id;
+			auto ptrPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Uniform, ptrType, 8));
+			auto access = builder.encodeAccessChain(ptrPtrType, uboPointersVar, { builder.declareConstantScalar<int32_t>(bufferIndex) });
+			auto load = builder.encodeLoad(ptrType, access);
 
-			auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(funcParamTypes[i]));
-			auto typeInst = *builder.reverseLookupType(type);
-			auto arrTypeInst = SPIRV::Type(SPIRV::Type::RuntimeArrayTag {}, type, typeInst.size, typeInst.alignment);
-			auto arrType = builder.declareType(arrTypeInst);
-			auto blockType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, { SPIRV::Type::Member { arrType, 0, {} } }, 0, arrTypeInst.alignment));
+			_parameterIDs.push_back(load);
 
-			builder.addDecoration(blockType, SPIRV::Decoration { SPIRV::DecorationType::Block, {} });
+			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(load, ptrType);
 
-			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, blockType, 8));
-			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::StorageBuffer);
-			auto accessType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::StorageBuffer, arrType, 8));
-			auto varArrPtr = builder.encodeAccessChain(accessType, var, { builder.declareConstantScalar<int32_t>(0) });
-
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { 0 } });
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { bindingIndex } });
-
-			builder.referenceGlobalVariable(var);
-
-			_parameterIDs.push_back(varArrPtr);
-
-			builder.associateExistingResultID(varArrPtr, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
-			builder.setResultType(varArrPtr, accessType);
+			++bufferIndex;
 		} else if (kind == "air.position") {
 			auto load = builder.encodeLoad(vec4Type, fragCoordVar);
 			_parameterIDs.push_back(load);
@@ -484,11 +529,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				//       (since i *think* that's the same addressing mode used by Metal code)
 
 				case LLVMGetElementPtr: {
-					// TODO: revisit this!
-					//       this will not work in some cases e.g. when we have a pointer to local variable.
-					//       maybe we should mark certain IDs as requiring omission of the first GEP operand
-					//       (since the first operand would be used to index into the pointer, but this is not necessary (nor allowed)
-					//       with SPIR-V).
 					auto base = LLVMGetOperand(inst, 0);
 					auto targetType = LLVMTypeOf(inst);
 
@@ -505,11 +545,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					// ensure the resulting pointer storage class is the same as the input pointer storage class
 					auto type = *builder.reverseLookupType(tmp);
-					auto origType = *builder.reverseLookupType(builder.lookupResultType(tmp2));
+					auto origTypeID = builder.lookupResultType(tmp2);
+					auto origType = *builder.reverseLookupType(origTypeID);
 					type.pointerStorageClass = origType.pointerStorageClass;
 					auto resultType = builder.declareType(type);
+					auto origTypeTarget = *builder.reverseLookupType(origType.pointerVectorMatrixArrayTargetType);
 
-					auto resID = builder.encodeAccessChain(resultType, tmp2, indices);
+					// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
+					// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
+					// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
+					// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
+					auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
+					auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
+					auto mul = builder.encodeIMul(uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
+					auto added = builder.encodeIAdd(uint64Type, asInteger, mul);
+					auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
+
+					indices.erase(indices.begin());
+
+					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+
+					if (indices.size() > 0) {
+						resID = builder.encodeAccessChain(resultType, asPtr, indices);
+					} else {
+						resID = asPtr;
+					}
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, resultType);

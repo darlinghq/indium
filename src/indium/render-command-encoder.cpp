@@ -7,11 +7,12 @@
 #include <indium/render-pipeline.private.hpp>
 #include <indium/types.private.hpp>
 #include <indium/buffer.private.hpp>
+#include <indium/library.private.hpp>
 
 #include <forward_list>
 
 static const std::vector<VkDescriptorPoolSize> poolSizes {
-	VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1024 },
+	VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024 },
 };
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
@@ -277,6 +278,8 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 
 	// TODO: better descriptor set resource management
 
+	// TODO: avoid re-binding descriptors on every draw.
+
 	std::array<VkDescriptorSet, 2> descriptorSets {};
 
 	auto setLayouts = _privatePSO->descriptorSetLayouts();
@@ -295,26 +298,64 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 		std::vector<VkWriteDescriptorSet> writeDescSet;
 		std::forward_list<VkDescriptorBufferInfo> bufInfos;
 
+		uint32_t bufferCount = 0;
+
 		for (size_t j = 0; j < _functionResources[i].size(); ++j) {
 			const auto& entry = _functionResources[i][j];
 
 			if (const auto buf = std::get_if<std::shared_ptr<Buffer>>(&entry)) {
-				auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(*buf);
-
-				auto& info = bufInfos.emplace_front();
-				info.buffer = privateBuf->buffer();
-				info.offset = 0;
-				info.range = VK_WHOLE_SIZE;
-
-				auto& descSet = writeDescSet.emplace_back();
-				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descSet.dstSet = descriptorSets[i];
-				descSet.dstBinding = j;
-				descSet.dstArrayElement = 0;
-				descSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-				descSet.descriptorCount = 1;
-				descSet.pBufferInfo = &info;
+				++bufferCount;
 			}
+		}
+
+		if (bufferCount > 0) {
+			auto& funcInfo = (i == 0) ? _privatePSO->vertexFunctionInfo() : _privatePSO->fragmentFunctionInfo();
+
+			std::vector<uint64_t> addresses;
+
+			// find the right buffer for each binding (using the binding index)
+			for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
+				auto& bindingInfo = funcInfo.bindings[j];
+
+				if (bindingInfo.type != BindingType::Buffer) {
+					continue;
+				}
+
+				if (bindingInfo.index >= _functionResources[i].size()) {
+					addresses.push_back(0);
+					continue;
+				}
+
+				const auto& entry = _functionResources[i][bindingInfo.index];
+
+				if (const auto buf = std::get_if<std::shared_ptr<Buffer>>(&entry)) {
+					auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(*buf);
+					addresses.push_back(privateBuf->gpuAddress());
+				} else {
+					addresses.push_back(0);
+					continue;
+				}
+			}
+
+			auto addressBuffer = _privateDevice->newBuffer(addresses.data(), bufferCount * 8, ResourceOptions::StorageModeShared);
+			auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
+
+			// we need to keep this buffer alive until the operation is completed
+			_addressBuffers.push_back(addressBuffer);
+
+			auto& info = bufInfos.emplace_front();
+			info.buffer = privateAddrBuf->buffer();
+			info.offset = 0;
+			info.range = VK_WHOLE_SIZE;
+
+			auto& descSet = writeDescSet.emplace_back();
+			descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			descSet.dstSet = descriptorSets[i];
+			descSet.dstBinding = 0;
+			descSet.dstArrayElement = 0;
+			descSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+			descSet.descriptorCount = 1;
+			descSet.pBufferInfo = &info;
 		}
 
 		vkUpdateDescriptorSets(_privateDevice->device(), writeDescSet.size(), writeDescSet.data(), 0, nullptr);

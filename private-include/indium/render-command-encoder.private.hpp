@@ -26,6 +26,7 @@ namespace Indium {
 		VkRenderPass _renderPass = nullptr;
 		VkDescriptorPool _pool = nullptr;
 		std::array<std::vector<std::variant<std::shared_ptr<Buffer>>>, 2> _functionResources {};
+		std::vector<std::shared_ptr<Buffer>> _addressBuffers;
 
 	public:
 		PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor);

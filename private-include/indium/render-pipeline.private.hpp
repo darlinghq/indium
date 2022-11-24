@@ -9,6 +9,7 @@
 namespace Indium {
 	class PrivateDevice;
 	class PrivateFunction;
+	struct FunctionInfo;
 
 	class PrivateRenderPipelineState: public RenderPipelineState {
 		private:
@@ -33,6 +34,9 @@ namespace Indium {
 			//       if so, we would always be able to create the pipeline immediately
 			//       in the constructor.
 			void recreatePipeline(VkRenderPass compatibleRenderPass, bool force);
+
+			const FunctionInfo& vertexFunctionInfo();
+			const FunctionInfo& fragmentFunctionInfo();
 
 			INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 

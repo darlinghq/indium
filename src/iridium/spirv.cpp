@@ -66,10 +66,7 @@ void Iridium::SPIRV::Builder::encodeInstructionHeader(DynamicByteWriter& writer,
 
 void Iridium::SPIRV::Builder::encodeString(std::string_view string) {
 	auto written = _writer.writeString(string, true);
-	auto padded = roundUpPowerOf2<size_t>(written, 4);
-	if (padded > written) {
-		_writer.zero(padded - written);
-	}
+	_writer.zeroToAlign(4);
 };
 
 Iridium::SPIRV::Builder::InstructionState Iridium::SPIRV::Builder::beginInstruction(uint16_t opcode, DynamicByteWriter& writer) {
@@ -493,6 +490,72 @@ void Iridium::SPIRV::Builder::encodeReturn(ResultID value) {
 	endInstruction(std::move(tmp));
 };
 
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeConvertPtrToU(ResultID resultTypeID, ResultID target) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::ConvertPtrToU, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeConvertUToPtr(ResultID resultTypeID, ResultID target) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::ConvertUToPtr, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeIAdd(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::IAdd, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeIMul(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::IMul, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+void Iridium::SPIRV::Builder::encodeDebugPrint(std::string format, std::vector<ResultID> arguments) {
+	if (_debugPrintf == ResultIDInvalid) {
+		_debugPrintf = reserveResultID();
+		_extensions.insert("SPV_KHR_non_semantic_info");
+	}
+
+	auto strID = reserveResultID();
+
+	_strings.emplace_back(strID, format);
+
+	auto tmp = beginInstruction(Opcode::ExtInst, *_currentFunctionWriter);
+	auto resID = reserveResultID();
+	auto resultType = declareType(Type(Type::VoidTag {}));
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultType);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(_debugPrintf);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(1); // debug printf is instruction 1 in the imported instruction set
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(strID);
+	for (const auto& argument: arguments) {
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(argument);
+	}
+	endInstruction(std::move(tmp));
+};
+
 void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 	InstructionState tmp;
 
@@ -526,6 +589,21 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 		endInstruction(std::move(tmp));
 	}
 
+	// emit extensions
+	for (const auto& extension: _extensions) {
+		tmp = beginInstruction(Opcode::Extension, _writer);
+		encodeString(extension);
+		endInstruction(std::move(tmp));
+	}
+
+	// emit imported extension instructions
+	if (_debugPrintf != ResultIDInvalid) {
+		tmp = beginInstruction(Opcode::ExtInstImport, _writer);
+		_writer.writeIntegerLE<uint32_t>(_debugPrintf);
+		encodeString("NonSemantic.DebugPrintf");
+		endInstruction(std::move(tmp));
+	}
+
 	// emit the memory model
 	tmp = beginInstruction(Opcode::MemoryModel, _writer);
 	_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(_addressingModel));
@@ -553,6 +631,14 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 			_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(ExecutionMode::OriginUpperLeft));
 			endInstruction(std::move(tmp));
 		}
+	}
+
+	// emit strings
+	for (const auto& [id, string]: _strings) {
+		tmp = beginInstruction(Opcode::String, _writer);
+		_writer.writeIntegerLE<uint32_t>(id);
+		encodeString(string);
+		endInstruction(std::move(tmp));
 	}
 
 	// emit type member decorations

@@ -25,6 +25,8 @@ namespace Indium {
 		virtual void* contents() override;
 		virtual void didModifyRange(Range<size_t> range) override;
 
+		virtual uint64_t gpuAddress() override;
+
 		INDIUM_PROPERTY(VkBuffer, b, B,uffer) = nullptr;
 		INDIUM_PROPERTY(VkDeviceMemory, m, M,emory) = nullptr;
 	};

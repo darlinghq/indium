@@ -25,18 +25,24 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 		size_t index = 0;
 		std::vector<VkDescriptorSetLayoutBinding> bindings;
 
+		bool needUBO = false;
+
 		for (const auto bindingInfo: function->functionInfo().bindings) {
 			if (bindingInfo.type == BindingType::StageIn) {
 				continue;
 			}
 
+			needUBO = true;
+			break;
+		}
+
+		if (needUBO) {
+			// we need a UBO to store the buffer addresses
 			auto& binding = bindings.emplace_back();
-			binding.binding = index;
-			binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+			binding.binding = 0;
+			binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			binding.descriptorCount = 1;
 			binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
-
-			++index;
 		}
 
 		VkDescriptorSetLayoutCreateInfo layoutInfo {};
@@ -239,4 +245,12 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		// TODO
 		abort();
 	}
+};
+
+const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::vertexFunctionInfo() {
+	return _vertexFunction->functionInfo();
+};
+
+const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::fragmentFunctionInfo() {
+	return _fragmentFunction->functionInfo();
 };

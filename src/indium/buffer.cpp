@@ -151,3 +151,10 @@ void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
 		abort();
 	}
 };
+
+uint64_t Indium::PrivateBuffer::gpuAddress() {
+	VkBufferDeviceAddressInfo info {};
+	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	info.buffer = _buffer;
+	return vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+};

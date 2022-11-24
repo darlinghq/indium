@@ -90,6 +90,10 @@ int main(int argc, char** argv) {
 
 			auto drawable = layer->nextDrawable();
 
+			if (!drawable) {
+				return;
+			}
+
 			renderPassDescriptor.colorAttachments.emplace_back();
 			renderPassDescriptor.colorAttachments[0].texture = drawable->texture();
 			renderPassDescriptor.colorAttachments[0].storeAction = Indium::StoreAction::Store;
@@ -114,11 +118,12 @@ int main(int argc, char** argv) {
 			commandBuffer->commit();
 		};
 
-		// putting it in the loop results in high CPU usage because we currently don't have a way to do vsync
-		render();
-
-		while (!glfwWindowShouldClose(window)) {
-			glfwWaitEvents();
+		while (true) {
+			if (glfwWindowShouldClose(window)) {
+				break;
+			}
+			glfwPollEvents();
+			render();
 		}
 	}
 

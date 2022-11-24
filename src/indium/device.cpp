@@ -321,6 +321,8 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 					funcBindingInfo.type = BindingType::Buffer;
 					break;
 			}
+
+			funcBindingInfo.index = bindingInfo.index;
 		}
 	}
 

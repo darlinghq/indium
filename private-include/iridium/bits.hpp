@@ -220,6 +220,23 @@ namespace Iridium {
 			_offset += length;
 			return length;
 		};
+
+		size_t zeroToAlign(size_t alignment) {
+			if ((_offset % alignment) == 0) {
+				return 0;
+			}
+
+			size_t nextBoundary = _offset + (alignment - (_offset % alignment));
+
+			if (nextBoundary > _size) {
+				throw std::out_of_range("Not enough space to align");
+			}
+
+			auto count = nextBoundary - _offset;
+			memset(_data + _offset, 0, count);
+			_offset += count;
+			return count;
+		};
 	};
 
 	class DynamicByteWriter: public ByteWriter {
@@ -339,6 +356,19 @@ namespace Iridium {
 		void resizeAndSkip(size_t count) {
 			resizeToFitWrite(count);
 			ByteView::skip(count);
+		};
+
+		size_t zeroToAlign(size_t alignment) {
+			if ((_offset % alignment) == 0) {
+				return 0;
+			}
+
+			size_t nextBoundary = _offset + (alignment - (_offset % alignment));
+			auto count = nextBoundary - _offset;
+			resizeToFitWrite(count);
+			memset(_data + _offset, 0, count);
+			_offset += count;
+			return count;
 		};
 	};
 

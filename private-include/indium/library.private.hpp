@@ -21,6 +21,7 @@ namespace Indium {
 
 	struct BindingInfo {
 		BindingType type;
+		size_t index;
 	};
 
 	struct FunctionInfo {

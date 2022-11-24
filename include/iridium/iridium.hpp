@@ -21,6 +21,7 @@ namespace Iridium {
 
 	struct BindingInfo {
 		BindingType type;
+		size_t index;
 	};
 
 	struct FunctionInfo {

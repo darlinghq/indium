@@ -291,6 +291,10 @@ namespace Iridium {
 		enum class Opcode: uint16_t {
 			Nop = 0,
 			Undef = 1,
+			String = 7,
+			Extension = 10,
+			ExtInstImport = 11,
+			ExtInst = 12,
 			MemoryModel = 14,
 			EntryPoint = 15,
 			ExecutionMode = 16,
@@ -331,6 +335,10 @@ namespace Iridium {
 			CompositeInsert = 82,
 			ConvertUToF = 112,
 			UConvert = 113,
+			ConvertPtrToU = 117,
+			ConvertUToPtr = 120,
+			IAdd = 128,
+			IMul = 132,
 			FMul = 133,
 			FDiv = 136,
 			Label = 248,
@@ -376,6 +384,9 @@ namespace Iridium {
 			std::unordered_map<std::pair<uintmax_t, ResultID>, ResultID> _constantScalars;
 			std::unordered_map<ResultID, ResultID> _undefinedValues;
 			std::unordered_map<ResultID, ResultID> _resultIDTypes;
+			std::unordered_set<std::string> _extensions;
+			ResultID _debugPrintf = ResultIDInvalid;
+			std::vector<std::pair<ResultID, std::string>> _strings;
 
 			struct InstructionState {
 				size_t position;
@@ -441,6 +452,12 @@ namespace Iridium {
 			ResultID encodeCompositeInsert(ResultID resultTypeID, ResultID modifiedPart, ResultID compositeToCopyAndModify, std::vector<uint32_t> indices);
 			ResultID encodeCompositeExtract(ResultID resultTypeID, ResultID composite, std::vector<uint32_t> indices);
 			void encodeReturn(ResultID value = ResultIDInvalid);
+			ResultID encodeConvertPtrToU(ResultID resultTypeID, ResultID target);
+			ResultID encodeConvertUToPtr(ResultID resultTypeID, ResultID target);
+			ResultID encodeIAdd(ResultID resultTypeID, ResultID operand1, ResultID operand2);
+			ResultID encodeIMul(ResultID resultTypeID, ResultID operand1, ResultID operand2);
+
+			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 
 			void* finalize(size_t& outputSize);
 		};

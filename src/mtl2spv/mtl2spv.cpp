@@ -78,7 +78,8 @@ int main(int argc, char** argv) {
 				} else {
 					outFileJSON << "undefined";
 				}
-				outFileJSON << "\"" << std::endl;
+				outFileJSON << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"index\": " << std::to_string(binding.index) << std::endl;
 				outFileJSON << "\t\t\t\t}" << ((i + 1 == it->second.bindings.size()) ? "" : ",") << std::endl;
 			}
 			outFileJSON << "\t\t\t]" << std::endl;
