@@ -8,6 +8,7 @@
 #include <indium/types.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/library.private.hpp>
+#include <indium/sampler.private.hpp>
 
 #include <forward_list>
 
@@ -297,47 +298,32 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	for (size_t i = 0; i < descriptorSets.size(); ++i) {
 		std::vector<VkWriteDescriptorSet> writeDescSet;
 		std::forward_list<VkDescriptorBufferInfo> bufInfos;
+		std::forward_list<VkDescriptorImageInfo> imageInfos;
 
-		uint32_t bufferCount = 0;
+		auto& functionResources = _functionResources[i];
+		auto& funcInfo = (i == 0) ? _privatePSO->vertexFunctionInfo() : _privatePSO->fragmentFunctionInfo();
 
-		for (size_t j = 0; j < _functionResources[i].size(); ++j) {
-			const auto& entry = _functionResources[i][j];
-
-			if (const auto buf = std::get_if<std::shared_ptr<Buffer>>(&entry)) {
-				++bufferCount;
-			}
-		}
-
-		if (bufferCount > 0) {
-			auto& funcInfo = (i == 0) ? _privatePSO->vertexFunctionInfo() : _privatePSO->fragmentFunctionInfo();
-
+		if (functionResources.buffers.size() > 0) {
 			std::vector<uint64_t> addresses;
 
 			// find the right buffer for each binding (using the binding index)
 			for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
 				auto& bindingInfo = funcInfo.bindings[j];
 
-				if (bindingInfo.type != BindingType::Buffer) {
+				if (bindingInfo.type != Iridium::BindingType::Buffer) {
 					continue;
 				}
 
-				if (bindingInfo.index >= _functionResources[i].size()) {
+				if (bindingInfo.index >= functionResources.buffers.size()) {
 					addresses.push_back(0);
 					continue;
 				}
 
-				const auto& entry = _functionResources[i][bindingInfo.index];
-
-				if (const auto buf = std::get_if<std::shared_ptr<Buffer>>(&entry)) {
-					auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(*buf);
-					addresses.push_back(privateBuf->gpuAddress());
-				} else {
-					addresses.push_back(0);
-					continue;
-				}
+				auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index]);
+				addresses.push_back(privateBuf->gpuAddress());
 			}
 
-			auto addressBuffer = _privateDevice->newBuffer(addresses.data(), bufferCount * 8, ResourceOptions::StorageModeShared);
+			auto addressBuffer = _privateDevice->newBuffer(addresses.data(), functionResources.buffers.size() * 8, ResourceOptions::StorageModeShared);
 			auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
 
 			// we need to keep this buffer alive until the operation is completed
@@ -356,6 +342,56 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 			descSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 			descSet.descriptorCount = 1;
 			descSet.pBufferInfo = &info;
+		}
+
+		for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
+			auto& bindingInfo = funcInfo.bindings[j];
+
+			if (bindingInfo.type == Iridium::BindingType::Texture) {
+				if (bindingInfo.index >= functionResources.textures.size()) {
+					continue;
+				}
+
+				auto texture = functionResources.textures[bindingInfo.index];
+				auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
+
+				auto& info = imageInfos.emplace_front();
+				info.imageView = privateTexture->imageView();
+				info.imageLayout = privateTexture->imageLayout();
+
+				auto& descSet = writeDescSet.emplace_back();
+				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descSet.dstSet = descriptorSets[i];
+				descSet.dstBinding = bindingInfo.internalIndex;
+				descSet.dstArrayElement = 0;
+				descSet.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+				descSet.descriptorCount = 1;
+				descSet.pImageInfo = &info;
+			} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
+				bool embeddedSampler = false;
+
+				if (bindingInfo.index == SIZE_MAX) {
+					// this binding uses an embedded sampler
+					embeddedSampler = true;
+				} else if (bindingInfo.index >= functionResources.samplers.size()) {
+					continue;
+				}
+
+				auto sampler = embeddedSampler ? funcInfo.embeddedSamplerStates[bindingInfo.embeddedSamplerIndex] : functionResources.samplers[bindingInfo.index];
+				auto privateSampler = std::dynamic_pointer_cast<PrivateSamplerState>(sampler);
+
+				auto& info = imageInfos.emplace_front();
+				info.sampler = privateSampler->sampler();
+
+				auto& descSet = writeDescSet.emplace_back();
+				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+				descSet.dstSet = descriptorSets[i];
+				descSet.dstBinding = bindingInfo.internalIndex;
+				descSet.dstArrayElement = 0;
+				descSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+				descSet.descriptorCount = 1;
+				descSet.pImageInfo = &info;
+			}
 		}
 
 		vkUpdateDescriptorSets(_privateDevice->device(), writeDescSet.size(), writeDescSet.data(), 0, nullptr);
@@ -380,14 +416,34 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 	// TODO: we can make this "Private" instead
 	auto buf = cmdBuf->device()->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
 
-	if (_functionResources[0].size() <= index) {
-		_functionResources[0].resize(index + 1);
+	if (_functionResources[0].buffers.size() <= index) {
+		_functionResources[0].buffers.resize(index + 1);
 	}
 
-	_functionResources[0][index] = buf;
+	_functionResources[0].buffers[index] = buf;
 };
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	vkCmdEndRenderPass(buf->commandBuffer());
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+	if (offset != 0) {
+		throw std::runtime_error("TODO: support non-zero offset");
+	}
+
+	if (_functionResources[0].buffers.size() <= index) {
+		_functionResources[0].buffers.resize(index + 1);
+	}
+
+	_functionResources[0].buffers[index] = buffer;
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
+	if (_functionResources[1].textures.size() <= index) {
+		_functionResources[1].textures.resize(index + 1);
+	}
+
+	_functionResources[1].textures[index] = texture;
 };

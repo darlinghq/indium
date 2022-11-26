@@ -32,10 +32,10 @@ namespace Indium {
 	};
 
 	struct TextureSwizzleChannels {
-		TextureSwizzle red;
-		TextureSwizzle green;
-		TextureSwizzle blue;
-		TextureSwizzle alpha;
+		TextureSwizzle red = TextureSwizzle::Red;
+		TextureSwizzle green = TextureSwizzle::Green;
+		TextureSwizzle blue = TextureSwizzle::Blue;
+		TextureSwizzle alpha = TextureSwizzle::Alpha;
 	};
 
 	enum class PixelFormat: size_t {
@@ -268,6 +268,15 @@ namespace Indium {
 		eTextureBuffer = 9,
 	};
 
+	enum class TextureUsage {
+		Unknown = 0,
+		ShaderRead = 1 << 0,
+		ShaderWrite = 1 << 1,
+		RenderTarget = 1 << 2,
+		PixelFormatView = 1 << 4,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(TextureUsage);
+
 	enum class FunctionType: size_t {
 		Vertex = 1,
 		Fragment = 2,
@@ -467,4 +476,58 @@ namespace Indium {
 		HazardTrackingModeTracked   = 2 << 8,
 	};
 	INDIUM_BITFLAG_ENUM_CLASS(ResourceOptions);
+
+	struct Origin {
+		size_t x;
+		size_t y;
+		size_t z;
+	};
+
+	struct Size {
+		size_t width;
+		size_t height;
+		size_t depth;
+	};
+
+	struct Region {
+		Origin origin;
+		Size size;
+	};
+
+	enum class SamplerMinMagFilter: size_t {
+		Nearest = 0,
+		Linear = 1,
+	};
+
+	enum class SamplerMipFilter: size_t {
+		NotMipmapped = 0,
+		Nearest = 1,
+		Linear = 2,
+	};
+
+	enum class SamplerAddressMode: size_t {
+		ClampToEdge = 0,
+		MirrorClampToEdge = 1,
+		Repeat = 2,
+		MirrorRepeat = 3,
+		ClampToZero = 4,
+		ClampToBorderColor = 5,
+	};
+
+	enum class SamplerBorderColor: size_t {
+		TransparentBlack = 0,
+		OpaqueBlack = 1,
+		OpaqueWhite = 2,
+	};
+
+	enum class CompareFunction: size_t {
+		Never = 0,
+		Less = 1,
+		Equal = 2,
+		LessEqual = 3,
+		Greater = 4,
+		NotEqual = 5,
+		GreaterEqual = 6,
+		Always = 7,
+	};
 };

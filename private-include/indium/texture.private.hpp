@@ -126,5 +126,43 @@ namespace Indium {
 		virtual void beginUpdatingPresentationSemaphore(std::shared_ptr<BinarySemaphore> presentationSemaphore) override;
 		virtual void endUpdatingPresentationSemaphore() override;
 		virtual std::shared_ptr<BinarySemaphore> synchronizePresentation() override;
+
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+	};
+
+	class ConcreteTexture: public PrivateTexture {
+		INDIUM_PREVENT_COPY(ConcreteTexture);
+
+	private:
+		TextureDescriptor _descriptor;
+		VkImage _image;
+		VkImageView _imageView;
+		VkDeviceMemory _memory;
+		StorageMode _storageMode;
+
+	public:
+		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor);
+		virtual ~ConcreteTexture();
+
+		virtual TextureType textureType() const override;
+		virtual PixelFormat pixelFormat() const override;
+		virtual size_t width() const override;
+		virtual size_t height() const override;
+		virtual size_t depth() const override;
+		virtual size_t mipmapLevelCount() const override;
+		virtual size_t arrayLength() const override;
+		virtual size_t sampleCount() const override;
+		virtual bool framebufferOnly() const override;
+		virtual bool allowGPUOptimizedContents() const override;
+		virtual bool shareable() const override;
+		virtual TextureSwizzleChannels swizzle() const override;
+
+		virtual VkImageView imageView() override;
+		virtual VkImage image() override;
+		virtual VkImageLayout imageLayout() override;
+
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 };

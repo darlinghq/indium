@@ -28,12 +28,22 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 		bool needUBO = false;
 
 		for (const auto bindingInfo: function->functionInfo().bindings) {
-			if (bindingInfo.type == BindingType::StageIn) {
-				continue;
+			if (bindingInfo.type == Iridium::BindingType::Buffer) {
+				needUBO = true;
+				break;
+			} else if (bindingInfo.type == Iridium::BindingType::Texture) {
+				auto& binding = bindings.emplace_back();
+				binding.binding = bindingInfo.internalIndex;
+				binding.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+				binding.descriptorCount = 1;
+				binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
+			} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
+				auto& binding = bindings.emplace_back();
+				binding.binding = bindingInfo.internalIndex;
+				binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+				binding.descriptorCount = 1;
+				binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
 			}
-
-			needUBO = true;
-			break;
 		}
 
 		if (needUBO) {

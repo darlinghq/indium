@@ -16,6 +16,7 @@ add_library(indium SHARED
 	src/indium/render-command-encoder.cpp
 	src/indium/render-pipeline.cpp
 	src/indium/resource.cpp
+	src/indium/sampler.cpp
 	src/indium/texture.cpp
 )
 

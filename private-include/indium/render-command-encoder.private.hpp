@@ -13,6 +13,7 @@ namespace Indium {
 	class PrivateCommandBuffer;
 	class PrivateRenderPipelineState;
 	class PrivateDevice;
+	class SamplerState;
 
 	class PrivateRenderCommandEncoder: public RenderCommandEncoder {
 	private:
@@ -25,7 +26,14 @@ namespace Indium {
 		VkFramebuffer _framebuffer = nullptr;
 		VkRenderPass _renderPass = nullptr;
 		VkDescriptorPool _pool = nullptr;
-		std::array<std::vector<std::variant<std::shared_ptr<Buffer>>>, 2> _functionResources {};
+
+		struct FunctionResources {
+			std::vector<std::shared_ptr<Buffer>> buffers;
+			std::vector<std::shared_ptr<Texture>> textures;
+			std::vector<std::shared_ptr<SamplerState>> samplers;
+		};
+
+		std::array<FunctionResources, 2> _functionResources {};
 		std::vector<std::shared_ptr<Buffer>> _addressBuffers;
 
 	public:
@@ -48,6 +56,8 @@ namespace Indium {
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount) override;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount) override;
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) override;
+		virtual void setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) override;
+		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) override;
 
 		virtual void endEncoding() override;
 

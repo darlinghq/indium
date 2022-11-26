@@ -71,7 +71,7 @@ namespace Indium {
 			case PixelFormat::RGBA8Uint:             return VK_FORMAT_R8G8B8A8_UINT;
 			case PixelFormat::RGBA8Sint:             return VK_FORMAT_R8G8B8A8_SINT;
 			case PixelFormat::BGRA8Unorm:            return VK_FORMAT_B8G8R8A8_UNORM;
-			case PixelFormat::BGRA8Unorm_sRGB:       return VK_FORMAT_B8G8R8_SRGB;
+			case PixelFormat::BGRA8Unorm_sRGB:       return VK_FORMAT_B8G8R8A8_SRGB;
 			case PixelFormat::RGB10A2Unorm:          return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 			case PixelFormat::RGB10A2Uint:           return VK_FORMAT_A2B10G10R10_UINT_PACK32;
 			case PixelFormat::RG11B10Float:          return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
@@ -181,6 +181,127 @@ namespace Indium {
 		}
 	};
 
+	// this does NOT handle compressed formats
+	static constexpr size_t pixelFormatToByteCount(PixelFormat pixelFormat) {
+		switch (pixelFormat) {
+			case PixelFormat::Invalid:               return 0;
+			case PixelFormat::A8Unorm:               return 0;
+			case PixelFormat::R8Unorm:               return 1;
+			case PixelFormat::R8Unorm_sRGB:          return 1;
+			case PixelFormat::R8Snorm:               return 1;
+			case PixelFormat::R8Uint:                return 1;
+			case PixelFormat::R8Sint:                return 1;
+			case PixelFormat::R16Unorm:              return 2;
+			case PixelFormat::R16Snorm:              return 2;
+			case PixelFormat::R16Uint:               return 2;
+			case PixelFormat::R16Sint:               return 2;
+			case PixelFormat::R16Float:              return 2;
+			case PixelFormat::RG8Unorm:              return 2;
+			case PixelFormat::RG8Unorm_sRGB:         return 2;
+			case PixelFormat::RG8Snorm:              return 2;
+			case PixelFormat::RG8Uint:               return 2;
+			case PixelFormat::RG8Sint:               return 2;
+			case PixelFormat::B5G6R5Unorm:           return 2;
+			case PixelFormat::A1BGR5Unorm:           return 2;
+			case PixelFormat::ABGR4Unorm:            return 2;
+			case PixelFormat::BGR5A1Unorm:           return 2;
+			case PixelFormat::R32Uint:               return 4;
+			case PixelFormat::R32Sint:               return 4;
+			case PixelFormat::R32Float:              return 4;
+			case PixelFormat::RG16Unorm:             return 4;
+			case PixelFormat::RG16Snorm:             return 4;
+			case PixelFormat::RG16Uint:              return 4;
+			case PixelFormat::RG16Sint:              return 4;
+			case PixelFormat::RG16Float:             return 4;
+			case PixelFormat::RGBA8Unorm:            return 4;
+			case PixelFormat::RGBA8Unorm_sRGB:       return 4;
+			case PixelFormat::RGBA8Snorm:            return 4;
+			case PixelFormat::RGBA8Uint:             return 4;
+			case PixelFormat::RGBA8Sint:             return 4;
+			case PixelFormat::BGRA8Unorm:            return 4;
+			case PixelFormat::BGRA8Unorm_sRGB:       return 4;
+			case PixelFormat::RGB10A2Unorm:          return 4;
+			case PixelFormat::RGB10A2Uint:           return 4;
+			case PixelFormat::RG11B10Float:          return 4;
+			case PixelFormat::RGB9E5Float:           return 4;
+			case PixelFormat::BGR10A2Unorm:          return 4;
+			case PixelFormat::RG32Uint:              return 8;
+			case PixelFormat::RG32Sint:              return 8;
+			case PixelFormat::RG32Float:             return 8;
+			case PixelFormat::RGBA16Unorm:           return 8;
+			case PixelFormat::RGBA16Snorm:           return 8;
+			case PixelFormat::RGBA16Uint:            return 8;
+			case PixelFormat::RGBA16Sint:            return 8;
+			case PixelFormat::RGBA16Float:           return 8;
+			case PixelFormat::RGBA32Uint:            return 16;
+			case PixelFormat::RGBA32Sint:            return 16;
+			case PixelFormat::RGBA32Float:           return 16;
+
+			default:
+				return 0;
+		}
+	};
+
+	static constexpr bool pixelFormatIsCompressed(PixelFormat pixelFormat) {
+		switch (pixelFormat) {
+			case PixelFormat::R8Unorm:
+			case PixelFormat::R8Unorm_sRGB:
+			case PixelFormat::R8Snorm:
+			case PixelFormat::R8Uint:
+			case PixelFormat::R8Sint:
+			case PixelFormat::R16Unorm:
+			case PixelFormat::R16Snorm:
+			case PixelFormat::R16Uint:
+			case PixelFormat::R16Sint:
+			case PixelFormat::R16Float:
+			case PixelFormat::RG8Unorm:
+			case PixelFormat::RG8Unorm_sRGB:
+			case PixelFormat::RG8Snorm:
+			case PixelFormat::RG8Uint:
+			case PixelFormat::RG8Sint:
+			case PixelFormat::B5G6R5Unorm:
+			case PixelFormat::A1BGR5Unorm:
+			case PixelFormat::ABGR4Unorm:
+			case PixelFormat::BGR5A1Unorm:
+			case PixelFormat::R32Uint:
+			case PixelFormat::R32Sint:
+			case PixelFormat::R32Float:
+			case PixelFormat::RG16Unorm:
+			case PixelFormat::RG16Snorm:
+			case PixelFormat::RG16Uint:
+			case PixelFormat::RG16Sint:
+			case PixelFormat::RG16Float:
+			case PixelFormat::RGBA8Unorm:
+			case PixelFormat::RGBA8Unorm_sRGB:
+			case PixelFormat::RGBA8Snorm:
+			case PixelFormat::RGBA8Uint:
+			case PixelFormat::RGBA8Sint:
+			case PixelFormat::BGRA8Unorm:
+			case PixelFormat::BGRA8Unorm_sRGB:
+			case PixelFormat::RGB10A2Unorm:
+			case PixelFormat::RGB10A2Uint:
+			case PixelFormat::RG11B10Float:
+			case PixelFormat::RGB9E5Float:
+			case PixelFormat::BGR10A2Unorm:
+			case PixelFormat::RG32Uint:
+			case PixelFormat::RG32Sint:
+			case PixelFormat::RG32Float:
+			case PixelFormat::RGBA16Unorm:
+			case PixelFormat::RGBA16Snorm:
+			case PixelFormat::RGBA16Uint:
+			case PixelFormat::RGBA16Sint:
+			case PixelFormat::RGBA16Float:
+			case PixelFormat::RGBA32Uint:
+			case PixelFormat::RGBA32Sint:
+			case PixelFormat::RGBA32Float:
+				return false;
+
+			// assume any other format (including ones we don't know about) is compressed
+			default:
+				return true;
+		}
+	};
+
 	static constexpr VkColorComponentFlags colorWriteMaskToVkColorComponentFlags(ColorWriteMask mask) {
 		VkColorComponentFlags flags = 0;
 		if (!!(mask & ColorWriteMask::Alpha)) {
@@ -273,6 +394,22 @@ namespace Indium {
 		throw BadEnumValue();
 	};
 
+	static constexpr VkImageType textureTypeToVkImageType(TextureType format) {
+		switch (format) {
+			case TextureType::e1D:                 return VK_IMAGE_TYPE_1D;
+			case TextureType::e1DArray:            return VK_IMAGE_TYPE_1D;
+			case TextureType::e2D:                 return VK_IMAGE_TYPE_2D;
+			case TextureType::e2DArray:            return VK_IMAGE_TYPE_2D;
+			case TextureType::e2DMultisample:      return VK_IMAGE_TYPE_2D;
+			case TextureType::eCube:               return VK_IMAGE_TYPE_3D;
+			case TextureType::eCubeArray:          return VK_IMAGE_TYPE_3D;
+			case TextureType::e3D:                 return VK_IMAGE_TYPE_3D;
+			case TextureType::e2DMultisampleArray: return VK_IMAGE_TYPE_2D;
+			case TextureType::eTextureBuffer:      return VK_IMAGE_TYPE_1D; // ?
+		}
+		throw BadEnumValue();
+	};
+
 	static constexpr VkCullModeFlags cullModeToVkCullMode(CullMode cullMode) {
 		VkCullModeFlags flags = 0;
 		if (!!(cullMode & CullMode::Front)) {
@@ -302,5 +439,58 @@ namespace Indium {
 
 			default: throw BadEnumValue();
 		}
+	};
+
+	static constexpr VkCompareOp compareFunctionToVkCompareOp(CompareFunction compareFunction) {
+		switch (compareFunction) {
+			case CompareFunction::Never:        return VK_COMPARE_OP_NEVER;
+			case CompareFunction::Less:         return VK_COMPARE_OP_LESS;
+			case CompareFunction::Equal:        return VK_COMPARE_OP_EQUAL;
+			case CompareFunction::LessEqual:    return VK_COMPARE_OP_LESS_OR_EQUAL;
+			case CompareFunction::Greater:      return VK_COMPARE_OP_GREATER;
+			case CompareFunction::NotEqual:     return VK_COMPARE_OP_NOT_EQUAL;
+			case CompareFunction::GreaterEqual: return VK_COMPARE_OP_GREATER_OR_EQUAL;
+			case CompareFunction::Always:       return VK_COMPARE_OP_ALWAYS;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkFilter samplerMinMagFilterToVkFilter(SamplerMinMagFilter samplerMinMagFilter) {
+		switch (samplerMinMagFilter) {
+			case SamplerMinMagFilter::Nearest: return VK_FILTER_NEAREST;
+			case SamplerMinMagFilter::Linear:  return VK_FILTER_LINEAR;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkSamplerMipmapMode samplerMipFilterToVkSamplerMipmapMode(SamplerMipFilter samplerMipFilter) {
+		switch (samplerMipFilter) {
+			case SamplerMipFilter::NotMipmapped: return VK_SAMPLER_MIPMAP_MODE_NEAREST;
+			case SamplerMipFilter::Nearest:      return VK_SAMPLER_MIPMAP_MODE_NEAREST;
+			case SamplerMipFilter::Linear:       return VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkSamplerAddressMode samplerAddressModeToVkSamplerAddressMode(SamplerAddressMode samplerAddressMode) {
+		switch (samplerAddressMode) {
+			case SamplerAddressMode::ClampToEdge:        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+			case SamplerAddressMode::MirrorClampToEdge:  return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
+			case SamplerAddressMode::Repeat:             return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+			case SamplerAddressMode::MirrorRepeat:       return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+			case SamplerAddressMode::ClampToZero:        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+			case SamplerAddressMode::ClampToBorderColor: return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkBorderColor samplerBorderColorToVkBorderColor(SamplerBorderColor samplerBorderColor) {
+		// XXX: not sure if these should be floats or ints
+		switch (samplerBorderColor) {
+			case SamplerBorderColor::TransparentBlack: return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+			case SamplerBorderColor::OpaqueBlack:      return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+			case SamplerBorderColor::OpaqueWhite:      return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		}
+		throw BadEnumValue();
 	};
 };

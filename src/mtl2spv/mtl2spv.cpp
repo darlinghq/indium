@@ -68,21 +68,152 @@ int main(int argc, char** argv) {
 		outFileJSON << "\t\"function-infos\": {" << std::endl;
 		for (auto it = outputInfo.functionInfos.begin(); it != outputInfo.functionInfos.end(); ++it) {
 			outFileJSON << "\t\t\"" << it->first << "\": {" << std::endl;
+
 			outFileJSON << "\t\t\t\"bindings\": [" << std::endl;
 			for (size_t i = 0; i < it->second.bindings.size(); ++i) {
 				const auto& binding = it->second.bindings[i];
 				outFileJSON << "\t\t\t\t{" << std::endl;
+
 				outFileJSON << "\t\t\t\t\t\"type\": \"";
 				if (binding.type == Iridium::BindingType::Buffer) {
 					outFileJSON << "buffer";
+				} else if (binding.type == Iridium::BindingType::Texture) {
+					outFileJSON << "texture";
+				} else if (binding.type == Iridium::BindingType::Sampler) {
+					outFileJSON << "sampler";
 				} else {
 					outFileJSON << "undefined";
 				}
 				outFileJSON << "\"," << std::endl;
-				outFileJSON << "\t\t\t\t\t\"index\": " << std::to_string(binding.index) << std::endl;
+
+				outFileJSON << "\t\t\t\t\t\"index\": " << (binding.index == SIZE_MAX ? "-1" : std::to_string(binding.index)) << "," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"internal-index\": " << std::to_string(binding.internalIndex) << (binding.type == Iridium::BindingType::Buffer ? "" : ",") << std::endl;
+
+				if (binding.type == Iridium::BindingType::Texture) {
+					outFileJSON << "\t\t\t\t\t\"texture-access-type\": \"";
+					if (binding.textureAccessType == Iridium::TextureAccessType::Sample) {
+						outFileJSON << "sample";
+					} else if (binding.textureAccessType == Iridium::TextureAccessType::Read) {
+						outFileJSON << "read";
+					} else if (binding.textureAccessType == Iridium::TextureAccessType::Write) {
+						outFileJSON << "write";
+					} else if (binding.textureAccessType == Iridium::TextureAccessType::ReadWrite) {
+						outFileJSON << "read-write";
+					} else {
+						outFileJSON << "undefined";
+					}
+					outFileJSON << "\"" << std::endl;
+				}
+
+				if (binding.type == Iridium::BindingType::Sampler) {
+					outFileJSON << "\t\t\t\t\t\"embedded-sampler-index\": " << std::to_string(binding.embeddedSamplerIndex) << std::endl;
+				}
+
 				outFileJSON << "\t\t\t\t}" << ((i + 1 == it->second.bindings.size()) ? "" : ",") << std::endl;
 			}
+			outFileJSON << "\t\t\t]," << std::endl;
+
+			outFileJSON << "\t\t\t\"embedded-samplers\": [" << std::endl;
+			for (size_t i = 0; i < it->second.embeddedSamplers.size(); ++i) {
+				const auto& sampler = it->second.embeddedSamplers[i];
+				outFileJSON << "\t\t\t\t{" << std::endl;
+
+				auto addressModeToString = [](Iridium::EmbeddedSampler::AddressMode addressMode) {
+					switch (addressMode) {
+						case Iridium::EmbeddedSampler::AddressMode::ClampToZero:
+							return "clamp-to-zero";
+						case Iridium::EmbeddedSampler::AddressMode::ClampToEdge:
+							return "clamp-to-edge";
+						case Iridium::EmbeddedSampler::AddressMode::Repeat:
+							return "repeat";
+						case Iridium::EmbeddedSampler::AddressMode::MirrorRepeat:
+							return "mirror-repeat";
+						case Iridium::EmbeddedSampler::AddressMode::ClampToBorderColor:
+							return "clamp-to-border-color";
+						default:
+							return "undefined";
+					}
+				};
+
+				auto filterToString = [](Iridium::EmbeddedSampler::Filter filter) {
+					switch (filter) {
+						case Iridium::EmbeddedSampler::Filter::Nearest:
+							return "nearest";
+						case Iridium::EmbeddedSampler::Filter::Linear:
+							return "linear";
+						default:
+							return "undefined";
+					}
+				};
+
+				auto mipFilterToString = [](Iridium::EmbeddedSampler::MipFilter mipFilter) {
+					switch (mipFilter) {
+						case Iridium::EmbeddedSampler::MipFilter::None:
+							return "none";
+						case Iridium::EmbeddedSampler::MipFilter::Nearest:
+							return "nearest";
+						case Iridium::EmbeddedSampler::MipFilter::Linear:
+							return "linear";
+						default:
+							return "undefined";
+					}
+				};
+
+				auto compareFunctionToString = [](Iridium::EmbeddedSampler::CompareFunction compareFunction) {
+					switch (compareFunction) {
+						case Iridium::EmbeddedSampler::CompareFunction::None:
+							return "none";
+						case Iridium::EmbeddedSampler::CompareFunction::Less:
+							return "less";
+						case Iridium::EmbeddedSampler::CompareFunction::LessEqual:
+							return "less-equal";
+						case Iridium::EmbeddedSampler::CompareFunction::Greater:
+							return "greater";
+						case Iridium::EmbeddedSampler::CompareFunction::GreaterEqual:
+							return "greater-equal";
+						case Iridium::EmbeddedSampler::CompareFunction::Equal:
+							return "equal";
+						case Iridium::EmbeddedSampler::CompareFunction::NotEqual:
+							return "not-equal";
+						case Iridium::EmbeddedSampler::CompareFunction::Always:
+							return "always";
+						case Iridium::EmbeddedSampler::CompareFunction::Never:
+							return "never";
+						default:
+							return "undefined";
+					}
+				};
+
+				auto borderColorToString = [](Iridium::EmbeddedSampler::BorderColor borderColor) {
+					switch (borderColor) {
+						case Iridium::EmbeddedSampler::BorderColor::TransparentBlack:
+							return "transparent-black";
+						case Iridium::EmbeddedSampler::BorderColor::OpaqueBlack:
+							return "opaque-black";
+						case Iridium::EmbeddedSampler::BorderColor::OpaqueWhite:
+							return "opaque-white";
+						default:
+							return "undefined";
+					}
+				};
+
+				outFileJSON << "\t\t\t\t\t\"width-address-mode\": \"" << addressModeToString(sampler.widthAddressMode) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"height-address-mode\": \"" << addressModeToString(sampler.heightAddressMode) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"depth-address-mode\": \"" << addressModeToString(sampler.depthAddressMode) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"magnification-filter\": \"" << filterToString(sampler.magnificationFilter) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"minification-filter\": \"" << filterToString(sampler.minificationFilter) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"mipmap-filter\": \"" << mipFilterToString(sampler.mipmapFilter) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"uses-normalized-coordinates\": " << (sampler.usesNormalizedCoordinates ? "true" : "false") << "," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"compare-function\": \"" << compareFunctionToString(sampler.compareFunction) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"anisotropy-level\": " << std::to_string(sampler.anisotropyLevel) << "," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"border-color\": \"" << borderColorToString(sampler.borderColor) << "\"," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"lod-min\": " << std::to_string(sampler.lodMin) << "," << std::endl;
+				outFileJSON << "\t\t\t\t\t\"lod-max\": " << std::to_string(sampler.lodMax) << std::endl;
+
+				outFileJSON << "\t\t\t\t}" << ((i + 1 == it->second.embeddedSamplers.size()) ? "" : ",") << std::endl;
+			}
 			outFileJSON << "\t\t\t]" << std::endl;
+
 			outFileJSON << "\t\t}" << ((std::next(it) == outputInfo.functionInfos.end()) ? "" : ",") << std::endl;
 		}
 		outFileJSON << "\t}" << std::endl;

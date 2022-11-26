@@ -42,6 +42,8 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) override;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
+		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;
+		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;
@@ -80,6 +82,7 @@ namespace Indium {
 		INDIUM_PROPERTY(VkQueue, c, C,omputeQueue) = nullptr;
 		INDIUM_PROPERTY(VkQueue, t, T,ransferQueue) = nullptr;
 		//INDIUM_PROPERTY(VkQueue, p, P,resentQueue) = nullptr;
+		INDIUM_PROPERTY(VkCommandPool, o,O,neshotCommandPool) = nullptr;
 
 		INDIUM_PROPERTY(VkPhysicalDeviceMemoryProperties, m, M,emoryProperties);
 	};

@@ -22,9 +22,16 @@ bool Iridium::SPIRV::Type::operator==(const Type& other) const {
 		vectorMatrixEntryCount != other.vectorMatrixEntryCount ||
 		structureMembers.size() != other.structureMembers.size() ||
 		pointerStorageClass != other.pointerStorageClass ||
-		pointerVectorMatrixArrayTargetType != other.pointerVectorMatrixArrayTargetType ||
+		targetType != other.targetType ||
 		functionReturnType != other.functionReturnType ||
-		functionParameterTypes.size() != other.functionParameterTypes.size()
+		functionParameterTypes.size() != other.functionParameterTypes.size() ||
+		imageDimensionality != other.imageDimensionality ||
+		imageDepthIndication != other.imageDepthIndication ||
+		imageIsArrayed != other.imageIsArrayed ||
+		imageIsMultisampled != other.imageIsMultisampled ||
+		imageIsSampledIndication != other.imageIsSampledIndication ||
+		imageFormat != other.imageFormat ||
+		imageRealSampleTypeID != other.imageRealSampleTypeID
 	) {
 		return false;
 	}
@@ -291,6 +298,22 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 	return id;
 };
 
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint8_t>(uint8_t value) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, false)), false);
+};
+
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int8_t>(int8_t value) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, true)), false);
+};
+
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint16_t>(uint16_t value) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, false)), false);
+};
+
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int16_t>(int16_t value) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, true)), false);
+};
+
 template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint32_t>(uint32_t value) {
 	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 32, false)), false);
 };
@@ -532,6 +555,48 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeIMul(ResultID resultType
 	return result;
 };
 
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeBitcast(ResultID resultTypeID, ResultID operand) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::Bitcast, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeSampledImage(ResultID resultTypeID, ResultID image, ResultID sampler) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::SampledImage, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(image);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(sampler);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeImageSampleImplicitLod(ResultID resultTypeID, ResultID sampledImage, ResultID coordinates) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::ImageSampleImplicitLod, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(sampledImage);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(coordinates);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFConvert(ResultID resultTypeID, ResultID target) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(Opcode::FConvert, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
 void Iridium::SPIRV::Builder::encodeDebugPrint(std::string format, std::vector<ResultID> arguments) {
 	if (_debugPrintf == ResultIDInvalid) {
 		_debugPrintf = reserveResultID();
@@ -715,8 +780,10 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 			case Type::BackingType::Pointer: /* fallthrough */
 			case Type::BackingType::Vector: /* fallthrough */
 			case Type::BackingType::Matrix: /* fallthrough */
-			case Type::BackingType::RuntimeArray:
-				emitType(*reverseLookupType(type.pointerVectorMatrixArrayTargetType), type.pointerVectorMatrixArrayTargetType);
+			case Type::BackingType::RuntimeArray: /* fallthrough */
+			case Type::BackingType::Image: /* fallthrough */
+			case Type::BackingType::SampledImage:
+				emitType(*reverseLookupType(type.targetType), type.targetType);
 				break;
 
 			case Type::BackingType::Function:
@@ -766,14 +833,14 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 			case Type::BackingType::Vector:
 				tmp = beginInstruction(Opcode::TypeVector, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
-				_writer.writeIntegerLE<uint32_t>(type.pointerVectorMatrixArrayTargetType);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
 				_writer.writeIntegerLE<uint32_t>(type.vectorMatrixEntryCount);
 				endInstruction(std::move(tmp));
 				break;
 			case Type::BackingType::Matrix:
 				tmp = beginInstruction(Opcode::TypeMatrix, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
-				_writer.writeIntegerLE<uint32_t>(type.pointerVectorMatrixArrayTargetType);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
 				_writer.writeIntegerLE<uint32_t>(type.vectorMatrixEntryCount);
 				endInstruction(std::move(tmp));
 				break;
@@ -790,13 +857,36 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 				tmp = beginInstruction(Opcode::TypePointer, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
 				_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(type.pointerStorageClass));
-				_writer.writeIntegerLE<uint32_t>(type.pointerVectorMatrixArrayTargetType);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
 				endInstruction(std::move(tmp));
 				break;
 			case Type::BackingType::RuntimeArray:
 				tmp = beginInstruction(Opcode::TypeRuntimeArray, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
-				_writer.writeIntegerLE<uint32_t>(type.pointerVectorMatrixArrayTargetType);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
+				endInstruction(std::move(tmp));
+				break;
+			case Type::BackingType::Image:
+				tmp = beginInstruction(Opcode::TypeImage, _writer);
+				_writer.writeIntegerLE<uint32_t>(id);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
+				_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(type.imageDimensionality));
+				_writer.writeIntegerLE<uint32_t>(type.imageDepthIndication);
+				_writer.writeIntegerLE<uint32_t>(type.imageIsArrayed ? 1 : 0);
+				_writer.writeIntegerLE<uint32_t>(type.imageIsMultisampled ? 1 : 0);
+				_writer.writeIntegerLE<uint32_t>(type.imageIsSampledIndication);
+				_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(type.imageFormat));
+				endInstruction(std::move(tmp));
+				break;
+			case Type::BackingType::Sampler:
+				tmp = beginInstruction(Opcode::TypeSampler, _writer);
+				_writer.writeIntegerLE<uint32_t>(id);
+				endInstruction(std::move(tmp));
+				break;
+			case Type::BackingType::SampledImage:
+				tmp = beginInstruction(Opcode::TypeSampledImage, _writer);
+				_writer.writeIntegerLE<uint32_t>(id);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
 				endInstruction(std::move(tmp));
 				break;
 			default:

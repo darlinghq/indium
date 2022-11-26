@@ -42,6 +42,9 @@ namespace IndiumKit {
 		virtual bool allowGPUOptimizedContents() const override;
 		virtual bool shareable() const override;
 		virtual Indium::TextureSwizzleChannels swizzle() const override;
+
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 
 	class PrivateLayer: public Layer, public std::enable_shared_from_this<PrivateLayer> {

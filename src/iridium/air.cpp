@@ -200,6 +200,35 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			return builder.declareUndefinedValue(llvmTypeToSPIRVType(builder, type));
 		} break;
 
+		case LLVMConstantExprValueKind: {
+			switch (LLVMGetConstOpcode(llvmValue)) {
+				case LLVMBitCast: {
+					auto target = LLVMGetOperand(llvmValue, 0);
+					auto targetID = llvmValueToResultID(builder, target);
+					auto targetType = builder.lookupResultType(targetID);
+					auto targetTypeInst = *builder.reverseLookupType(targetType);
+
+#if 1
+					if (targetTypeInst.backingType == Type::BackingType::Pointer) {
+						auto targetElmTypeInst = *builder.reverseLookupType(targetTypeInst.targetType);
+
+						if (targetElmTypeInst.backingType == Type::BackingType::Sampler) {
+							// HACK: don't bitcast sampler pointers. while this should be perfectly legal SPIR-V (and should be allowed in the Vulkan environment),
+							//       some vendors (e.g. AMD) don't handle this properly and it can cause segfaults. we don't really need to do anything weird with it anyways
+							//       (i'm 95% sure Metal bitcode doesn't do any pointer shenanigans with samplers), so just keep the original pointer.
+							return targetID;
+						}
+					}
+#endif
+
+					return builder.encodeBitcast(llvmTypeToSPIRVType(builder, type), targetID);
+				} break;
+
+				default:
+					return ResultIDInvalid;
+			}
+		} break;
+
 		default:
 			return builder.lookupResultID(reinterpret_cast<uintptr_t>(llvmValue));
 	}
@@ -435,6 +464,21 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 	uint32_t paramLocation = 0;
 	uint32_t bufferIndex = 0;
+
+	// internal binding indices are the actual bindings we expect Indium to bind resources with.
+	//
+	// as required by Indium, we must assign indices in the following order:
+	//   1. buffers (really only 1 index for all buffers)
+	//   2. stage-ins
+	//   3. textures
+	//   4. samplers
+	size_t internalBindingIndex = 0;
+
+	if (bufferCount > 0) {
+		// we put all our buffer addresses into a single UBO which occupies a single internal binding
+		++internalBindingIndex;
+	}
+
 	for (size_t i = 0; i < parameterOperands.size(); ++i) {
 		auto& parameterOperand = parameterOperands[i];
 
@@ -473,7 +517,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
 			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 
-			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex });
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex, 0 });
 
 			auto ptrType = bufferMembers[bufferIndex].id;
 			auto ptrPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Uniform, ptrType, 8));
@@ -506,6 +550,193 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
 			builder.setResultType(load, type);
+		}
+	}
+
+	// now look for textures and assign bindings for them
+	for (size_t i = 0; i < parameterOperands.size(); ++i) {
+		auto& parameterOperand = parameterOperands[i];
+
+		// info[0] is the parameter index
+		// info[1] is the kind
+		// everything after that depends on the kind
+		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
+		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+
+		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+
+		if (kind == "air.texture") {
+			// find the location index info, determine the access type, and find the arg type info
+			size_t infoIdx = SIZE_MAX;
+			TextureAccessType accessType = TextureAccessType::Sample;
+			size_t argTypeIdx = SIZE_MAX;
+			for (size_t idx = 0; idx < parameterInfo.size(); ++idx) {
+				if (LLVMIsAMDString(parameterInfo[idx])) {
+					auto str = llvmMDStringToStringView(parameterInfo[idx]);
+
+					if (str == "air.location_index") {
+						infoIdx = idx;
+					} else if (str == "air.sample") {
+						accessType = TextureAccessType::Sample;
+					} else if (str == "air.arg_type_name") {
+						argTypeIdx = idx;
+					}
+				}
+			}
+
+			if (infoIdx >= parameterInfo.size()) {
+				// weird, location index info not found
+				std::runtime_error("Failed to find location index info for buffer");
+			}
+
+			if (argTypeIdx >= parameterInfo.size()) {
+				std::runtime_error("Failed to find arg type info for buffer");
+			}
+
+			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			auto argType = llvmMDStringToStringView(parameterInfo[argTypeIdx + 1]);
+			auto firstAngle = argType.find('<');
+			auto lastAngle = argType.find('>');
+			auto comma = argType.find(',');
+			auto notWhitespace = argType.find_first_not_of(" ", comma + 1);
+
+			std::string_view textureClassName(argType.data(), firstAngle);
+			std::string_view sampleTypeName(argType.data() + (firstAngle + 1), comma - (firstAngle + 1));
+			std::string_view accessTypeName(argType.data() + notWhitespace, lastAngle - notWhitespace);
+
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType });
+
+			SPIRV::ResultID fakeSampleType = SPIRV::ResultIDInvalid;
+			SPIRV::ResultID realSampleType = SPIRV::ResultIDInvalid;
+			SPIRV::Dim dimensionality;
+
+			// TODO: find a better way to do this than just matching different strings
+			if (sampleTypeName == "half") {
+				// WORKAROUND: Vulkan doesn't support 16-bit samplers. not sure why the hell it doesn't when most every other graphics
+				//             API does, but it doesn't. so, we work around this by sampling as a 32-bit float and converting to a 16-bit one.
+				fakeSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
+				realSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
+			}
+
+			// TODO: same here (find a better way...)
+			if (textureClassName == "texture2d") {
+				dimensionality = SPIRV::Dim::e2D;
+			}
+
+			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, false, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
+			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
+			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
+			//auto load = builder.encodeLoad(imageType, var);
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(var);
+
+			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(var, imagePtrType);
+
+			++internalBindingIndex;
+		}
+	}
+
+	// TODO: samplers can also be passed in as parameters, but i have not seen an example of this yet (but it's trivial to do so).
+	//
+	// find global sampler variables
+	//
+	// unlike Vulkan/SPIR-V, Metal allows you to declare/define samplers within the shader itself. fortunately for us, any such samplers
+	// must be constexprs; when compiled, they're saved as global constants and referenced by an "air.sampler_states" metadata node.
+	// this means we can find them, extract their values, and push this to the output info for Indium to pass to Vulkan.
+	if (auto samplerStatesMD = LLVMGetNamedMetadata(_module.get(), "air.sampler_states", sizeof("air.sampler_states") - 1)) {
+		// get the operands
+		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.sampler_states"));
+		LLVMGetNamedMetadataOperands(_module.get(), "air.sampler_states", operands.data());
+
+		// each operand contains "air.sampler_state" followed by a reference to a sampler state
+		for (const auto& operand: operands) {
+			std::vector<LLVMValueRef> suboperands(LLVMGetMDNodeNumOperands(operand));
+			LLVMGetMDNodeOperands(operand, suboperands.data());
+
+			auto init = LLVMGetInitializer(suboperands[1]);
+			auto val = LLVMConstIntGetZExtValue(init);
+
+			// bit positions of each state component (excluding the end point):
+			//   S address mode = [0, 3]
+			//   T address mode = [3, 6]
+			//   R address mode = [6, 9]
+			//   magnification filter = [9, 11]
+			//   minification filter = [11, 13]
+			//   mipmap filter = [13, 15]
+			//   uses normalized coords = [15, 16]
+			//   compare function = [16, 20]
+			//   anisotropy level = [20, 24]
+			//   LOD minimum = [24, 40]
+			//   LOD maximum = [40, 56]
+			//   border color = [56, 58]
+
+			uint8_t sAddrMode = val & 0x07;
+			uint8_t tAddrMode = (val >> 3) & 0x07;
+			uint8_t rAddrMode = (val >> 6) & 0x07;
+			uint8_t magFilter = (val >> 9) & 0x03;
+			uint8_t minFilter = (val >> 11) & 0x03;
+			uint8_t mipmapFilter = (val >> 13) & 0x03;
+			bool usesNormalizedCoords = (val & (1ull << 15)) == 0; // if bit 15 is 0, normalized coords are used; if it's 1, unnormalized coords are used
+			uint8_t compareFunction = (val >> 16) & 0x0f;
+			uint8_t anisotropyLevel = ((val >> 20) & 0x0f) + 1;
+			uint8_t borderColor = (val >> 56) & 0x03;
+
+			// the LOD values are actually floats that have been truncated to half-floats and then bitcast to uint16s,
+			// so we need to do a little conversion to get them back as a floats
+			uint16_t lodMinU16 = (val >> 24) & 0xffff;
+			uint16_t lodMaxU16 = (val >> 40) & 0xffff;
+
+			_Float16 lodMinHalf;
+			_Float16 lodMaxHalf;
+
+			// technically UB, but it's fine
+			memcpy(&lodMinHalf, &lodMinU16, sizeof(lodMinHalf));
+			memcpy(&lodMaxHalf, &lodMaxU16, sizeof(lodMaxHalf));
+
+			float lodMin = lodMinHalf;
+			float lodMax = lodMaxHalf;
+
+			auto embeddedSamplerIndex = funcInfo.embeddedSamplers.size();
+			funcInfo.embeddedSamplers.push_back(EmbeddedSampler {
+				static_cast<EmbeddedSampler::AddressMode>(sAddrMode),
+				static_cast<EmbeddedSampler::AddressMode>(tAddrMode),
+				static_cast<EmbeddedSampler::AddressMode>(rAddrMode),
+				static_cast<EmbeddedSampler::Filter>(magFilter),
+				static_cast<EmbeddedSampler::Filter>(minFilter),
+				static_cast<EmbeddedSampler::MipFilter>(mipmapFilter),
+				usesNormalizedCoords,
+				static_cast<EmbeddedSampler::CompareFunction>(compareFunction),
+				anisotropyLevel,
+				static_cast<EmbeddedSampler::BorderColor>(borderColor),
+				lodMin,
+				lodMax,
+			});
+
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, SIZE_MAX, internalBindingIndex, /* ignored: */ TextureAccessType::Read, embeddedSamplerIndex });
+
+			auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
+			auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
+			auto var = builder.addGlobalVariable(samplerPtrType, SPIRV::StorageClass::UniformConstant);
+			//auto load = builder.encodeLoad(samplerType, var);
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(var);
+
+			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(suboperands[1]));
+			builder.setResultType(var, samplerPtrType);
+
+			++internalBindingIndex;
 		}
 	}
 
@@ -549,7 +780,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto origType = *builder.reverseLookupType(origTypeID);
 					type.pointerStorageClass = origType.pointerStorageClass;
 					auto resultType = builder.declareType(type);
-					auto origTypeTarget = *builder.reverseLookupType(origType.pointerVectorMatrixArrayTargetType);
+					auto origTypeTarget = *builder.reverseLookupType(origType.targetType);
 
 					// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
 					// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
@@ -582,7 +813,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 					auto op = llvmValueToResultID(builder, ptr);
 					auto opType = *builder.reverseLookupType(builder.lookupResultType(op));
-					auto opDerefType = *builder.reverseLookupType(opType.pointerVectorMatrixArrayTargetType);
+					auto opDerefType = *builder.reverseLookupType(opType.targetType);
 
 					if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
 						// requires an additional index
@@ -617,6 +848,51 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
+					} else if (name == "air.sample_texture_2d.v4f16") {
+						auto textureArg = LLVMGetOperand(inst, 0);
+						auto samplerArg = LLVMGetOperand(inst, 1);
+						auto textureCoordArg = LLVMGetOperand(inst, 2);
+						auto someBooleanArgTODO = LLVMGetOperand(inst, 3);
+						auto offsetArg = LLVMGetOperand(inst, 4);
+						auto someOtherBooleanArgTODO = LLVMGetOperand(inst, 5);
+						auto someFloatArgTODO = LLVMGetOperand(inst, 6);
+						auto someOtherFloatArgTODO = LLVMGetOperand(inst, 6);
+						auto someI32ArgTODO = LLVMGetOperand(inst, 7);
+
+						auto textureArgID = llvmValueToResultID(builder, textureArg);
+						auto samplerArgID = llvmValueToResultID(builder, samplerArg);
+
+						auto texturePtrType = builder.lookupResultType(textureArgID);
+						auto textureType = builder.reverseLookupType(texturePtrType)->targetType;
+						auto textureLoad = builder.encodeLoad(textureType, textureArgID);
+
+						auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
+						auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
+#if 1
+						auto samplerLoad = builder.encodeLoad(samplerType, samplerArgID);
+#else
+						auto samplerArgCast = builder.encodeBitcast(samplerPtrType, samplerArgID);
+						auto samplerLoad = builder.encodeLoad(samplerType, samplerArgCast);
+#endif
+
+						auto sampledImageType = builder.declareType(SPIRV::Type(SPIRV::Type::SampledImageTag {}, textureType));
+						auto sampledImage = builder.encodeSampledImage(sampledImageType, textureLoad, samplerLoad);
+
+						// WORKAROUND: as explained before, we use 32-bit floats in place of 16-bit floats for image sampling.
+						auto textureSampleComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
+						auto textureSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, textureSampleComponentType, 16, 8));
+						auto sampled = builder.encodeImageSampleImplicitLod(textureSampleType, sampledImage, llvmValueToResultID(builder, textureCoordArg));
+
+						auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
+						auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType, 8, 8));
+						auto converted = builder.encodeFConvert(convertedType, sampled);
+
+						auto partialResult = builder.encodeCompositeInsert(type, converted, builder.declareUndefinedValue(type), { 0 });
+						resID = builder.encodeCompositeInsert(type, builder.declareConstantScalar<int8_t>(0), partialResult, { 1 });
+					} else if (name == "air.convert.f.v4f32.f.v4f16") {
+						auto arg = LLVMGetOperand(inst, 0);
+
+						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
 					} else {
 						throw std::runtime_error("TODO: support actual function calls");
 					}
@@ -678,6 +954,20 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					std::vector<uint32_t> indices(llindices, llindices + LLVMGetNumIndices(inst));
 
 					auto resID = builder.encodeCompositeInsert(type, llvmValueToResultID(builder, part), llvmValueToResultID(builder, composite), indices);
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMExtractValue: {
+					auto composite = LLVMGetOperand(inst, 0);
+					auto targetType = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, targetType);
+
+					auto llindices = LLVMGetIndices(inst);
+					std::vector<uint32_t> indices(llindices, llindices + LLVMGetNumIndices(inst));
+
+					auto resID = builder.encodeCompositeExtract(type, llvmValueToResultID(builder, composite), indices);
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);

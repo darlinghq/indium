@@ -110,6 +110,61 @@ namespace Iridium {
 			std::vector<ResultID> referencedGlobalVariables;
 		};
 
+		enum class Dim: uint32_t {
+			e1D = 0,
+			e2D,
+			e3D,
+			eCube,
+			eRect,
+			eBuffer,
+			eSubpassData,
+		};
+
+		enum class ImageFormat: uint32_t {
+			Unknown = 0,
+			Rgba32f,
+			Rgba16f,
+			R32f,
+			Rgba8,
+			Rgba8Snorm,
+			Rg32f,
+			Rg16f,
+			R11fG11fB10f,
+			R16f,
+			Rgba16,
+			Rgb10A2,
+			Rg16,
+			Rg8,
+			R16,
+			R8,
+			Rgba16Snorm,
+			Rg16Snorm,
+			Rg8Snorm,
+			R16Snorm,
+			R8Snorm,
+			Rgba32i,
+			Rgba16i,
+			Rgba8i,
+			R32i,
+			Rg32i,
+			Rg16i,
+			Rg8i,
+			R16i,
+			R8i,
+			Rgba32ui,
+			Rgba16ui,
+			Rgba8ui,
+			R32ui,
+			Rgb10a2ui,
+			Rg32ui,
+			Rg16ui,
+			Rg8ui,
+			R16ui,
+			R8ui,
+			R64ui,
+			R64i,
+		};
+
 		struct Type {
 			// not an enum class on purpose
 			enum class BackingType {
@@ -123,6 +178,9 @@ namespace Iridium {
 				Function,
 				Pointer,
 				RuntimeArray,
+				Image,
+				Sampler,
+				SampledImage,
 			};
 
 			struct VoidTag {};
@@ -135,6 +193,9 @@ namespace Iridium {
 			struct FunctionTag {};
 			struct PointerTag {};
 			struct RuntimeArrayTag {};
+			struct ImageTag {};
+			struct SamplerTag {};
+			struct SampledImageTag {};
 
 			struct Member;
 
@@ -152,10 +213,19 @@ namespace Iridium {
 
 			StorageClass pointerStorageClass = StorageClass::UniformConstant;
 
-			ResultID pointerVectorMatrixArrayTargetType = ResultIDInvalid;
+			// used by pointer, vector, matrix, array, image, and sampled image
+			ResultID targetType = ResultIDInvalid;
 
 			ResultID functionReturnType = ResultIDInvalid;
 			std::vector<ResultID> functionParameterTypes;
+
+			Dim imageDimensionality = Dim::e1D;
+			uint8_t imageDepthIndication = 2;
+			bool imageIsArrayed = false;
+			bool imageIsMultisampled = false;
+			uint8_t imageIsSampledIndication = 0;
+			ImageFormat imageFormat = ImageFormat::Unknown;
+			ResultID imageRealSampleTypeID = ResultIDInvalid;
 
 			Type() {};
 			explicit Type(const VoidTag&):
@@ -186,14 +256,14 @@ namespace Iridium {
 			explicit Type(const VectorTag&, size_t componentCount, ResultID componentType, size_t totalSize, size_t vectorAlignment):
 				backingType(BackingType::Vector),
 				vectorMatrixEntryCount(componentCount),
-				pointerVectorMatrixArrayTargetType(componentType),
+				targetType(componentType),
 				size(totalSize),
 				alignment(vectorAlignment)
 				{};
 			explicit Type(const MatrixTag&, size_t columnCount, ResultID entryType, size_t totalSize, size_t matrixAlignment):
 				backingType(BackingType::Matrix),
 				vectorMatrixEntryCount(columnCount),
-				pointerVectorMatrixArrayTargetType(entryType),
+				targetType(entryType),
 				size(totalSize),
 				alignment(matrixAlignment)
 				{};
@@ -207,15 +277,33 @@ namespace Iridium {
 			explicit Type(const PointerTag&, StorageClass storageClass, ResultID targetType, size_t pointerSize):
 				backingType(BackingType::Pointer),
 				pointerStorageClass(storageClass),
-				pointerVectorMatrixArrayTargetType(targetType),
+				targetType(targetType),
 				size(pointerSize),
 				alignment(pointerSize)
 				{};
 			explicit Type(const RuntimeArrayTag&, ResultID elementType, size_t elementSize, size_t arrayAlignment):
 				backingType(BackingType::RuntimeArray),
-				pointerVectorMatrixArrayTargetType(elementType),
+				targetType(elementType),
 				size(elementSize),
 				alignment(arrayAlignment)
+				{};
+			explicit Type(const ImageTag&, ResultID fakeSampleType, ResultID realSampleType, Dim dimensionality, uint8_t depthIndication, bool isArrayed, bool isMultisampled, uint8_t isSampledIndication, ImageFormat format):
+				backingType(BackingType::Image),
+				targetType(fakeSampleType),
+				imageDimensionality(dimensionality),
+				imageDepthIndication(depthIndication),
+				imageIsArrayed(isArrayed),
+				imageIsMultisampled(isMultisampled),
+				imageIsSampledIndication(isSampledIndication),
+				imageFormat(format),
+				imageRealSampleTypeID(realSampleType)
+				{};
+			explicit Type(const SamplerTag&):
+				backingType(BackingType::Sampler)
+				{};
+			explicit Type(const SampledImageTag&, ResultID sampledImageType):
+				backingType(BackingType::SampledImage),
+				targetType(sampledImageType)
 				{};
 
 			bool operator==(const Type& other) const;
@@ -253,11 +341,18 @@ struct std::hash<Iridium::SPIRV::Type> {
 			}
 		}
 		result = ((result << 1) ^ std::hash<uint32_t>()(static_cast<uint32_t>(type.pointerStorageClass))) >> 1;
-		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.pointerVectorMatrixArrayTargetType)) >> 1;
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.targetType)) >> 1;
 		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.functionReturnType)) >> 1;
 		for (const auto& param: type.functionParameterTypes) {
 			result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(param)) >> 1;
 		}
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::Dim>()(type.imageDimensionality)) >> 1;
+		result = ((result << 1) ^ std::hash<uint8_t>()(type.imageDepthIndication)) >> 1;
+		result = ((result << 1) ^ std::hash<bool>()(type.imageIsArrayed)) >> 1;
+		result = ((result << 1) ^ std::hash<bool>()(type.imageIsMultisampled)) >> 1;
+		result = ((result << 1) ^ std::hash<uint8_t>()(type.imageIsSampledIndication)) >> 1;
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ImageFormat>()(type.imageFormat)) >> 1;
+		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.imageRealSampleTypeID)) >> 1;
 		return result;
 	};
 };
@@ -333,10 +428,14 @@ namespace Iridium {
 			VectorShuffle = 79,
 			CompositeExtract = 81,
 			CompositeInsert = 82,
+			SampledImage = 86,
+			ImageSampleImplicitLod = 87,
 			ConvertUToF = 112,
 			UConvert = 113,
+			FConvert = 115,
 			ConvertPtrToU = 117,
 			ConvertUToPtr = 120,
+			Bitcast = 124,
 			IAdd = 128,
 			IMul = 132,
 			FMul = 133,
@@ -456,12 +555,20 @@ namespace Iridium {
 			ResultID encodeConvertUToPtr(ResultID resultTypeID, ResultID target);
 			ResultID encodeIAdd(ResultID resultTypeID, ResultID operand1, ResultID operand2);
 			ResultID encodeIMul(ResultID resultTypeID, ResultID operand1, ResultID operand2);
+			ResultID encodeBitcast(ResultID resultTypeID, ResultID operand);
+			ResultID encodeSampledImage(ResultID resultTypeID, ResultID image, ResultID sampler);
+			ResultID encodeImageSampleImplicitLod(ResultID resultTypeID, ResultID sampledImage, ResultID coordinates);
+			ResultID encodeFConvert(ResultID resultTypeID, ResultID target);
 
 			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 
 			void* finalize(size_t& outputSize);
 		};
 
+		template<> ResultID Builder::declareConstantScalar<uint8_t>(uint8_t value);
+		template<> ResultID Builder::declareConstantScalar<int8_t>(int8_t value);
+		template<> ResultID Builder::declareConstantScalar<uint16_t>(uint16_t value);
+		template<> ResultID Builder::declareConstantScalar<int16_t>(int16_t value);
 		template<> ResultID Builder::declareConstantScalar<uint32_t>(uint32_t value);
 		template<> ResultID Builder::declareConstantScalar<int32_t>(int32_t value);
 		template<> ResultID Builder::declareConstantScalar<uint64_t>(uint64_t value);

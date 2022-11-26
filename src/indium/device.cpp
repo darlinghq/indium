@@ -4,6 +4,8 @@
 #include <indium/render-pipeline.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/library.private.hpp>
+#include <indium/sampler.private.hpp>
+#include <indium/texture.private.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -206,6 +208,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 
 	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+		VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
 	};
 	std::vector<const char*> extensions(extensionSet.begin(), extensionSet.end());
 
@@ -264,6 +267,17 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	_eventLoopSemaphores.push_back(wakeupSemaphore);
 	_eventLoopWaitValues.push_back(1);
 	_eventLoopCallbacks.push_back(nullptr);
+
+	if (_graphicsQueueFamilyIndex || _computeQueueFamilyIndex) {
+		VkCommandPoolCreateInfo createInfo {};
+		createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		createInfo.queueFamilyIndex = _graphicsQueueFamilyIndex ? *_graphicsQueueFamilyIndex : *_computeQueueFamilyIndex;
+
+		if (vkCreateCommandPool(_device, &createInfo, nullptr, &_oneshotCommandPool) != VK_SUCCESS) {
+			// TODO
+			abort();
+		}
+	}
 };
 
 Indium::PrivateDevice::~PrivateDevice() {
@@ -310,25 +324,21 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 				break;
 		}
 
-		funcInfo.bindings.resize(info.bindings.size());
-
-		for (size_t i = 0; i < info.bindings.size(); ++i) {
-			const auto& bindingInfo = info.bindings[i];
-			auto& funcBindingInfo = funcInfo.bindings[i];
-
-			switch (bindingInfo.type) {
-				case Iridium::BindingType::Buffer:
-					funcBindingInfo.type = BindingType::Buffer;
-					break;
-			}
-
-			funcBindingInfo.index = bindingInfo.index;
-		}
+		funcInfo.bindings.insert(funcInfo.bindings.end(), info.bindings.begin(), info.bindings.end());
+		funcInfo.embeddedSamplers.insert(funcInfo.embeddedSamplers.end(), info.embeddedSamplers.begin(), info.embeddedSamplers.end());
 	}
 
 	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, funcInfoMap);
 	free(translatedData);
 	return lib;
+};
+
+std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const TextureDescriptor& descriptor) {
+	return std::make_shared<ConcreteTexture>(shared_from_this(), descriptor);
+};
+
+std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::newSamplerState(const SamplerDescriptor& descriptor) {
+	return std::make_shared<PrivateSamplerState>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {

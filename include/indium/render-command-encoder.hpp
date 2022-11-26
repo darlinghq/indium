@@ -9,6 +9,8 @@
 namespace Indium {
 	class RenderPassDescriptor;
 	class CommandBuffer;
+	class Buffer;
+	class Texture;
 
 	class RenderCommandEncoder: public CommandEncoder {
 	public:
@@ -30,5 +32,7 @@ namespace Indium {
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount) = 0;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount) = 0;
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) = 0;
+		virtual void setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) = 0;
+		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) = 0;
 	};
 };

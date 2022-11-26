@@ -107,6 +107,14 @@ void IndiumKit::PrivateDrawable::present() {
 	}
 };
 
+void IndiumKit::PrivateDrawable::replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) {
+	throw std::runtime_error("Cannot use replaceRegion on IndiumKit::Drawable");
+};
+
+void IndiumKit::PrivateDrawable::replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	throw std::runtime_error("Cannot use replaceRegion on IndiumKit::Drawable");
+};
+
 std::shared_ptr<IndiumKit::Layer> IndiumKit::Layer::make(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight) {
 	return std::make_shared<PrivateLayer>(surface, device, framebufferWidth, framebufferHeight);
 };
