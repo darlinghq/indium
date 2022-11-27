@@ -129,6 +129,13 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			return builder.declareType(Type(Type::VectorTag {}, elmCount, type, typeInst.size * elmCount, ((elmCount == 3 || elmCount == 4) ? 4 : 2) * typeInst.alignment));
 		} break;
 
+		case LLVMArrayTypeKind: {
+			auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(llvmType));
+			auto typeInst = *builder.reverseLookupType(type);
+			auto elmCount = LLVMGetArrayLength(llvmType);
+			return builder.declareType(Type(Type::ArrayTag {}, type, elmCount, typeInst.size * elmCount, typeInst.alignment));
+		} break;
+
 		default:
 			return ResultIDInvalid;
 	}
@@ -788,8 +795,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
 					auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
 					auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
-					auto mul = builder.encodeIMul(uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
-					auto added = builder.encodeIAdd(uint64Type, asInteger, mul);
+					auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
+					auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
 					auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
 
 					indices.erase(indices.begin());
@@ -889,7 +896,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 						auto partialResult = builder.encodeCompositeInsert(type, converted, builder.declareUndefinedValue(type), { 0 });
 						resID = builder.encodeCompositeInsert(type, builder.declareConstantScalar<int8_t>(0), partialResult, { 1 });
-					} else if (name == "air.convert.f.v4f32.f.v4f16") {
+					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
@@ -901,25 +908,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
-				case LLVMFMul: {
+				case LLVMFMul:
+				case LLVMFDiv:
+				case LLVMFAdd: {
 					auto op1 = LLVMGetOperand(inst, 0);
 					auto op2 = LLVMGetOperand(inst, 1);
 					auto targetType = LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
+					SPIRV::Opcode binop;
 
-					auto resID = builder.encodeFMul(type, llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
+					switch (opcode) {
+						case LLVMFMul: binop = SPIRV::Opcode::FMul; break;
+						case LLVMFDiv: binop = SPIRV::Opcode::FDiv; break;
+						case LLVMFAdd: binop = SPIRV::Opcode::FAdd; break;
+						default:
+							break;
+					}
 
-					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
-					builder.setResultType(resID, type);
-				} break;
-
-				case LLVMFDiv: {
-					auto op1 = LLVMGetOperand(inst, 0);
-					auto op2 = LLVMGetOperand(inst, 1);
-					auto targetType = LLVMTypeOf(inst);
-					auto type = llvmTypeToSPIRVType(builder, targetType);
-
-					auto resID = builder.encodeFDiv(type, llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
+					auto resID = builder.encodeArithBinop(binop, type, llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);

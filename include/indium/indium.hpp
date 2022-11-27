@@ -6,6 +6,7 @@
 #include <indium/command-buffer.hpp>
 #include <indium/command-encoder.hpp>
 #include <indium/command-queue.hpp>
+#include <indium/depth-stencil.hpp>
 #include <indium/device.hpp>
 #include <indium/drawable.hpp>
 #include <indium/init.hpp>
@@ -16,6 +17,8 @@
 #include <indium/render-command-encoder.hpp>
 #include <indium/render-pass.hpp>
 #include <indium/render-pipeline.hpp>
+#include <indium/resource.hpp>
+#include <indium/sampler.hpp>
 #include <indium/texture.hpp>
 #include <indium/types.hpp>
 #include <indium/vertex-descriptor.hpp>

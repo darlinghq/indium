@@ -181,6 +181,7 @@ namespace Iridium {
 				Image,
 				Sampler,
 				SampledImage,
+				Array,
 			};
 
 			struct VoidTag {};
@@ -196,6 +197,7 @@ namespace Iridium {
 			struct ImageTag {};
 			struct SamplerTag {};
 			struct SampledImageTag {};
+			struct ArrayTag {};
 
 			struct Member;
 
@@ -205,7 +207,8 @@ namespace Iridium {
 
 			bool integerIsSigned = false;
 
-			size_t vectorMatrixEntryCount = 0;
+			// used by vector, matrix, array
+			size_t entryCount = 0;
 			size_t size = 0;
 			size_t alignment = 1;
 
@@ -226,6 +229,9 @@ namespace Iridium {
 			uint8_t imageIsSampledIndication = 0;
 			ImageFormat imageFormat = ImageFormat::Unknown;
 			ResultID imageRealSampleTypeID = ResultIDInvalid;
+
+			// this does NOT need to be considered for equality
+			ResultID arrayLengthID = ResultIDInvalid;
 
 			Type() {};
 			explicit Type(const VoidTag&):
@@ -255,14 +261,14 @@ namespace Iridium {
 				{};
 			explicit Type(const VectorTag&, size_t componentCount, ResultID componentType, size_t totalSize, size_t vectorAlignment):
 				backingType(BackingType::Vector),
-				vectorMatrixEntryCount(componentCount),
+				entryCount(componentCount),
 				targetType(componentType),
 				size(totalSize),
 				alignment(vectorAlignment)
 				{};
 			explicit Type(const MatrixTag&, size_t columnCount, ResultID entryType, size_t totalSize, size_t matrixAlignment):
 				backingType(BackingType::Matrix),
-				vectorMatrixEntryCount(columnCount),
+				entryCount(columnCount),
 				targetType(entryType),
 				size(totalSize),
 				alignment(matrixAlignment)
@@ -284,7 +290,7 @@ namespace Iridium {
 			explicit Type(const RuntimeArrayTag&, ResultID elementType, size_t elementSize, size_t arrayAlignment):
 				backingType(BackingType::RuntimeArray),
 				targetType(elementType),
-				size(elementSize),
+				size(0),
 				alignment(arrayAlignment)
 				{};
 			explicit Type(const ImageTag&, ResultID fakeSampleType, ResultID realSampleType, Dim dimensionality, uint8_t depthIndication, bool isArrayed, bool isMultisampled, uint8_t isSampledIndication, ImageFormat format):
@@ -304,6 +310,13 @@ namespace Iridium {
 			explicit Type(const SampledImageTag&, ResultID sampledImageType):
 				backingType(BackingType::SampledImage),
 				targetType(sampledImageType)
+				{};
+			explicit Type(const ArrayTag&, ResultID elementType, size_t elementCount, size_t totalSize, size_t arrayAlignment):
+				backingType(BackingType::Array),
+				targetType(elementType),
+				entryCount(elementCount),
+				size(totalSize),
+				alignment(arrayAlignment)
 				{};
 
 			bool operator==(const Type& other) const;
@@ -333,7 +346,7 @@ struct std::hash<Iridium::SPIRV::Type> {
 		size_t result = std::hash<Iridium::SPIRV::Type::BackingType>()(type.backingType);
 		result = ((result << 1) ^ std::hash<size_t>()(type.scalarWidth)) >> 1;
 		result = ((result << 1) ^ std::hash<bool>()(type.integerIsSigned)) >> 1;
-		result = ((result << 1) ^ std::hash<size_t>()(type.vectorMatrixEntryCount)) >> 1;
+		result = ((result << 1) ^ std::hash<size_t>()(type.entryCount)) >> 1;
 		for (const auto& member: type.structureMembers) {
 			result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(member.id)) >> 1;
 			for (const auto& decoration: member.decorations) {
@@ -436,10 +449,22 @@ namespace Iridium {
 			ConvertPtrToU = 117,
 			ConvertUToPtr = 120,
 			Bitcast = 124,
+			SNegate = 126,
+			FNegate = 127,
 			IAdd = 128,
+			FAdd = 129,
+			ISub = 130,
+			FSub = 131,
 			IMul = 132,
 			FMul = 133,
+			UDiv = 134,
+			SDiv = 133,
 			FDiv = 136,
+			UMod = 137,
+			SRem = 138,
+			SMod = 139,
+			FRem = 140,
+			FMod = 141,
 			Label = 248,
 			Return = 253,
 			ReturnValue = 254,
@@ -545,16 +570,14 @@ namespace Iridium {
 			ResultID encodeLoad(ResultID resultTypeID, ResultID pointer, uint8_t alignment = 0);
 			void encodeStore(ResultID pointer, ResultID object);
 			ResultID encodeConvertUToF(ResultID resultTypeID, ResultID operand);
-			ResultID encodeFMul(ResultID resultTypeID, ResultID operand1, ResultID operand2);
-			ResultID encodeFDiv(ResultID resultTypeID, ResultID operand1, ResultID operand2);
+			ResultID encodeArithUnop(Opcode unop, ResultID resultTypeID, ResultID operand);
+			ResultID encodeArithBinop(Opcode binop, ResultID resultTypeID, ResultID operand1, ResultID operand2);
 			ResultID encodeVectorShuffle(ResultID resultTypeID, ResultID vector1, ResultID vector2, std::vector<uint32_t> components);
 			ResultID encodeCompositeInsert(ResultID resultTypeID, ResultID modifiedPart, ResultID compositeToCopyAndModify, std::vector<uint32_t> indices);
 			ResultID encodeCompositeExtract(ResultID resultTypeID, ResultID composite, std::vector<uint32_t> indices);
 			void encodeReturn(ResultID value = ResultIDInvalid);
 			ResultID encodeConvertPtrToU(ResultID resultTypeID, ResultID target);
 			ResultID encodeConvertUToPtr(ResultID resultTypeID, ResultID target);
-			ResultID encodeIAdd(ResultID resultTypeID, ResultID operand1, ResultID operand2);
-			ResultID encodeIMul(ResultID resultTypeID, ResultID operand1, ResultID operand2);
 			ResultID encodeBitcast(ResultID resultTypeID, ResultID operand);
 			ResultID encodeSampledImage(ResultID resultTypeID, ResultID image, ResultID sampler);
 			ResultID encodeImageSampleImplicitLod(ResultID resultTypeID, ResultID sampledImage, ResultID coordinates);

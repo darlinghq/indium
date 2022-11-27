@@ -6,6 +6,7 @@
 #include <indium/library.private.hpp>
 #include <indium/sampler.private.hpp>
 #include <indium/texture.private.hpp>
+#include <indium/depth-stencil.private.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -339,6 +340,10 @@ std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const Texture
 
 std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::newSamplerState(const SamplerDescriptor& descriptor) {
 	return std::make_shared<PrivateSamplerState>(shared_from_this(), descriptor);
+};
+
+std::shared_ptr<Indium::DepthStencilState> Indium::PrivateDevice::newDepthStencilState(const DepthStencilDescriptor& descriptor) {
+	return std::make_shared<PrivateDepthStencilState>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {

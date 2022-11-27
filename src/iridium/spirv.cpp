@@ -19,7 +19,7 @@ bool Iridium::SPIRV::Type::operator==(const Type& other) const {
 		backingType != other.backingType ||
 		scalarWidth != other.scalarWidth ||
 		integerIsSigned != other.integerIsSigned ||
-		vectorMatrixEntryCount != other.vectorMatrixEntryCount ||
+		entryCount != other.entryCount ||
 		structureMembers.size() != other.structureMembers.size() ||
 		pointerStorageClass != other.pointerStorageClass ||
 		targetType != other.targetType ||
@@ -104,26 +104,33 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareType(const Type& type) 
 		return it->second;
 	}
 
+	Type typeCopy = type;
+
+	if (typeCopy.backingType == Type::BackingType::Array) {
+		declareType(Type(Type::IntegerTag {}, 32, false));
+		typeCopy.arrayLengthID = reserveResultID();
+	}
+
 	ResultID id = _currentResultID;
 
-	auto [it2, inserted] = _typeIDs.try_emplace(type, id);
+	auto [it2, inserted] = _typeIDs.try_emplace(typeCopy, id);
 	_reverseTypeIDs.try_emplace(id, &it2->first);
 	++_currentResultID;
 
-	if (type.backingType == Type::BackingType::Matrix) {
+	if (typeCopy.backingType == Type::BackingType::Matrix) {
 		_requiredCapabilities.insert(Capability::Matrix);
-	} else if (type.backingType == Type::BackingType::FloatingPoint) {
-		if (type.scalarWidth < 32) {
+	} else if (typeCopy.backingType == Type::BackingType::FloatingPoint) {
+		if (typeCopy.scalarWidth < 32) {
 			_requiredCapabilities.insert(Capability::Float16);
-		} else if (type.scalarWidth > 32) {
+		} else if (typeCopy.scalarWidth > 32) {
 			_requiredCapabilities.insert(Capability::Float64);
 		}
-	} else if (type.backingType == Type::BackingType::Integer) {
-		if (type.scalarWidth < 16) {
+	} else if (typeCopy.backingType == Type::BackingType::Integer) {
+		if (typeCopy.scalarWidth < 16) {
 			_requiredCapabilities.insert(Capability::Int8);
-		} else if (type.scalarWidth < 32) {
+		} else if (typeCopy.scalarWidth < 32) {
 			_requiredCapabilities.insert(Capability::Int16);
-		} else if (type.scalarWidth > 32) {
+		} else if (typeCopy.scalarWidth > 32) {
 			_requiredCapabilities.insert(Capability::Int64);
 		}
 	}
@@ -278,13 +285,16 @@ void Iridium::SPIRV::Builder::endFunction() {
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords) {
-	auto it = _constantScalars.find(std::make_pair(value, typeID));
+	auto key = std::make_pair(value, typeID);
+	auto it = _constantScalars.find(key);
 
 	if (it != _constantScalars.end()) {
 		return it->second;
 	}
 
 	auto id = reserveResultID();
+
+	_constantScalars.emplace(key, id);
 
 	auto tmp = beginInstruction(Opcode::Constant, _constants);
 	_constants.writeIntegerLE<uint32_t>(typeID);
@@ -442,20 +452,19 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeConvertUToF(ResultID res
 	return result;
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFMul(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeArithUnop(Opcode unop, ResultID resultTypeID, ResultID operand) {
 	auto result = reserveResultID();
-	auto tmp = beginInstruction(Opcode::FMul, *_currentFunctionWriter);
+	auto tmp = beginInstruction(unop, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
 	endInstruction(std::move(tmp));
 	return result;
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFDiv(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeArithBinop(Opcode binop, ResultID resultTypeID, ResultID operand1, ResultID operand2) {
 	auto result = reserveResultID();
-	auto tmp = beginInstruction(Opcode::FDiv, *_currentFunctionWriter);
+	auto tmp = beginInstruction(binop, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
@@ -529,28 +538,6 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeConvertUToPtr(ResultID r
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
-	endInstruction(std::move(tmp));
-	return result;
-};
-
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeIAdd(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
-	auto result = reserveResultID();
-	auto tmp = beginInstruction(Opcode::IAdd, *_currentFunctionWriter);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
-	endInstruction(std::move(tmp));
-	return result;
-};
-
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeIMul(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
-	auto result = reserveResultID();
-	auto tmp = beginInstruction(Opcode::IMul, *_currentFunctionWriter);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
 	endInstruction(std::move(tmp));
 	return result;
 };
@@ -744,11 +731,12 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 
 	// now emit automatic type decorations
 	for (const auto& [type, id]: _typeIDs) {
-		if (type.backingType == Type::BackingType::RuntimeArray) {
+		if (type.backingType == Type::BackingType::RuntimeArray || type.backingType == Type::BackingType::Array) {
+			auto elmTypeInst = _reverseTypeIDs[type.targetType];
 			tmp = beginInstruction(Opcode::Decorate, _writer);
 			_writer.writeIntegerLE<uint32_t>(id);
 			_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(DecorationType::ArrayStride));
-			_writer.writeIntegerLE<uint32_t>(type.size);
+			_writer.writeIntegerLE<uint32_t>(elmTypeInst->size);
 			endInstruction(std::move(tmp));
 		}
 	}
@@ -776,6 +764,11 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 					emitType(*reverseLookupType(member.id), member.id);
 				}
 				break;
+
+			case Type::BackingType::Array: {
+				auto intTypeInst = Type(Type::IntegerTag {}, 32, false);
+				emitType(intTypeInst, lookupType(intTypeInst));
+			} /* fallthrough */
 
 			case Type::BackingType::Pointer: /* fallthrough */
 			case Type::BackingType::Vector: /* fallthrough */
@@ -834,14 +827,14 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 				tmp = beginInstruction(Opcode::TypeVector, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
 				_writer.writeIntegerLE<uint32_t>(type.targetType);
-				_writer.writeIntegerLE<uint32_t>(type.vectorMatrixEntryCount);
+				_writer.writeIntegerLE<uint32_t>(type.entryCount);
 				endInstruction(std::move(tmp));
 				break;
 			case Type::BackingType::Matrix:
 				tmp = beginInstruction(Opcode::TypeMatrix, _writer);
 				_writer.writeIntegerLE<uint32_t>(id);
 				_writer.writeIntegerLE<uint32_t>(type.targetType);
-				_writer.writeIntegerLE<uint32_t>(type.vectorMatrixEntryCount);
+				_writer.writeIntegerLE<uint32_t>(type.entryCount);
 				endInstruction(std::move(tmp));
 				break;
 			case Type::BackingType::Function:
@@ -889,6 +882,20 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 				_writer.writeIntegerLE<uint32_t>(type.targetType);
 				endInstruction(std::move(tmp));
 				break;
+			case Type::BackingType::Array: {
+				auto intTypeInst = Type(Type::IntegerTag {}, 32, false);
+				auto intType = lookupType(intTypeInst);
+				tmp = beginInstruction(Opcode::Constant, _writer);
+				_writer.writeIntegerLE<uint32_t>(intType);
+				_writer.writeIntegerLE<uint32_t>(type.arrayLengthID);
+				_writer.writeIntegerLE<uint32_t>(type.entryCount);
+				endInstruction(std::move(tmp));
+				tmp = beginInstruction(Opcode::TypeArray, _writer);
+				_writer.writeIntegerLE<uint32_t>(id);
+				_writer.writeIntegerLE<uint32_t>(type.targetType);
+				_writer.writeIntegerLE<uint32_t>(type.arrayLengthID);
+				endInstruction(std::move(tmp));
+			} break;
 			default:
 				break;
 		}

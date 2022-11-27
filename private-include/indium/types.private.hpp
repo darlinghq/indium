@@ -302,6 +302,160 @@ namespace Indium {
 		}
 	};
 
+	static constexpr VkImageAspectFlags pixelFormatToVkImageAspectFlags(PixelFormat pixelFormat) {
+		switch (pixelFormat) {
+			case PixelFormat::A8Unorm:
+			case PixelFormat::R8Unorm:
+			case PixelFormat::R8Unorm_sRGB:
+			case PixelFormat::R8Snorm:
+			case PixelFormat::R8Uint:
+			case PixelFormat::R8Sint:
+			case PixelFormat::R16Unorm:
+			case PixelFormat::R16Snorm:
+			case PixelFormat::R16Uint:
+			case PixelFormat::R16Sint:
+			case PixelFormat::R16Float:
+			case PixelFormat::RG8Unorm:
+			case PixelFormat::RG8Unorm_sRGB:
+			case PixelFormat::RG8Snorm:
+			case PixelFormat::RG8Uint:
+			case PixelFormat::RG8Sint:
+			case PixelFormat::B5G6R5Unorm:
+			case PixelFormat::A1BGR5Unorm:
+			case PixelFormat::ABGR4Unorm:
+			case PixelFormat::BGR5A1Unorm:
+			case PixelFormat::R32Uint:
+			case PixelFormat::R32Sint:
+			case PixelFormat::R32Float:
+			case PixelFormat::RG16Unorm:
+			case PixelFormat::RG16Snorm:
+			case PixelFormat::RG16Uint:
+			case PixelFormat::RG16Sint:
+			case PixelFormat::RG16Float:
+			case PixelFormat::RGBA8Unorm:
+			case PixelFormat::RGBA8Unorm_sRGB:
+			case PixelFormat::RGBA8Snorm:
+			case PixelFormat::RGBA8Uint:
+			case PixelFormat::RGBA8Sint:
+			case PixelFormat::BGRA8Unorm:
+			case PixelFormat::BGRA8Unorm_sRGB:
+			case PixelFormat::RGB10A2Unorm:
+			case PixelFormat::RGB10A2Uint:
+			case PixelFormat::RG11B10Float:
+			case PixelFormat::RGB9E5Float:
+			case PixelFormat::BGR10A2Unorm:
+			case PixelFormat::RG32Uint:
+			case PixelFormat::RG32Sint:
+			case PixelFormat::RG32Float:
+			case PixelFormat::RGBA16Unorm:
+			case PixelFormat::RGBA16Snorm:
+			case PixelFormat::RGBA16Uint:
+			case PixelFormat::RGBA16Sint:
+			case PixelFormat::RGBA16Float:
+			case PixelFormat::RGBA32Uint:
+			case PixelFormat::RGBA32Sint:
+			case PixelFormat::RGBA32Float:
+			case PixelFormat::BC1_RGBA:
+			case PixelFormat::BC1_RGBA_sRGB:
+			case PixelFormat::BC2_RGBA:
+			case PixelFormat::BC2_RGBA_sRGB:
+			case PixelFormat::BC3_RGBA:
+			case PixelFormat::BC3_RGBA_sRGB:
+			case PixelFormat::BC4_RUnorm:
+			case PixelFormat::BC4_RSnorm:
+			case PixelFormat::BC5_RGUnorm:
+			case PixelFormat::BC5_RGSnorm:
+			case PixelFormat::BC6H_RGBFloat:
+			case PixelFormat::BC6H_RGBUfloat:
+			case PixelFormat::BC7_RGBAUnorm:
+			case PixelFormat::BC7_RGBAUnorm_sRGB:
+			case PixelFormat::PVRTC_RGB_2BPP:
+			case PixelFormat::PVRTC_RGB_2BPP_sRGB:
+			case PixelFormat::PVRTC_RGB_4BPP:
+			case PixelFormat::PVRTC_RGB_4BPP_sRGB:
+			case PixelFormat::PVRTC_RGBA_2BPP:
+			case PixelFormat::PVRTC_RGBA_2BPP_sRGB:
+			case PixelFormat::PVRTC_RGBA_4BPP:
+			case PixelFormat::PVRTC_RGBA_4BPP_sRGB:
+			case PixelFormat::EAC_R11Unorm:
+			case PixelFormat::EAC_R11Snorm:
+			case PixelFormat::EAC_RG11Unorm:
+			case PixelFormat::EAC_RG11Snorm:
+			case PixelFormat::EAC_RGBA8:
+			case PixelFormat::EAC_RGBA8_sRGB:
+			case PixelFormat::ETC2_RGB8:
+			case PixelFormat::ETC2_RGB8_sRGB:
+			case PixelFormat::ETC2_RGB8A1:
+			case PixelFormat::ETC2_RGB8A1_sRGB:
+			case PixelFormat::ASTC_4x4_sRGB:
+			case PixelFormat::ASTC_5x4_sRGB:
+			case PixelFormat::ASTC_5x5_sRGB:
+			case PixelFormat::ASTC_6x5_sRGB:
+			case PixelFormat::ASTC_6x6_sRGB:
+			case PixelFormat::ASTC_8x5_sRGB:
+			case PixelFormat::ASTC_8x6_sRGB:
+			case PixelFormat::ASTC_8x8_sRGB:
+			case PixelFormat::ASTC_10x5_sRGB:
+			case PixelFormat::ASTC_10x6_sRGB:
+			case PixelFormat::ASTC_10x8_sRGB:
+			case PixelFormat::ASTC_10x10_sRGB:
+			case PixelFormat::ASTC_12x10_sRGB:
+			case PixelFormat::ASTC_12x12_sRGB:
+			case PixelFormat::ASTC_4x4_LDR:
+			case PixelFormat::ASTC_5x4_LDR:
+			case PixelFormat::ASTC_5x5_LDR:
+			case PixelFormat::ASTC_6x5_LDR:
+			case PixelFormat::ASTC_6x6_LDR:
+			case PixelFormat::ASTC_8x5_LDR:
+			case PixelFormat::ASTC_8x6_LDR:
+			case PixelFormat::ASTC_8x8_LDR:
+			case PixelFormat::ASTC_10x5_LDR:
+			case PixelFormat::ASTC_10x6_LDR:
+			case PixelFormat::ASTC_10x8_LDR:
+			case PixelFormat::ASTC_10x10_LDR:
+			case PixelFormat::ASTC_12x10_LDR:
+			case PixelFormat::ASTC_12x12_LDR:
+			case PixelFormat::ASTC_4x4_HDR:
+			case PixelFormat::ASTC_5x4_HDR:
+			case PixelFormat::ASTC_5x5_HDR:
+			case PixelFormat::ASTC_6x5_HDR:
+			case PixelFormat::ASTC_6x6_HDR:
+			case PixelFormat::ASTC_8x5_HDR:
+			case PixelFormat::ASTC_8x6_HDR:
+			case PixelFormat::ASTC_8x8_HDR:
+			case PixelFormat::ASTC_10x5_HDR:
+			case PixelFormat::ASTC_10x6_HDR:
+			case PixelFormat::ASTC_10x8_HDR:
+			case PixelFormat::ASTC_10x10_HDR:
+			case PixelFormat::ASTC_12x10_HDR:
+			case PixelFormat::ASTC_12x12_HDR:
+			case PixelFormat::GBGR422:
+			case PixelFormat::BGRG422:
+			case PixelFormat::BGRA10_XR:
+			case PixelFormat::BGRA10_XR_sRGB:
+			case PixelFormat::BGR10_XR:
+			case PixelFormat::BGR10_XR_sRGB:
+				return VK_IMAGE_ASPECT_COLOR_BIT;
+
+			case PixelFormat::Depth16Unorm:
+			case PixelFormat::Depth32Float:
+				return VK_IMAGE_ASPECT_DEPTH_BIT;
+
+			case PixelFormat::Stencil8:
+			case PixelFormat::X32_Stencil8:
+			case PixelFormat::X24_Stencil8:
+				return VK_IMAGE_ASPECT_STENCIL_BIT;
+
+			case PixelFormat::Depth24Unorm_Stencil8:
+			case PixelFormat::Depth32Float_Stencil8:
+				return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+
+			case PixelFormat::Invalid:
+			default:
+				return VK_IMAGE_ASPECT_NONE;
+		}
+	};
+
 	static constexpr VkColorComponentFlags colorWriteMaskToVkColorComponentFlags(ColorWriteMask mask) {
 		VkColorComponentFlags flags = 0;
 		if (!!(mask & ColorWriteMask::Alpha)) {
@@ -490,6 +644,28 @@ namespace Indium {
 			case SamplerBorderColor::TransparentBlack: return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
 			case SamplerBorderColor::OpaqueBlack:      return VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
 			case SamplerBorderColor::OpaqueWhite:      return VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkStencilOp stencilOperationToVkStencilOp(StencilOperation stencilOperation) {
+		switch (stencilOperation) {
+			case StencilOperation::Keep:           return VK_STENCIL_OP_KEEP;
+			case StencilOperation::Zero:           return VK_STENCIL_OP_ZERO;
+			case StencilOperation::Replace:        return VK_STENCIL_OP_REPLACE;
+			case StencilOperation::IncrementClamp: return VK_STENCIL_OP_INCREMENT_AND_CLAMP;
+			case StencilOperation::DecrementClamp: return VK_STENCIL_OP_DECREMENT_AND_CLAMP;
+			case StencilOperation::Invert:         return VK_STENCIL_OP_INVERT;
+			case StencilOperation::IncrementWrap:  return VK_STENCIL_OP_INCREMENT_AND_WRAP;
+			case StencilOperation::DecrementWrap:  return VK_STENCIL_OP_DECREMENT_AND_WRAP;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkIndexType indexTypeToVkIndexType(IndexType indexType) {
+		switch (indexType) {
+			case IndexType::UInt16: return VK_INDEX_TYPE_UINT16;
+			case IndexType::UInt32: return VK_INDEX_TYPE_UINT32;
 		}
 		throw BadEnumValue();
 	};

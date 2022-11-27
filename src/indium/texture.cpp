@@ -55,7 +55,7 @@ std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFor
 		shared_from_this(),
 		pixelFormat,
 		textureType,
-		VK_IMAGE_ASPECT_COLOR_BIT, // TODO
+		pixelFormatToVkImageAspectFlags(pixelFormat),
 		swizzle,
 		levels,
 		layers
@@ -277,21 +277,25 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	//info.samples = _descriptor.sampleCount;
 	info.samples = VK_SAMPLE_COUNT_1_BIT;
 
+	auto imageAspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
+	bool isColor = (imageAspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
+	bool isDepthStencil = (imageAspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
+
 	// TODO: allow GPU-optimized tiling
 	//
 	// we can't do this right now because `replaceRegion` does a direct host copy (and it's not supposed to use a command to do the copy)
-	info.tiling = /*descriptor.allowGPUOptimizedContents ? VK_IMAGE_TILING_OPTIMAL :*/ VK_IMAGE_TILING_LINEAR;
+	//
+	// FIXME: depth-stencil formats don't seem to work with VK_IMAGE_TILING_LINEAR, so we force OPTIMAL instead.
+	//        this is probably incompatible with `replaceRegion` if used on a depth-stencil texture.
+	info.tiling = (/*descriptor.allowGPUOptimizedContents ||*/ isDepthStencil) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
 	// we don't know ahead of time how the image is going to be used, so specify everything we support
-	info.usage =
-		VK_IMAGE_USAGE_SAMPLED_BIT |
-		VK_IMAGE_USAGE_STORAGE_BIT |
-		VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-		VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-		//VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-		0
-		;
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if (isColor) {
+		info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	} else if (isDepthStencil) {
+		info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	}
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO: check if this should be "concurrent" instead. i think we're good, though.
 	info.queueFamilyIndexCount = 0;
 	info.pQueueFamilyIndices = nullptr;
@@ -372,8 +376,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.image = _image;
-	// TODO: correctly determine which image aspect bits to use
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.aspectMask = imageAspect;
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = _descriptor.mipmapLevelCount;
 	barrier.subresourceRange.baseArrayLayer = 0;

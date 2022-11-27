@@ -28,13 +28,15 @@ namespace Indium {
 		VkDescriptorPool _pool = nullptr;
 
 		struct FunctionResources {
-			std::vector<std::shared_ptr<Buffer>> buffers;
+			std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
 			std::vector<std::shared_ptr<Texture>> textures;
 			std::vector<std::shared_ptr<SamplerState>> samplers;
 		};
 
 		std::array<FunctionResources, 2> _functionResources {};
-		std::vector<std::shared_ptr<Buffer>> _addressBuffers;
+		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
+
+		void updateBindings();
 
 	public:
 		PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor);
@@ -55,9 +57,13 @@ namespace Indium {
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) override;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount) override;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount) override;
+		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) override;
+		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount) override;
+		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset) override;
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) override;
 		virtual void setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) override;
 		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) override;
+		virtual void setDepthStencilState(std::shared_ptr<DepthStencilState> state) override;
 
 		virtual void endEncoding() override;
 

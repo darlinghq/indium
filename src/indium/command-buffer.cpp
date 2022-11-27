@@ -152,6 +152,10 @@ void Indium::PrivateCommandBuffer::commit() {
 		handleTextureSemaphores(privateTexture);
 	}
 
+	// FIXME: apparently, sometimes, this callback will not be invoked. this is obviously bad because users might want to know when we're done,
+	//        but it also leaves the resources for this command buffer tied up, essentially becoming a memory leak.
+	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
+	// UPDATE: upon further testing, it seems that this only occurs when the view is off-screen/hidden. weird.
 	_privateDevice->waitForSemaphore(timelineSemaphore->semaphore, timelineSemaphore->count, [self, timelineSemaphore, extraWaitSemaphores, presentationSemaphores]() {
 		// TODO: invoke scheduled handlers when the command buffer is scheduled instead of completed
 		for (const auto& handler: self->_scheduledHandlers) {

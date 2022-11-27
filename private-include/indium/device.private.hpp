@@ -44,6 +44,7 @@ namespace Indium {
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;
+		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) override;
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;

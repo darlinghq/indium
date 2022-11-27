@@ -17,6 +17,8 @@ namespace Indium {
 	struct TextureDescriptor;
 	class SamplerState;
 	struct SamplerDescriptor;
+	class DepthStencilState;
+	struct DepthStencilDescriptor;
 
 	class Device {
 	public:
@@ -31,6 +33,7 @@ namespace Indium {
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) = 0;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) = 0;
 
 		// --- support api ---
 

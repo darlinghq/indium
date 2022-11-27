@@ -9,6 +9,13 @@
 	protected: \
 		_type _ ## _lower ## _restOfName
 
+#define INDIUM_PROPERTY_REF(_type, _lower, _upper, _restOfName) \
+	public: \
+		_type& _lower ## _restOfName() { return _ ## _lower ## _restOfName; } \
+		_type const& _lower ## _restOfName() const { return _ ## _lower ## _restOfName; } \
+	protected: \
+		_type _ ## _lower ## _restOfName
+
 #define INDIUM_PROPERTY_READONLY_OBJECT(_type, _lower, _upper, _restOfName) INDIUM_PROPERTY_READONLY(std::shared_ptr<_type>, _lower, _upper, _restOfName)
 
 #define INDIUM_PROPERTY(_type, _lower, _upper, _restOfName) \

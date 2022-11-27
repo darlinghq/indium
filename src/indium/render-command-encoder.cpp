@@ -9,6 +9,7 @@
 #include <indium/buffer.private.hpp>
 #include <indium/library.private.hpp>
 #include <indium/sampler.private.hpp>
+#include <indium/depth-stencil.private.hpp>
 
 #include <forward_list>
 
@@ -70,7 +71,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
-		desc.samples = VK_SAMPLE_COUNT_1_BIT;
+		desc.samples = VK_SAMPLE_COUNT_1_BIT; // TODO: support multisampling
 		desc.loadOp = loadActionToVkAttachmentLoadOp(color.loadAction, true);
 		desc.storeOp = storeActionToVkAttachmentStoreOp(color.storeAction, true);
 		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -80,7 +81,26 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		renderPassAttachments.push_back(desc);
 	}
 
+	if (descriptor.depthAttachment) {
+		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture);
+		VkAttachmentDescription desc {};
+		desc.format = pixelFormatToVkFormat(privateTexture->pixelFormat());
+		desc.samples = VK_SAMPLE_COUNT_1_BIT;
+		desc.loadOp = loadActionToVkAttachmentLoadOp(descriptor.depthAttachment->loadAction, false);
+		desc.storeOp = storeActionToVkAttachmentStoreOp(descriptor.depthAttachment->storeAction, false);
+		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		desc.initialLayout = (descriptor.depthAttachment->loadAction == LoadAction::Load) ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+		desc.finalLayout = privateTexture->imageLayout();
+		renderPassAttachments.push_back(desc);
+	}
+
+	if (descriptor.stencilAttachment) {
+		throw std::runtime_error("TODO: support stencil attachments");
+	}
+
 	std::vector<VkAttachmentReference> colorAttachments;
+	VkAttachmentReference depthStencilAttachment {};
 
 	size_t index = 0;
 	for (const auto& color: descriptor.colorAttachments) {
@@ -91,10 +111,17 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		++index;
 	}
 
+	if (descriptor.depthAttachment) {
+		depthStencilAttachment.attachment = index;
+		depthStencilAttachment.layout = VK_IMAGE_LAYOUT_GENERAL;
+		++index;
+	}
+
 	auto& subpassDesc = subpasses.emplace_back();
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
 	subpassDesc.pColorAttachments = colorAttachments.data();
+	subpassDesc.pDepthStencilAttachment = (descriptor.depthAttachment || descriptor.stencilAttachment) ? &depthStencilAttachment : nullptr;
 
 	VkRenderPassCreateInfo renderPassInfo {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -114,6 +141,10 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 	for (const auto& colorAttachment: descriptor.colorAttachments) {
 		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(colorAttachment.texture)->imageView());
+	}
+
+	if (descriptor.depthAttachment) {
+		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture)->imageView());
 	}
 
 	VkFramebufferCreateInfo framebufferInfo {};
@@ -253,33 +284,10 @@ void Indium::PrivateRenderCommandEncoder::setBlendColor(float red, float green, 
 	vkCmdSetBlendConstants(buf->commandBuffer(), tmp);
 };
 
-void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
-	auto buf = _privateCommandBuffer.lock();
-
-	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = nullptr;
-	switch (primitiveType) {
-		case PrimitiveType::Point:
-			pipeline = _privatePSO->pipelines()[0];
-			break;
-		case PrimitiveType::Line:
-		case PrimitiveType::LineStrip:
-			pipeline = _privatePSO->pipelines()[1];
-			break;
-		case PrimitiveType::Triangle:
-		case PrimitiveType::TriangleStrip:
-			pipeline = _privatePSO->pipelines()[2];
-			break;
-		default:
-			throw BadEnumValue();
-	}
-	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-	vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
-
+void Indium::PrivateRenderCommandEncoder::updateBindings() {
 	// TODO: better descriptor set resource management
 
-	// TODO: avoid re-binding descriptors on every draw.
+	auto buf = _privateCommandBuffer.lock();
 
 	std::array<VkDescriptorSet, 2> descriptorSets {};
 
@@ -319,15 +327,15 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 					continue;
 				}
 
-				auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index]);
-				addresses.push_back(privateBuf->gpuAddress());
+				auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index].first);
+				addresses.push_back(privateBuf->gpuAddress() + functionResources.buffers[bindingInfo.index].second);
 			}
 
 			auto addressBuffer = _privateDevice->newBuffer(addresses.data(), functionResources.buffers.size() * 8, ResourceOptions::StorageModeShared);
 			auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
 
 			// we need to keep this buffer alive until the operation is completed
-			_addressBuffers.push_back(addressBuffer);
+			_keepAliveBuffers.push_back(addressBuffer);
 
 			auto& info = bufInfos.emplace_front();
 			info.buffer = privateAddrBuf->buffer();
@@ -398,6 +406,34 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	}
 
 	vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
+};
+
+void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
+	auto buf = _privateCommandBuffer.lock();
+
+	// bind the pipeline with the right topology class for this primitive
+	VkPipeline pipeline = nullptr;
+	switch (primitiveType) {
+		case PrimitiveType::Point:
+			pipeline = _privatePSO->pipelines()[0];
+			break;
+		case PrimitiveType::Line:
+		case PrimitiveType::LineStrip:
+			pipeline = _privatePSO->pipelines()[1];
+			break;
+		case PrimitiveType::Triangle:
+		case PrimitiveType::TriangleStrip:
+			pipeline = _privatePSO->pipelines()[2];
+			break;
+		default:
+			throw BadEnumValue();
+	}
+	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+	vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+
+	// TODO: avoid re-binding descriptors on every draw.
+	updateBindings();
 
 	vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
 };
@@ -420,7 +456,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 		_functionResources[0].buffers.resize(index + 1);
 	}
 
-	_functionResources[0].buffers[index] = buf;
+	_functionResources[0].buffers[index] = std::make_pair(buf, 0);
 };
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
@@ -429,15 +465,11 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
-	if (offset != 0) {
-		throw std::runtime_error("TODO: support non-zero offset");
-	}
-
 	if (_functionResources[0].buffers.size() <= index) {
 		_functionResources[0].buffers.resize(index + 1);
 	}
 
-	_functionResources[0].buffers[index] = buffer;
+	_functionResources[0].buffers[index] = std::make_pair(buffer, offset);
 };
 
 void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
@@ -446,4 +478,93 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Tex
 	}
 
 	_functionResources[1].textures[index] = texture;
+};
+
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
+	auto buf = _privateCommandBuffer.lock();
+
+	// bind the pipeline with the right topology class for this primitive
+	VkPipeline pipeline = nullptr;
+	switch (primitiveType) {
+		case PrimitiveType::Point:
+			pipeline = _privatePSO->pipelines()[0];
+			break;
+		case PrimitiveType::Line:
+		case PrimitiveType::LineStrip:
+			pipeline = _privatePSO->pipelines()[1];
+			break;
+		case PrimitiveType::Triangle:
+		case PrimitiveType::TriangleStrip:
+			pipeline = _privatePSO->pipelines()[2];
+			break;
+		default:
+			throw BadEnumValue();
+	}
+	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+	vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+
+	// TODO: avoid re-binding descriptors on every draw.
+	updateBindings();
+
+	// we need to keep this buffer alive until we complete the render
+	_keepAliveBuffers.push_back(indexBuffer);
+
+	auto privateIndexBuffer = std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer);
+
+	vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
+	vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
+};
+
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount) {
+	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, instanceCount, 0, 0);
+};
+
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset) {
+	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, 1);
+};
+
+void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<DepthStencilState> state) {
+	auto buf = _privateCommandBuffer.lock();
+	auto privateState = std::dynamic_pointer_cast<PrivateDepthStencilState>(state);
+	auto& desc = privateState->descriptor();
+
+	vkCmdSetDepthWriteEnable(buf->commandBuffer(), desc.depthWriteEnabled ? VK_TRUE : VK_FALSE);
+	vkCmdSetDepthCompareOp(buf->commandBuffer(), compareFunctionToVkCompareOp(desc.depthCompareFunction));
+	vkCmdSetDepthTestEnable(buf->commandBuffer(), VK_TRUE);
+
+	vkCmdSetStencilTestEnable(buf->commandBuffer(), (desc.frontFaceStencil || desc.backFaceStencil) ? VK_TRUE : VK_FALSE);
+
+	if (desc.frontFaceStencil || desc.backFaceStencil) {
+		if (desc.frontFaceStencil) {
+			vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->readMask);
+			vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->writeMask);
+
+			vkCmdSetStencilOp(
+				buf->commandBuffer(),
+				VK_STENCIL_FACE_FRONT_BIT,
+				stencilOperationToVkStencilOp(desc.frontFaceStencil->stencilFailureOperation),
+				stencilOperationToVkStencilOp(desc.frontFaceStencil->depthStencilPassOperation),
+				stencilOperationToVkStencilOp(desc.frontFaceStencil->depthFailureOperation),
+				compareFunctionToVkCompareOp(desc.frontFaceStencil->stencilCompareFunction)
+			);
+		} else {
+			vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+		}
+		if (desc.backFaceStencil) {
+			vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->readMask);
+			vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->writeMask);
+
+			vkCmdSetStencilOp(
+				buf->commandBuffer(),
+				VK_STENCIL_FACE_BACK_BIT,
+				stencilOperationToVkStencilOp(desc.backFaceStencil->stencilFailureOperation),
+				stencilOperationToVkStencilOp(desc.backFaceStencil->depthStencilPassOperation),
+				stencilOperationToVkStencilOp(desc.backFaceStencil->depthFailureOperation),
+				compareFunctionToVkCompareOp(desc.backFaceStencil->stencilCompareFunction)
+			);
+		} else {
+			vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+		}
+	}
 };
