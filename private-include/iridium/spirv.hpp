@@ -438,6 +438,8 @@ namespace Iridium {
 			PtrAccessChain = 67,
 			Decorate = 71,
 			MemberDecorate = 72,
+			VectorExtractDynamic = 77,
+			VectorInsertDynamic = 78,
 			VectorShuffle = 79,
 			CompositeExtract = 81,
 			CompositeInsert = 82,
@@ -465,9 +467,98 @@ namespace Iridium {
 			SMod = 139,
 			FRem = 140,
 			FMod = 141,
+			Dot = 148,
+			FOrdGreaterThan = 186,
+			Phi = 245,
+			SelectionMerge = 247,
 			Label = 248,
+			Branch = 249,
+			BranchConditional = 250,
 			Return = 253,
 			ReturnValue = 254,
+		};
+
+		enum class GLSLOpcode: uint16_t {
+			Round = 1,
+			RoundEven = 2,
+			Trunc = 3,
+			FAbs = 4,
+			SAbs = 5,
+			FSign = 6,
+			SSign = 7,
+			Floor = 8,
+			Ceil = 9,
+			Fract = 10,
+			Radians = 11,
+			Degrees = 12,
+			Sin = 13,
+			Cos = 14,
+			Tan = 15,
+			Asin = 16,
+			Acos = 17,
+			Atan = 18,
+			Sinh = 19,
+			Cosh = 20,
+			Tanh = 21,
+			Asinh = 22,
+			Acosh = 23,
+			Atanh = 24,
+			Atan2 = 25,
+			Pow = 26,
+			Exp = 27,
+			Log = 28,
+			Exp2 = 29,
+			Log2 = 30,
+			Sqrt = 31,
+			InverseSqrt = 32,
+			Determinant = 33,
+			MatrixInverse = 34,
+			Modf = 35,
+			ModfStruct = 36,
+			FMin = 37,
+			UMin = 38,
+			SMin = 39,
+			FMax = 40,
+			UMax = 41,
+			SMax = 42,
+			FClamp = 43,
+			UClamp = 44,
+			SClamp = 45,
+			FMix = 46,
+			Step = 48,
+			SmoothStep = 49,
+			Fma = 50,
+			Frexp = 51,
+			FrexpStruct = 52,
+			Ldexp = 53,
+			PackSnorm4x8 = 54,
+			PackUnorm4x8 = 55,
+			PackSnorm2x16 = 56,
+			PackUnorm2x16 = 57,
+			PackHalf2x16 = 58,
+			PackDouble2x32 = 59,
+			UnpackSnorm2x16 = 60,
+			UnpackUnorm2x16 = 61,
+			UnpackHalf2x16 = 62,
+			UnpackSnorm4x8 = 63,
+			UnpackUnorm4x8 = 64,
+			UnpackDouble2x32 = 65,
+			Length = 66,
+			Distance = 67,
+			Cross = 68,
+			Normalize = 69,
+			FaceForward = 70,
+			Reflect = 71,
+			Refract = 72,
+			FindLsb = 73,
+			FindSMsb = 74,
+			FindUMsb = 75,
+			InterpolateAtCentroid = 76,
+			InterpolateAtSample = 77,
+			InterpolateAtOffset = 78,
+			NMin = 79,
+			NMax = 80,
+			NClamp = 81,
 		};
 
 		struct FunctionInfo {
@@ -511,6 +602,7 @@ namespace Iridium {
 			std::unordered_set<std::string> _extensions;
 			ResultID _debugPrintf = ResultIDInvalid;
 			std::vector<std::pair<ResultID, std::string>> _strings;
+			ResultID _glslExtInstSet = ResultIDInvalid;
 
 			struct InstructionState {
 				size_t position;
@@ -525,6 +617,10 @@ namespace Iridium {
 			void endInstruction(InstructionState&& state);
 
 			ResultID declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords);
+
+			void ensureGLSLExtInstSet();
+
+			InstructionState beginGLSLInstruction(GLSLOpcode opcode, DynamicByteWriter& writer, ResultID resultTypeID, ResultID resultID);
 
 		public:
 			Builder();
@@ -563,7 +659,7 @@ namespace Iridium {
 
 			ResultID declareUndefinedValue(ResultID typeID);
 
-			ResultID insertLabel();
+			ResultID insertLabel(ResultID id = ResultIDInvalid);
 			void referenceGlobalVariable(ResultID id);
 			ResultID encodeUConvert(ResultID typeID, ResultID operand);
 			ResultID encodeAccessChain(ResultID resultTypeID, ResultID base, std::vector<ResultID> indices, bool asPointer = false);
@@ -582,6 +678,16 @@ namespace Iridium {
 			ResultID encodeSampledImage(ResultID resultTypeID, ResultID image, ResultID sampler);
 			ResultID encodeImageSampleImplicitLod(ResultID resultTypeID, ResultID sampledImage, ResultID coordinates);
 			ResultID encodeFConvert(ResultID resultTypeID, ResultID target);
+			ResultID encodeInverseSqrt(ResultID resultTypeID, ResultID target);
+			ResultID encodeFClamp(ResultID resultTypeID, ResultID target, ResultID min, ResultID max);
+			ResultID encodePow(ResultID resultTypeID, ResultID base, ResultID exponent);
+			ResultID encodeVectorExtractDynamic(ResultID resultTypeID, ResultID vector, ResultID index);
+			ResultID encodeVectorInsertDynamic(ResultID resultTypeID, ResultID vector, ResultID component, ResultID index);
+			ResultID encodeFOrdGreaterThan(ResultID operand1, ResultID operand2);
+			void encodeBranch(ResultID targetLabel);
+			void encodeBranchConditional(ResultID condition, ResultID trueLabel, ResultID falseLabel);
+			ResultID encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks);
+			void encodeSelectionMerge(ResultID mergeBlock);
 
 			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 

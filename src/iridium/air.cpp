@@ -264,7 +264,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	SPIRV::ResultID fragCoordVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID uboPointersVar = SPIRV::ResultIDInvalid;
 
-	builder.beginFunction(funcID.id);
+	auto firstLabelID = builder.beginFunction(funcID.id);
 
 	// within this node, operand 0 refers to the vertex function,
 	// operand 1 contains information about the function's return value,
@@ -747,7 +747,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		}
 	}
 
+	// assign an ID to each block
+	bool isFirst = true;
 	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
+		if (isFirst) {
+			isFirst = false;
+
+			// assign the existing ID
+			builder.associateExistingResultID(firstLabelID, reinterpret_cast<uintptr_t>(bb));
+		} else {
+			// assign a new ID
+			builder.associateResultID(reinterpret_cast<uintptr_t>(bb));
+		}
+	}
+
+	isFirst = true;
+	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
+		if (isFirst) {
+			isFirst = false;
+
+			// we already have a label inserted
+		} else {
+			// insert a new label
+			builder.insertLabel(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
+		}
+
 		for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst != nullptr; inst = LLVMGetNextInstruction(inst)) {
 			auto opcode = LLVMGetInstructionOpcode(inst);
 
@@ -900,6 +924,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
+					} else if (name == "air.dot.v3f32") {
+						auto operand1 = LLVMGetOperand(inst, 0);
+						auto operand2 = LLVMGetOperand(inst, 1);
+
+						resID = builder.encodeArithBinop(SPIRV::Opcode::Dot, type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
+					} else if (name == "air.fast_rsqrt.f32") {
+						auto arg = LLVMGetOperand(inst, 0);
+
+						resID = builder.encodeInverseSqrt(type, llvmValueToResultID(builder, arg));
+					} else if (name == "air.fast_saturate.f32") {
+						auto arg = LLVMGetOperand(inst, 0);
+
+						resID = builder.encodeFClamp(type, llvmValueToResultID(builder, arg), builder.declareConstantScalar<float>(0), builder.declareConstantScalar<float>(1));
+					} else if (name == "air.fast_pow.f32") {
+						auto base = LLVMGetOperand(inst, 0);
+						auto exponent = LLVMGetOperand(inst, 1);
+
+						resID = builder.encodePow(type, llvmValueToResultID(builder, base), llvmValueToResultID(builder, exponent));
 					} else {
 						throw std::runtime_error("TODO: support actual function calls");
 					}
@@ -910,7 +952,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 				case LLVMFMul:
 				case LLVMFDiv:
-				case LLVMFAdd: {
+				case LLVMFAdd:
+				case LLVMFSub: {
 					auto op1 = LLVMGetOperand(inst, 0);
 					auto op2 = LLVMGetOperand(inst, 1);
 					auto targetType = LLVMTypeOf(inst);
@@ -921,6 +964,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						case LLVMFMul: binop = SPIRV::Opcode::FMul; break;
 						case LLVMFDiv: binop = SPIRV::Opcode::FDiv; break;
 						case LLVMFAdd: binop = SPIRV::Opcode::FAdd; break;
+						case LLVMFSub: binop = SPIRV::Opcode::FSub; break;
 						default:
 							break;
 					}
@@ -979,6 +1023,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+				case LLVMInsertElement: {
+					auto vector = LLVMGetOperand(inst, 0);
+					auto component = LLVMGetOperand(inst, 1);
+					auto index = LLVMGetOperand(inst, 2);
+					auto targetType = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, targetType);
+
+					auto resID = builder.encodeVectorInsertDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, component), llvmValueToResultID(builder, index));
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMExtractElement: {
+					auto vector = LLVMGetOperand(inst, 0);
+					auto index = LLVMGetOperand(inst, 1);
+					auto targetType = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, targetType);
+
+					auto resID = builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
 				case LLVMRet: {
 					auto llval = LLVMGetOperand(inst, 0);
 
@@ -1007,6 +1076,73 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					}
 
 					builder.encodeReturn();
+				} break;
+
+				case LLVMFCmp: {
+					auto op1 = LLVMGetOperand(inst, 0);
+					auto op2 = LLVMGetOperand(inst, 1);
+					auto predicate = LLVMGetFCmpPredicate(inst);
+
+					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+					auto type = builder.declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
+
+					switch (predicate) {
+						case LLVMRealOGT: {
+							resID = builder.encodeFOrdGreaterThan(llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
+						} break;
+
+						default:
+							throw std::runtime_error("TODO: handle fcmp predicate: " + std::to_string(predicate));
+					}
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMBr: {
+					if (LLVMIsConditional(inst)) {
+						auto condition = LLVMGetCondition(inst);
+						auto trueLabel = LLVMGetOperand(inst, 1);
+						auto falseLabel = LLVMGetOperand(inst, 2);
+
+						// TODO: detect CFG structures
+
+						builder.encodeBranchConditional(llvmValueToResultID(builder, condition), llvmValueToResultID(builder, trueLabel), llvmValueToResultID(builder, falseLabel));
+					} else {
+						auto label = LLVMGetOperand(inst, 0);
+
+						builder.encodeBranch(llvmValueToResultID(builder, label));
+					}
+				} break;
+
+				case LLVMPHI: {
+					auto lltype = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, lltype);
+
+					std::vector<std::pair<SPIRV::ResultID, SPIRV::ResultID>> variablesAndBlocks;
+
+					auto opCount = LLVMCountIncoming(inst);
+					for (size_t i = 0; i < opCount; ++i) {
+						auto variable = LLVMGetIncomingValue(inst, i);
+						auto label = LLVMBasicBlockAsValue(LLVMGetIncomingBlock(inst, i));
+						variablesAndBlocks.push_back(std::make_pair(llvmValueToResultID(builder, variable), llvmValueToResultID(builder, label)));
+					}
+
+					auto resID = builder.encodePhi(type, variablesAndBlocks);
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMBitCast: {
+					auto arg = LLVMGetOperand(inst, 0);
+					auto lltype = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, lltype);
+
+					auto resID = builder.encodeBitcast(type, llvmValueToResultID(builder, arg));
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
 				} break;
 
 				default:
