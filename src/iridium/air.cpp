@@ -761,6 +761,75 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		}
 	}
 
+	//
+	// analyze CFG structures
+	//
+
+	// TODO: handle more complex CFG structures
+
+	enum class CFGType {
+		None = 0,
+		Selection,
+	};
+
+	struct CFGInfo {
+		CFGType type = CFGType::None;
+		SPIRV::ResultID selectionMergeBlock = SPIRV::ResultIDInvalid;
+	};
+
+	std::unordered_map<SPIRV::ResultID, CFGInfo> cfgInfos;
+
+	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
+		auto lastInst = LLVMGetLastInstruction(bb);
+		auto lastInstOpcode = LLVMGetInstructionOpcode(lastInst);
+
+		CFGInfo cfgInfo {};
+
+		if (lastInstOpcode == LLVMBr && LLVMIsConditional(lastInst)) {
+			// check if this is a basic conditional/selection (i.e. an `if`)
+			auto firstBlock = LLVMGetSuccessor(lastInst, 0);
+			auto secondBlock = LLVMGetSuccessor(lastInst, 1);
+
+			auto lastInstFirstBlock = LLVMGetLastInstruction(firstBlock);
+			auto lastInstSecondBlock = LLVMGetLastInstruction(secondBlock);
+			auto lastInstOpcodeFirstBlock = LLVMGetInstructionOpcode(lastInstFirstBlock);
+			auto lastInstOpcodeSecondBlock = LLVMGetInstructionOpcode(lastInstSecondBlock);
+
+			SPIRV::ResultID mergeBlock = SPIRV::ResultIDInvalid;
+
+			// check if the first block is the special block
+			if (lastInstOpcodeFirstBlock == LLVMBr && !LLVMIsConditional(lastInstFirstBlock)) {
+				// make sure the target block is the same
+				auto block = LLVMGetSuccessor(lastInstFirstBlock, 0);
+
+				if (block == secondBlock) {
+					// perfect, the second block is the merge block then
+					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(secondBlock));
+				}
+			} else if (lastInstOpcodeSecondBlock == LLVMBr && !LLVMIsConditional(lastInstSecondBlock)) {
+				// make sure the target block is the same
+				auto block = LLVMGetSuccessor(lastInstSecondBlock, 0);
+
+				if (block == firstBlock) {
+					// perfect, the first block is the merge block then
+					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(firstBlock));
+				}
+			}
+
+			if (mergeBlock != SPIRV::ResultIDInvalid) {
+				cfgInfo.type = CFGType::Selection;
+				cfgInfo.selectionMergeBlock = mergeBlock;
+			}
+		}
+
+		if (cfgInfo.type != CFGType::None) {
+			cfgInfos[builder.lookupResultID(reinterpret_cast<uintptr_t>(bb))] = cfgInfo;
+		}
+	}
+
+	//
+	// translate instructions
+	//
 	isFirst = true;
 	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
 		if (isFirst) {
@@ -1105,7 +1174,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto trueLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 0));
 						auto falseLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 1));
 
-						// TODO: detect CFG structures
+						// TODO: detect more CFG structures
+
+						auto it = cfgInfos.find(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
+
+						if (it != cfgInfos.end()) {
+							auto& cfgInfo = it->second;
+
+							switch (cfgInfo.type) {
+								case CFGType::Selection: {
+									builder.encodeSelectionMerge(cfgInfo.selectionMergeBlock);
+								} break;
+
+								default:
+									break;
+							}
+						}
 
 						builder.encodeBranchConditional(llvmValueToResultID(builder, condition), llvmValueToResultID(builder, trueLabel), llvmValueToResultID(builder, falseLabel));
 					} else {
