@@ -472,6 +472,27 @@ void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer
 	_functionResources[0].buffers[index] = std::make_pair(buffer, offset);
 };
 
+void Indium::PrivateRenderCommandEncoder::setFragmentBytes(const void* bytes, size_t length, size_t index) {
+	auto cmdBuf = _privateCommandBuffer.lock();
+
+	// TODO: we can make this "Private" instead
+	auto buf = cmdBuf->device()->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
+
+	if (_functionResources[1].buffers.size() <= index) {
+		_functionResources[1].buffers.resize(index + 1);
+	}
+
+	_functionResources[1].buffers[index] = std::make_pair(buf, 0);
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+	if (_functionResources[1].buffers.size() <= index) {
+		_functionResources[1].buffers.resize(index + 1);
+	}
+
+	_functionResources[1].buffers[index] = std::make_pair(buffer, offset);
+};
+
 void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
 	if (_functionResources[1].textures.size() <= index) {
 		_functionResources[1].textures.resize(index + 1);

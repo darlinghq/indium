@@ -37,6 +37,8 @@ namespace Indium {
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset) = 0;
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) = 0;
 		virtual void setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) = 0;
+		virtual void setFragmentBytes(const void* bytes, size_t length, size_t index) = 0;
+		virtual void setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) = 0;
 		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) = 0;
 		virtual void setDepthStencilState(std::shared_ptr<DepthStencilState> state) = 0;
 	};
