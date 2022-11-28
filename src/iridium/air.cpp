@@ -1138,11 +1138,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto arg = LLVMGetOperand(inst, 0);
 					auto lltype = LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, lltype);
+					auto argID = llvmValueToResultID(builder, arg);
 
-					auto resID = builder.encodeBitcast(type, llvmValueToResultID(builder, arg));
+					// ensure the resulting pointer storage class is the same as the input pointer storage class
+					auto typeInst = *builder.reverseLookupType(type);
+					auto origType = builder.lookupResultType(argID);
+					auto origTypeInst = *builder.reverseLookupType(origType);
+					typeInst.pointerStorageClass = origTypeInst.pointerStorageClass;
+					auto resultType = builder.declareType(typeInst);
+
+					auto resID = builder.encodeBitcast(resultType, argID);
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
-					builder.setResultType(resID, type);
+					builder.setResultType(resID, resultType);
 				} break;
 
 				default:
