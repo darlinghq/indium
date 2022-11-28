@@ -857,7 +857,8 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 			tmp = beginInstruction(Opcode::Decorate, _writer);
 			_writer.writeIntegerLE<uint32_t>(id);
 			_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(DecorationType::ArrayStride));
-			_writer.writeIntegerLE<uint32_t>(elmTypeInst->size);
+			// align the element size to a multiple of its alignment
+			_writer.writeIntegerLE<uint32_t>((elmTypeInst->size + (elmTypeInst->alignment - 1)) & ~(elmTypeInst->alignment - 1));
 			endInstruction(std::move(tmp));
 		}
 	}
