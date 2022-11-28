@@ -1,7 +1,7 @@
 ref
 *.o
 *.so
-build
+/*build
 .ccls-cache
 compile_commands.json
 compile_commands.*.json

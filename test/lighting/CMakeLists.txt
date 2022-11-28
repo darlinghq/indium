@@ -5,7 +5,7 @@ find_library(GLFW_LIBRARIES glfw)
 
 find_package(glm REQUIRED)
 
-add_executable(indium-test-cube cube.cpp)
+add_executable(indium-test-lighting lighting.cpp)
 
 add_custom_command(
 	OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/shaders.h"
@@ -13,6 +13,13 @@ add_custom_command(
 	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders.metallib"
 )
 target_sources(indium-test-lighting PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/shaders.h")
+
+add_custom_command(
+	OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/teapot.h"
+	COMMAND xxd -i -n "teapot" "${CMAKE_CURRENT_SOURCE_DIR}/teapot.obj" "${CMAKE_CURRENT_BINARY_DIR}/teapot.h"
+	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/teapot.obj"
+)
+target_sources(indium-test-lighting PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/teapot.h")
 
 target_include_directories(indium-test-lighting PRIVATE
 	${GLFW_INCLUDE_DIRS}
