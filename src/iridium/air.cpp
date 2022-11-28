@@ -1102,14 +1102,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				case LLVMBr: {
 					if (LLVMIsConditional(inst)) {
 						auto condition = LLVMGetCondition(inst);
-						auto trueLabel = LLVMGetOperand(inst, 1);
-						auto falseLabel = LLVMGetOperand(inst, 2);
+						auto trueLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 0));
+						auto falseLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 1));
 
 						// TODO: detect CFG structures
 
 						builder.encodeBranchConditional(llvmValueToResultID(builder, condition), llvmValueToResultID(builder, trueLabel), llvmValueToResultID(builder, falseLabel));
 					} else {
-						auto label = LLVMGetOperand(inst, 0);
+						auto label = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 0));
 
 						builder.encodeBranch(llvmValueToResultID(builder, label));
 					}
