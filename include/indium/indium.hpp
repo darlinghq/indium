@@ -2,6 +2,7 @@
 
 #include <indium/base.hpp>
 #include <indium/binary-archive.hpp>
+#include <indium/blit-command-encoder.hpp>
 #include <indium/buffer.hpp>
 #include <indium/command-buffer.hpp>
 #include <indium/command-encoder.hpp>

@@ -4,6 +4,7 @@
 #include <indium/render-command-encoder.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/drawable.hpp>
+#include <indium/blit-command-encoder.private.hpp>
 
 #include <condition_variable>
 
@@ -46,6 +47,15 @@ Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
 	auto encoder = std::make_shared<Indium::PrivateRenderCommandEncoder>(shared_from_this(), descriptor);
+	{
+		std::scoped_lock lock(_mutex);
+		_commandEncoders.push_back(encoder);
+	}
+	return encoder;
+};
+
+std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoder() {
+	auto encoder = std::make_shared<Indium::PrivateBlitCommandEncoder>(shared_from_this());
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
@@ -187,6 +197,10 @@ void Indium::PrivateCommandBuffer::commit() {
 	info.waitSemaphoreInfoCount = waitInfos.size();
 	info.pWaitSemaphoreInfos = waitInfos.data();
 
+	// FIXME: we need to check if the queue we're submitting on supports the operations encoded in the command buffer.
+	//        the Device constructor tries to choose command queues that support as many operations as possible, but it's possible
+	//        that a particular device only supports certain operations on certain queues (e.g. maybe it only supports transfer operations
+	//        on an exclusive queue that doesn't support graphics or compute).
 	if (vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, nullptr) != VK_SUCCESS) {
 		// TODO
 		abort();

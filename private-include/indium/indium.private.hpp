@@ -3,6 +3,7 @@
 #include <indium/indium.hpp>
 
 #include <indium/base.private.hpp>
+#include <indium/blit-command-encoder.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/command-buffer.private.hpp>
 #include <indium/command-queue.private.hpp>

@@ -4,6 +4,7 @@
 #include <functional>
 
 #include <indium/render-command-encoder.hpp>
+#include <indium/blit-command-encoder.hpp>
 #include <indium/base.hpp>
 
 namespace Indium {
@@ -16,6 +17,7 @@ namespace Indium {
 		virtual ~CommandBuffer() = 0;
 
 		virtual std::shared_ptr<RenderCommandEncoder> renderCommandEncoder(const RenderPassDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder() = 0;
 
 		virtual void commit() = 0;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) = 0;

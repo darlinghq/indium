@@ -5,6 +5,7 @@ find_package(Vulkan REQUIRED)
 find_package(LLVM REQUIRED CONFIG)
 
 add_library(indium SHARED
+	src/indium/blit-command-encoder.cpp
 	src/indium/buffer.cpp
 	src/indium/command-buffer.cpp
 	src/indium/command-encoder.cpp
