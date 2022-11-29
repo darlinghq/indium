@@ -492,6 +492,13 @@ namespace Indium {
 	struct Region {
 		Origin origin;
 		Size size;
+
+		static constexpr Region make2D(size_t x, size_t y, size_t width, size_t height) {
+			return Region {
+				Origin { x, y, 0 },
+				Size { width, height, 1 },
+			};
+		};
 	};
 
 	enum class SamplerMinMagFilter: size_t {

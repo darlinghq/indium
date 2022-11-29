@@ -1,6 +1,7 @@
 #include <indium/texture.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/types.private.hpp>
+#include <indium/buffer.private.hpp>
 
 #include <cstring>
 
@@ -281,13 +282,19 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	bool isColor = (imageAspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
 	bool isDepthStencil = (imageAspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
 
-	// TODO: allow GPU-optimized tiling
-	//
-	// we can't do this right now because `replaceRegion` does a direct host copy (and it's not supposed to use a command to do the copy)
-	//
-	// FIXME: depth-stencil formats don't seem to work with VK_IMAGE_TILING_LINEAR, so we force OPTIMAL instead.
-	//        this is probably incompatible with `replaceRegion` if used on a depth-stencil texture.
-	info.tiling = (/*descriptor.allowGPUOptimizedContents ||*/ isDepthStencil) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+	bool canBeLinear = true;
+
+	if (
+		// depth-stencil formats don't seem to work with VK_IMAGE_TILING_LINEAR, so we force OPTIMAL instead
+		isDepthStencil ||
+
+		// linear textures only support a single mip level
+		_descriptor.mipmapLevelCount > 1
+	) {
+		canBeLinear = false;
+	}
+
+	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
 	// we don't know ahead of time how the image is going to be used, so specify everything we support
 	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -503,64 +510,105 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 		throw std::runtime_error("Invalid usage of replaceRegion on non-managed and non-shared texture");
 	}
 
-	void* mapped = NULL;
+	// FIXME: Apple says that the transfer performed in this function occurs on the CPU and does not synchronize with the GPU at all.
+	//        however, there's no simple way to do this in Vulkan while allowing (and sometimes requiring) non-linear tiling.
+	//        so, we have to fall back to submitting a command buffer with an encoded transfer operation.
 
-	if (vkMapMemory(_device->device(), _memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
+	auto aspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
 
-	if (slice != 0) {
-		throw std::runtime_error("TODO: support texture slices");
-	}
+	// create a temporary buffer copy
+	// FIXME: this doesn't work for PVRTC textures
+	// actually, FIXME: this doesn't handle a few cases, particularly with array texture types (since i haven't seen those yet at all)
+	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
+	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(bytes, byteSize, ResourceOptions::StorageModeShared));
 
-	if (pixelFormatIsCompressed(_descriptor.pixelFormat)) {
-		throw std::runtime_error("TODO: support compressed textures");
-	}
-
-	if (_descriptor.textureType != TextureType::e1D && _descriptor.textureType != TextureType::e2D && _descriptor.textureType != TextureType::e3D) {
-		throw std::runtime_error("TODO: support other texture formats");
-	}
-
-	// FIXME: not sure how the pixels are laid out in the input buffer (`bytes`) in cases starting at a non-zero origin
-	//        and i haven't been able to find any examples of such a case, either.
-
+	// FIXME: handle compressed formats
 	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
-	size_t bytesPerBufferRow = (bytesPerPixel * region.size.width) + (bytesPerRow - (bytesPerPixel * region.size.width));
-	size_t bytesPerBufferImage = (bytesPerBufferRow * region.size.height) + (bytesPerImage - (bytesPerBufferRow * region.size.height));
 
-	for (size_t zOffset = 0; zOffset < region.size.depth; ++zOffset) {
-		size_t z = region.origin.z + zOffset;
+	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
+	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cmdBufAllocInfo.commandPool = _device->oneshotCommandPool();
+	cmdBufAllocInfo.commandBufferCount = 1;
 
-		// as an optimization, we can copy in bigger chunks if we're using the entire row
-		if (region.origin.x == 0 && region.size.width == _descriptor.width) {
-			size_t startOffset = (z * bytesPerImage) + (region.origin.y * bytesPerRow);
-			size_t bytesOffset = (zOffset * bytesPerBufferImage);
-			size_t copyLength = region.size.height * bytesPerRow;
-
-			std::memcpy(static_cast<char*>(mapped) + startOffset, static_cast<const char*>(bytes) + bytesOffset, copyLength);
-		} else {
-			for (size_t yOffset = 0; yOffset < region.size.height; ++yOffset) {
-				size_t y = region.origin.y + yOffset;
-
-				size_t startOffset = (z * bytesPerImage) + (y * bytesPerRow) + (region.origin.x * bytesPerPixel);
-				size_t bytesOffset = (zOffset * bytesPerBufferImage) + (yOffset * bytesPerBufferRow);
-				size_t copyLength = region.size.width * bytesPerPixel;
-
-				std::memcpy(static_cast<char*>(mapped) + startOffset, static_cast<const char*>(bytes) + bytesOffset, copyLength);
-			}
-		}
-	}
-
-	VkMappedMemoryRange vulkanRange {};
-	vulkanRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-	vulkanRange.memory = _memory;
-	vulkanRange.size = VK_WHOLE_SIZE;
-	vulkanRange.offset = 0;
-	if (vkFlushMappedMemoryRanges(_device->device(), 1, &vulkanRange) != VK_SUCCESS) {
+	VkCommandBuffer cmdBuf;
+	if (vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkUnmapMemory(_device->device(), _memory);
+	VkCommandBufferBeginInfo cmdBufBeginInfo {};
+	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
+
+	// first, transition the image to the optimal layout for transfer destinations
+	VkImageMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_NONE;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _image;
+	barrier.subresourceRange.aspectMask = aspect;
+	barrier.subresourceRange.baseMipLevel = mipmapLevel;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.layerCount = _descriptor.arrayLength;
+
+	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	// now encode the copy
+	VkBufferImageCopy copyInfo {};
+	copyInfo.bufferOffset = 0;
+	copyInfo.bufferRowLength = bytesPerRow / bytesPerPixel;
+	copyInfo.bufferImageHeight = bytesPerImage / bytesPerRow;
+	copyInfo.imageSubresource.aspectMask = aspect;
+	copyInfo.imageSubresource.mipLevel = mipmapLevel;
+	copyInfo.imageSubresource.baseArrayLayer = 0;
+	copyInfo.imageSubresource.layerCount = _descriptor.arrayLength;
+	copyInfo.imageOffset.x = region.origin.x;
+	copyInfo.imageOffset.y = region.origin.y;
+	copyInfo.imageOffset.z = region.origin.z;
+	copyInfo.imageExtent.width = region.size.width;
+	copyInfo.imageExtent.height = region.size.height;
+	copyInfo.imageExtent.depth = region.size.depth;
+	vkCmdCopyBufferToImage(cmdBuf, tmpBuf->buffer(), _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyInfo);
+
+	// finally, transition the image back to the general layout
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	vkEndCommandBuffer(cmdBuf);
+
+	VkFenceCreateInfo fenceCreateInfo {};
+	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	VkFence theFence = nullptr;
+
+	if (vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	VkSubmitInfo submitInfo {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &cmdBuf;
+
+	vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	if (vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	vkDestroyFence(_device->device(), theFence, nullptr);
+
+	vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
 };

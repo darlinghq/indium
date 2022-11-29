@@ -4,6 +4,8 @@
 #include <indium/types.hpp>
 #include <indium/resource.hpp>
 
+#include <cmath>
+
 namespace Indium {
 	class Device;
 	class Buffer;
@@ -21,6 +23,19 @@ namespace Indium {
 		bool allowGPUOptimizedContents = true;
 		TextureUsage usage = TextureUsage::ShaderRead;
 		TextureSwizzleChannels swizzle;
+
+		static constexpr TextureDescriptor texture2DDescriptor(PixelFormat pixelFormat, size_t width, size_t height, bool mipmapped) {
+			TextureDescriptor desc {};
+			desc.textureType = TextureType::e2D;
+			desc.pixelFormat = pixelFormat;
+			desc.width = width;
+			desc.height = height;
+			desc.depth = 1;
+			// TODO: check which formula Apple uses to calculate mipmap level count.
+			//       it's probably this same formula (from OpenGL and Vulkan), but check just in case.
+			desc.mipmapLevelCount = ((mipmapped) ? static_cast<size_t>(std::floor(std::log2(std::max(width, height)))) : 0) + 1;
+			return desc;
+		};
 	};
 
 	class Texture: public Resource {
