@@ -12,6 +12,7 @@ namespace Indium {
 	class Buffer;
 	class Texture;
 	class DepthStencilState;
+	class SamplerState;
 
 	class RenderCommandEncoder: public CommandEncoder {
 	public:
@@ -40,6 +41,7 @@ namespace Indium {
 		virtual void setFragmentBytes(const void* bytes, size_t length, size_t index) = 0;
 		virtual void setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) = 0;
 		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) = 0;
+		virtual void setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) = 0;
 		virtual void setDepthStencilState(std::shared_ptr<DepthStencilState> state) = 0;
 	};
 };

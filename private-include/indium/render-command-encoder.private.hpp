@@ -65,6 +65,7 @@ namespace Indium {
 		virtual void setFragmentBytes(const void* bytes, size_t length, size_t index) override;
 		virtual void setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) override;
 		virtual void setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) override;
+		virtual void setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) override;
 		virtual void setDepthStencilState(std::shared_ptr<DepthStencilState> state) override;
 
 		virtual void endEncoding() override;

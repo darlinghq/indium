@@ -501,6 +501,14 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Tex
 	_functionResources[1].textures[index] = texture;
 };
 
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+	if (_functionResources[1].samplers.size() <= index) {
+		_functionResources[1].samplers.resize(index + 1);
+	}
+
+	_functionResources[1].samplers[index] = state;
+};
+
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
 	auto buf = _privateCommandBuffer.lock();
 
