@@ -624,6 +624,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				//             API does, but it doesn't. so, we work around this by sampling as a 32-bit float and converting to a 16-bit one.
 				fakeSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
 				realSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
+			} else if (sampleTypeName == "float") {
+				fakeSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
+				realSampleType = fakeSampleType;
 			}
 
 			// TODO: same here (find a better way...)
@@ -1000,7 +1003,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
-					} else if (name == "air.sample_texture_2d.v4f16") {
+					} else if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_2d.v4f32") {
 						auto textureArg = LLVMGetOperand(inst, 0);
 						auto samplerArg = LLVMGetOperand(inst, 1);
 						auto textureCoordArg = LLVMGetOperand(inst, 2);
@@ -1035,11 +1038,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto textureSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, textureSampleComponentType, 16, 8));
 						auto sampled = builder.encodeImageSampleImplicitLod(textureSampleType, sampledImage, llvmValueToResultID(builder, textureCoordArg));
 
-						auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
-						auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType, 8, 8));
-						auto converted = builder.encodeFConvert(convertedType, sampled);
+						if (name == "air.sample_texture_2d.v4f16") {
+							auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
+							auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType, 8, 8));
+							sampled = builder.encodeFConvert(convertedType, sampled);
+						}
 
-						auto partialResult = builder.encodeCompositeInsert(type, converted, builder.declareUndefinedValue(type), { 0 });
+						auto partialResult = builder.encodeCompositeInsert(type, sampled, builder.declareUndefinedValue(type), { 0 });
 						resID = builder.encodeCompositeInsert(type, builder.declareConstantScalar<int8_t>(0), partialResult, { 1 });
 					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
 						auto arg = LLVMGetOperand(inst, 0);
