@@ -30,7 +30,6 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 		for (const auto bindingInfo: function->functionInfo().bindings) {
 			if (bindingInfo.type == Iridium::BindingType::Buffer) {
 				needUBO = true;
-				break;
 			} else if (bindingInfo.type == Iridium::BindingType::Texture) {
 				auto& binding = bindings.emplace_back();
 				binding.binding = bindingInfo.internalIndex;
