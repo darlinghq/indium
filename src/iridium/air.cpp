@@ -650,8 +650,60 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		}
 	}
 
-	// TODO: samplers can also be passed in as parameters, but i have not seen an example of this yet (but it's trivial to do so).
-	//
+	// now look for samplers and assign bindings for them
+	for (size_t i = 0; i < parameterOperands.size(); ++i) {
+		auto& parameterOperand = parameterOperands[i];
+
+		// info[0] is the parameter index
+		// info[1] is the kind
+		// everything after that depends on the kind
+		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
+		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+
+		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+
+		if (kind == "air.sampler") {
+			// find the location index info
+			size_t infoIdx = 0;
+			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
+				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
+
+					if (str == "air.location_index") {
+						break;
+					}
+				}
+			}
+
+			if (infoIdx >= parameterInfo.size()) {
+				// weird, location index info not found
+				std::runtime_error("Failed to find location index info for buffer");
+			}
+
+			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, bindingIndex, internalBindingIndex, /* ignored: */ TextureAccessType::Read, /* ignored: */ SIZE_MAX });
+
+			auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
+			auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
+			auto var = builder.addGlobalVariable(samplerPtrType, SPIRV::StorageClass::UniformConstant);
+			//auto load = builder.encodeLoad(samplerType, var);
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(var);
+
+			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(var, samplerPtrType);
+
+			++internalBindingIndex;
+		}
+	}
+
 	// find global sampler variables
 	//
 	// unlike Vulkan/SPIR-V, Metal allows you to declare/define samplers within the shader itself. fortunately for us, any such samplers
