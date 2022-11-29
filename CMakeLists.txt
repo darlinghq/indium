@@ -122,4 +122,8 @@ install(TARGETS indium indium_kit iridium LIBRARY)
 install(TARGETS mtl2spv RUNTIME)
 install(DIRECTORY include/ DESTINATION include)
 
-add_subdirectory(test)
+option(ENABLE_TESTS "Whether or not to enable tests" OFF)
+
+if (ENABLE_TESTS)
+	add_subdirectory(test)
+endif ()
