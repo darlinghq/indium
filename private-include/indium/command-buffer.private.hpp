@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 
 namespace Indium {
 	class PrivateCommandQueue;
@@ -22,6 +23,8 @@ namespace Indium {
 		std::vector<Handler> _scheduledHandlers;
 		std::vector<Handler> _completedHandlers;
 		bool _committed = false;
+		std::condition_variable _completedCondvar;
+		bool _completed = false;
 
 	public:
 		PrivateCommandBuffer(std::shared_ptr<PrivateCommandQueue> commandQueue);
@@ -33,6 +36,7 @@ namespace Indium {
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) override;
 		virtual void addScheduledHandler(std::function<void(std::shared_ptr<CommandBuffer>)> handler) override;
 		virtual void addCompletedHandler(std::function<void(std::shared_ptr<CommandBuffer>)> handler) override;
+		virtual void waitUntilCompleted() override;
 
 		virtual std::shared_ptr<CommandQueue> commandQueue() override;
 		virtual std::shared_ptr<Device> device() override;

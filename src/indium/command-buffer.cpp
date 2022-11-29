@@ -5,6 +5,8 @@
 #include <indium/texture.private.hpp>
 #include <indium/drawable.hpp>
 
+#include <condition_variable>
+
 Indium::CommandBuffer::~CommandBuffer() {};
 
 std::shared_ptr<Indium::CommandQueue> Indium::PrivateCommandBuffer::commandQueue() {
@@ -157,6 +159,13 @@ void Indium::PrivateCommandBuffer::commit() {
 	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
 	// UPDATE: upon further testing, it seems that this only occurs when the view is off-screen/hidden. weird.
 	_privateDevice->waitForSemaphore(timelineSemaphore->semaphore, timelineSemaphore->count, [self, timelineSemaphore, extraWaitSemaphores, presentationSemaphores]() {
+		{
+			std::unique_lock lock(self->_mutex);
+			self->_completed = true;
+		}
+
+		self->_completedCondvar.notify_all();
+
 		// TODO: invoke scheduled handlers when the command buffer is scheduled instead of completed
 		for (const auto& handler: self->_scheduledHandlers) {
 			handler(self);
@@ -222,4 +231,12 @@ void Indium::PrivateCommandBuffer::addCompletedHandler(std::function<void(std::s
 		abort();
 	}
 	_completedHandlers.push_back(handler);
+};
+
+void Indium::PrivateCommandBuffer::waitUntilCompleted() {
+	std::unique_lock lock(_mutex);
+
+	while (!_completed) {
+		_completedCondvar.wait(lock);
+	}
 };

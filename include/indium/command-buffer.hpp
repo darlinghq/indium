@@ -23,6 +23,7 @@ namespace Indium {
 		using Handler = std::function<void(std::shared_ptr<CommandBuffer>)>;
 		virtual void addScheduledHandler(Handler handler) = 0;
 		virtual void addCompletedHandler(Handler handler) = 0;
+		virtual void waitUntilCompleted() = 0;
 
 		virtual std::shared_ptr<CommandQueue> commandQueue() = 0;
 		virtual std::shared_ptr<Device> device() = 0;
