@@ -669,4 +669,62 @@ namespace Indium {
 		}
 		throw BadEnumValue();
 	};
+
+	static constexpr VkFormat vertexFormatToVkFormat(VertexFormat vertexFormat) {
+		switch (vertexFormat) {
+			case VertexFormat::Invalid:               return VK_FORMAT_UNDEFINED;
+			case VertexFormat::UChar2:                return VK_FORMAT_R8G8_UINT;
+			case VertexFormat::UChar3:                return VK_FORMAT_R8G8B8_UINT;
+			case VertexFormat::UChar4:                return VK_FORMAT_R8G8B8A8_UINT;
+			case VertexFormat::Char2:                 return VK_FORMAT_R8G8_SINT;
+			case VertexFormat::Char3:                 return VK_FORMAT_R8G8B8_SINT;
+			case VertexFormat::Char4:                 return VK_FORMAT_R8G8B8A8_SINT;
+			case VertexFormat::UChar2Normalized:      return VK_FORMAT_R8G8_UNORM;
+			case VertexFormat::UChar3Normalized:      return VK_FORMAT_R8G8B8_UNORM;
+			case VertexFormat::UChar4Normalized:      return VK_FORMAT_R8G8B8A8_UNORM;
+			case VertexFormat::Char2Normalized:       return VK_FORMAT_R8G8_SNORM;
+			case VertexFormat::Char3Normalized:       return VK_FORMAT_R8G8B8_SNORM;
+			case VertexFormat::Char4Normalized:       return VK_FORMAT_R8G8B8A8_SNORM;
+			case VertexFormat::UShort2:               return VK_FORMAT_R16G16_UINT;
+			case VertexFormat::UShort3:               return VK_FORMAT_R16G16B16_UINT;
+			case VertexFormat::UShort4:               return VK_FORMAT_R16G16B16A16_UINT;
+			case VertexFormat::Short2:                return VK_FORMAT_R16G16_SINT;
+			case VertexFormat::Short3:                return VK_FORMAT_R16G16B16_SINT;
+			case VertexFormat::Short4:                return VK_FORMAT_R16G16B16A16_SINT;
+			case VertexFormat::UShort2Normalized:     return VK_FORMAT_R16G16_UNORM;
+			case VertexFormat::UShort3Normalized:     return VK_FORMAT_R16G16B16_UNORM;
+			case VertexFormat::UShort4Normalized:     return VK_FORMAT_R16G16B16A16_UNORM;
+			case VertexFormat::Short2Normalized:      return VK_FORMAT_R16G16_SNORM;
+			case VertexFormat::Short3Normalized:      return VK_FORMAT_R16G16B16_SNORM;
+			case VertexFormat::Short4Normalized:      return VK_FORMAT_R16G16B16A16_SNORM;
+			case VertexFormat::Half2:                 return VK_FORMAT_R16G16_SFLOAT;
+			case VertexFormat::Half3:                 return VK_FORMAT_R16G16B16_SFLOAT;
+			case VertexFormat::Half4:                 return VK_FORMAT_R16G16B16A16_SFLOAT;
+			case VertexFormat::Float:                 return VK_FORMAT_R32_SFLOAT;
+			case VertexFormat::Float2:                return VK_FORMAT_R32G32_SFLOAT;
+			case VertexFormat::Float3:                return VK_FORMAT_R32G32B32_SFLOAT;
+			case VertexFormat::Float4:                return VK_FORMAT_R32G32B32A32_SFLOAT;
+			case VertexFormat::Int:                   return VK_FORMAT_R32_SINT;
+			case VertexFormat::Int2:                  return VK_FORMAT_R32G32_SINT;
+			case VertexFormat::Int3:                  return VK_FORMAT_R32G32B32_SINT;
+			case VertexFormat::Int4:                  return VK_FORMAT_R32G32B32A32_SINT;
+			case VertexFormat::UInt:                  return VK_FORMAT_R32_UINT;
+			case VertexFormat::UInt2:                 return VK_FORMAT_R32G32_UINT;
+			case VertexFormat::UInt3:                 return VK_FORMAT_R32G32B32_UINT;
+			case VertexFormat::UInt4:                 return VK_FORMAT_R32G32B32A32_UINT;
+			case VertexFormat::Int1010102Normalized:  return VK_FORMAT_A2R10G10B10_SINT_PACK32;
+			case VertexFormat::UInt1010102Normalized: return VK_FORMAT_A2R10G10B10_UINT_PACK32;
+			case VertexFormat::UChar4Normalized_BGRA: return VK_FORMAT_B8G8R8A8_UNORM;
+			case VertexFormat::UChar:                 return VK_FORMAT_R8_UINT;
+			case VertexFormat::Char:                  return VK_FORMAT_R8_SINT;
+			case VertexFormat::UCharNormalized:       return VK_FORMAT_R8_UNORM;
+			case VertexFormat::CharNormalized:        return VK_FORMAT_R8_SNORM;
+			case VertexFormat::UShort:                return VK_FORMAT_R16_UINT;
+			case VertexFormat::Short:                 return VK_FORMAT_R16_SINT;
+			case VertexFormat::UShortNormalized:      return VK_FORMAT_R16_UNORM;
+			case VertexFormat::ShortNormalized:       return VK_FORMAT_R16_SNORM;
+			case VertexFormat::Half:                  return VK_FORMAT_R16_SFLOAT;
+		}
+		throw BadEnumValue();
+	};
 };

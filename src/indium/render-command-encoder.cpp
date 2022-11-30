@@ -406,6 +406,32 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 	}
 
 	vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
+
+	const auto& vertexInputBindings = _privatePSO->vertexInputBindings();
+	if (vertexInputBindings.size() > 0) {
+		std::vector<VkBuffer> buffers;
+		std::vector<VkDeviceSize> offsets;
+
+		buffers.resize(vertexInputBindings.size());
+		offsets.resize(vertexInputBindings.size());
+
+		for (size_t vulkanIndex = 0; vulkanIndex < vertexInputBindings.size(); ++vulkanIndex) {
+			const auto& metalIndex = vertexInputBindings[vulkanIndex];
+
+			if (metalIndex >= _functionResources[0].buffers.size()) {
+				// technically, this requires the `nullDescriptor` feature, but we should never run into this case anyways.
+				buffers[vulkanIndex] = VK_NULL_HANDLE;
+				offsets[vulkanIndex] = 0;
+			} else {
+				auto [buffer, offset] = _functionResources[0].buffers[metalIndex];
+				auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+				buffers[vulkanIndex] = privateBuffer->buffer();
+				offsets[vulkanIndex] = offset;
+			}
+		}
+
+		vkCmdBindVertexBuffers(buf->commandBuffer(), 0, vertexInputBindings.size(), buffers.data(), offsets.data());
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {

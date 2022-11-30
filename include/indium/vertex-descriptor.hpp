@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <vector>
+#include <unordered_map>
 
 namespace Indium {
 	struct VertexBufferLayoutDescriptor {
@@ -14,13 +15,13 @@ namespace Indium {
 	};
 
 	struct VertexAttributeDescriptor {
-		VertexFormat format;
-		size_t offset;
-		size_t bufferIndex;
+		VertexFormat format = VertexFormat::Invalid;
+		size_t offset = 0;
+		size_t bufferIndex = 0;
 	};
 
 	struct VertexDescriptor {
-		std::vector<VertexBufferLayoutDescriptor> layouts;
-		std::vector<VertexAttributeDescriptor> attributes;
+		std::unordered_map<size_t, VertexBufferLayoutDescriptor> layouts;
+		std::unordered_map<size_t, VertexAttributeDescriptor> attributes;
 	};
 };

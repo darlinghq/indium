@@ -17,6 +17,7 @@ namespace Indium {
 			PrimitiveTopologyClass _primitiveTopology;
 			std::shared_ptr<PrivateFunction> _vertexFunction;
 			std::shared_ptr<PrivateFunction> _fragmentFunction;
+			std::optional<VertexDescriptor> _vertexDescriptor;
 
 		public:
 			PrivateRenderPipelineState(std::shared_ptr<PrivateDevice> device, const RenderPipelineDescriptor& descriptor);
@@ -47,5 +48,7 @@ namespace Indium {
 
 			using DescriptorSetLayoutArray = std::array<VkDescriptorSetLayout, 2>;
 			INDIUM_PROPERTY(DescriptorSetLayoutArray, d, D,escriptorSetLayouts) {};
+
+			INDIUM_PROPERTY_READONLY_REF(std::vector<size_t>, v,V,ertexInputBindings);
 	};
 };

@@ -9,6 +9,8 @@
 #include <indium/linked-functions.hpp>
 
 #include <memory>
+#include <optional>
+#include <unordered_map>
 
 namespace Indium {
 	class Device;
@@ -31,9 +33,10 @@ namespace Indium {
 		std::shared_ptr<Function> fragmentFunction = nullptr;
 		size_t maxVertexCallStackDepth = 1;
 		size_t maxFragmentCallStackDepth = 1;
-		std::shared_ptr<VertexDescriptor> vertexDescriptor;
-		std::vector<PipelineBufferDescriptor> vertexBuffers;
-		std::vector<PipelineBufferDescriptor> fragmentBuffers;
+		std::optional<VertexDescriptor> vertexDescriptor;
+		std::unordered_map<size_t, PipelineBufferDescriptor> vertexBuffers;
+		std::unordered_map<size_t, PipelineBufferDescriptor> fragmentBuffers;
+		// XXX: this should probably be an unordered_map, too
 		std::vector<RenderPipelineColorAttachmentDescriptor> colorAttachments;
 		PixelFormat depthAttachmentPixelFormat = PixelFormat::Invalid;
 		PixelFormat stencilAttachmentPixelFormat = PixelFormat::Invalid;

@@ -15,7 +15,7 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	_privateDevice(device)
 {
 	_colorAttachments = descriptor.colorAttachments;
-
+	_vertexDescriptor = descriptor.vertexDescriptor;
 	_primitiveTopology = descriptor.inputPrimitiveTopology;
 
 	_vertexFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.vertexFunction);
@@ -128,6 +128,60 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	VkPipelineVertexInputStateCreateInfo vertexInputState {};
 	vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
+	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
+
+	if (_vertexDescriptor) {
+		const auto& desc = *_vertexDescriptor;
+
+		// used to get rid of holes between binding indices (i.e. to compact them and make them easier to bind on our side)
+		std::unordered_map<size_t, size_t> metalToVulkanBindingIndices;
+		size_t currIndex = 0;
+
+		for (const auto& [index, layout]: desc.layouts) {
+			VkVertexInputBindingDescription bindingDesc {};
+
+			if (layout.stepRate != 1) {
+				throw std::runtime_error("TODO: support step rates other than 1");
+			}
+			if (layout.stepFunction != VertexStepFunction::PerVertex && layout.stepFunction != VertexStepFunction::PerInstance) {
+				throw std::runtime_error("TODO: support step functions other than per-vertex and per-instance");
+			}
+
+			auto vulkanIndex = currIndex;
+			metalToVulkanBindingIndices[index] = vulkanIndex;
+			++currIndex;
+
+			bindingDesc.binding = vulkanIndex;
+			bindingDesc.stride = layout.stride;
+			bindingDesc.inputRate = (layout.stepFunction == VertexStepFunction::PerVertex) ? VK_VERTEX_INPUT_RATE_VERTEX : VK_VERTEX_INPUT_RATE_INSTANCE;
+
+			vertexBindingDescs.push_back(bindingDesc);
+		}
+
+		for (const auto& [index, attr]: desc.attributes) {
+			VkVertexInputAttributeDescription attrDesc {};
+
+			attrDesc.location = index;
+			attrDesc.binding = metalToVulkanBindingIndices[attr.bufferIndex];
+			attrDesc.format = vertexFormatToVkFormat(attr.format);
+			attrDesc.offset = attr.offset;
+
+			vertexAttrDescs.push_back(attrDesc);
+		}
+
+		_vertexInputBindings.resize(currIndex);
+
+		for (const auto& [metal, vulkan]: metalToVulkanBindingIndices) {
+			_vertexInputBindings[vulkan] = metal;
+		}
+	}
+
+	vertexInputState.vertexBindingDescriptionCount = vertexBindingDescs.size();
+	vertexInputState.pVertexBindingDescriptions = vertexBindingDescs.data();
+	vertexInputState.vertexAttributeDescriptionCount = vertexAttrDescs.size();
+	vertexInputState.pVertexAttributeDescriptions = vertexAttrDescs.data();
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {};
 	inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
