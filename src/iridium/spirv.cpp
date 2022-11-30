@@ -340,6 +340,13 @@ template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScal
 	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, true)), true);
 };
 
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<_Float16>(_Float16 value) {
+	// technically UB but it's fine
+	uintmax_t tmp = 0;
+	memcpy(&tmp, &value, sizeof(value));
+	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 16)), false);
+};
+
 template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<float>(float value) {
 	// technically UB but it's fine
 	uintmax_t tmp = 0;
@@ -621,6 +628,16 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFClamp(ResultID resultTy
 	return result;
 };
 
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFMax(ResultID resultTypeID, ResultID operand1, ResultID operand2) {
+	auto result = reserveResultID();
+	auto tmp = beginGLSLInstruction(GLSLOpcode::FMax, *_currentFunctionWriter, resultTypeID, result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodePow(ResultID resultTypeID, ResultID base, ResultID exponent) {
 	auto result = reserveResultID();
 	auto tmp = beginGLSLInstruction(GLSLOpcode::Pow, *_currentFunctionWriter, resultTypeID, result);
@@ -715,6 +732,14 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeSqrt(ResultID resultType
 	auto result = reserveResultID();
 	auto tmp = beginGLSLInstruction(GLSLOpcode::Sqrt, *_currentFunctionWriter, resultTypeID, result);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeTrunc(ResultID resultTypeID, ResultID operand) {
+	auto result = reserveResultID();
+	auto tmp = beginGLSLInstruction(GLSLOpcode::Trunc, *_currentFunctionWriter, resultTypeID, result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
 	endInstruction(std::move(tmp));
 	return result;
 };

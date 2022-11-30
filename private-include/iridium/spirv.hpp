@@ -448,6 +448,7 @@ namespace Iridium {
 			ConvertUToF = 112,
 			UConvert = 113,
 			FConvert = 115,
+			QuantizeToF16 = 116,
 			ConvertPtrToU = 117,
 			ConvertUToPtr = 120,
 			Bitcast = 124,
@@ -683,6 +684,7 @@ namespace Iridium {
 			ResultID encodeFConvert(ResultID resultTypeID, ResultID target);
 			ResultID encodeInverseSqrt(ResultID resultTypeID, ResultID target);
 			ResultID encodeFClamp(ResultID resultTypeID, ResultID target, ResultID min, ResultID max);
+			ResultID encodeFMax(ResultID resultTypeID, ResultID operand1, ResultID operand2);
 			ResultID encodePow(ResultID resultTypeID, ResultID base, ResultID exponent);
 			ResultID encodeVectorExtractDynamic(ResultID resultTypeID, ResultID vector, ResultID index);
 			ResultID encodeVectorInsertDynamic(ResultID resultTypeID, ResultID vector, ResultID component, ResultID index);
@@ -693,6 +695,7 @@ namespace Iridium {
 			ResultID encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks);
 			void encodeSelectionMerge(ResultID mergeBlock);
 			ResultID encodeSqrt(ResultID resultTypeID, ResultID target);
+			ResultID encodeTrunc(ResultID resultTypeID, ResultID operand);
 
 			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 
@@ -707,6 +710,7 @@ namespace Iridium {
 		template<> ResultID Builder::declareConstantScalar<int32_t>(int32_t value);
 		template<> ResultID Builder::declareConstantScalar<uint64_t>(uint64_t value);
 		template<> ResultID Builder::declareConstantScalar<int64_t>(int64_t value);
+		template<> ResultID Builder::declareConstantScalar<_Float16>(_Float16 value);
 		template<> ResultID Builder::declareConstantScalar<float>(float value);
 		template<> ResultID Builder::declareConstantScalar<double>(double value);
 	};

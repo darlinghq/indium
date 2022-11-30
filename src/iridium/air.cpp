@@ -38,6 +38,8 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 // TEST
 #include <iostream>
 
+class ImpossibleResultID: public std::exception {};
+
 static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& builder, LLVMTypeRef llvmType) {
 	using namespace Iridium::SPIRV;
 
@@ -137,7 +139,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 		} break;
 
 		default:
-			return ResultIDInvalid;
+			throw ImpossibleResultID();
 	}
 };
 
@@ -153,6 +155,13 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 	auto kind = LLVMGetValueKind(llvmValue);
 	auto type = LLVMTypeOf(llvmValue);
 	auto typeKind = LLVMGetTypeKind(type);
+
+	{
+		ResultID maybe = builder.lookupResultID(reinterpret_cast<uintptr_t>(llvmValue));
+		if (maybe != ResultIDInvalid) {
+			return maybe;
+		}
+	}
 
 	switch (kind) {
 		case LLVMConstantIntValueKind: {
@@ -173,8 +182,11 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 				case LLVMDoubleTypeKind:
 					return builder.declareConstantScalar<double>(val);
 
+				case LLVMHalfTypeKind:
+					return builder.declareConstantScalar<_Float16>(val);
+
 				default:
-					return ResultIDInvalid;
+					throw ImpossibleResultID();
 			}
 		} break;
 
@@ -237,12 +249,12 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 				} break;
 
 				default:
-					return ResultIDInvalid;
+					throw ImpossibleResultID();
 			}
 		} break;
 
 		default:
-			return builder.lookupResultID(reinterpret_cast<uintptr_t>(llvmValue));
+			throw ImpossibleResultID();
 	}
 };
 
@@ -1115,6 +1127,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeSqrt(type, llvmValueToResultID(builder, arg));
+					} else if (name == "air.fast_fmax.f32") {
+						auto operand1 = LLVMGetOperand(inst, 0);
+						auto operand2 = LLVMGetOperand(inst, 1);
+
+						resID = builder.encodeFMax(type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
 					} else {
 						throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + name.data() + ")");
 					}
@@ -1343,6 +1360,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, resultType);
+				} break;
+
+				case LLVMFPTrunc: {
+					auto arg = LLVMGetOperand(inst, 0);
+					auto lltype = LLVMTypeOf(inst);
+					auto type = llvmTypeToSPIRVType(builder, lltype);
+					auto argID = llvmValueToResultID(builder, arg);
+
+					// TODO: check if this needs to be different (e.g. to use QuantizeToF16 or something like that)
+					auto resID = builder.encodeFConvert(type, argID);
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
 				} break;
 
 				default:
