@@ -207,6 +207,11 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			return builder.declareUndefinedValue(llvmTypeToSPIRVType(builder, type));
 		} break;
 
+		case LLVMConstantAggregateZeroValueKind: {
+			// SPIR-V's concept of 'null' seems to map pretty cleanly to LLVM's zero-initializers
+			return builder.declareNullValue(llvmTypeToSPIRVType(builder, type));
+		} break;
+
 		case LLVMConstantExprValueKind: {
 			switch (LLVMGetConstOpcode(llvmValue)) {
 				case LLVMBitCast: {
@@ -668,6 +673,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// TODO: same here (find a better way...)
 			if (textureClassName == "texture2d") {
 				dimensionality = SPIRV::Dim::e2D;
+			} else if (textureClassName == "texturecube") {
+				dimensionality = SPIRV::Dim::eCube;
 			}
 
 			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, false, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
@@ -1039,7 +1046,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
-					} else if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_2d.v4f32") {
+					} else if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_2d.v4f32" || name == "air.sample_texture_cube.v4f16") {
 						auto textureArg = LLVMGetOperand(inst, 0);
 						auto samplerArg = LLVMGetOperand(inst, 1);
 						auto textureCoordArg = LLVMGetOperand(inst, 2);
@@ -1074,7 +1081,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto textureSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, textureSampleComponentType, 16, 8));
 						auto sampled = builder.encodeImageSampleImplicitLod(textureSampleType, sampledImage, llvmValueToResultID(builder, textureCoordArg));
 
-						if (name == "air.sample_texture_2d.v4f16") {
+						if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_cube.v4f16") {
 							auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
 							auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType, 8, 8));
 							sampled = builder.encodeFConvert(convertedType, sampled);
@@ -1086,7 +1093,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
-					} else if (name == "air.dot.v3f32") {
+					} else if (name == "air.dot.v3f32" || name == "air.dot.v4f32") {
 						auto operand1 = LLVMGetOperand(inst, 0);
 						auto operand2 = LLVMGetOperand(inst, 1);
 
@@ -1104,8 +1111,12 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto exponent = LLVMGetOperand(inst, 1);
 
 						resID = builder.encodePow(type, llvmValueToResultID(builder, base), llvmValueToResultID(builder, exponent));
+					} else if (name == "air.fast_sqrt.f32") {
+						auto arg = LLVMGetOperand(inst, 0);
+
+						resID = builder.encodeSqrt(type, llvmValueToResultID(builder, arg));
 					} else {
-						throw std::runtime_error("TODO: support actual function calls");
+						throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + name.data() + ")");
 					}
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
@@ -1251,6 +1262,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					switch (predicate) {
 						case LLVMRealOGT: {
 							resID = builder.encodeFOrdGreaterThan(llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
+						} break;
+
+						case LLVMRealOLT: {
+							resID = builder.encodeFOrdLessThan(llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
 						} break;
 
 						default:

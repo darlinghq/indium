@@ -468,6 +468,7 @@ namespace Iridium {
 			FRem = 140,
 			FMod = 141,
 			Dot = 148,
+			FOrdLessThan = 184,
 			FOrdGreaterThan = 186,
 			Phi = 245,
 			SelectionMerge = 247,
@@ -598,6 +599,7 @@ namespace Iridium {
 			uint16_t _generatorVersion = 0;
 			std::unordered_map<std::pair<uintmax_t, ResultID>, ResultID> _constantScalars;
 			std::unordered_map<ResultID, ResultID> _undefinedValues;
+			std::unordered_map<ResultID, ResultID> _nullValues;
 			std::unordered_map<ResultID, ResultID> _resultIDTypes;
 			std::unordered_set<std::string> _extensions;
 			ResultID _debugPrintf = ResultIDInvalid;
@@ -658,6 +660,7 @@ namespace Iridium {
 			ResultID declareConstantComposite(ResultID typeID, std::vector<ResultID> elements);
 
 			ResultID declareUndefinedValue(ResultID typeID);
+			ResultID declareNullValue(ResultID typeID);
 
 			ResultID insertLabel(ResultID id = ResultIDInvalid);
 			void referenceGlobalVariable(ResultID id);
@@ -683,11 +686,13 @@ namespace Iridium {
 			ResultID encodePow(ResultID resultTypeID, ResultID base, ResultID exponent);
 			ResultID encodeVectorExtractDynamic(ResultID resultTypeID, ResultID vector, ResultID index);
 			ResultID encodeVectorInsertDynamic(ResultID resultTypeID, ResultID vector, ResultID component, ResultID index);
+			ResultID encodeFOrdLessThan(ResultID operand1, ResultID operand2);
 			ResultID encodeFOrdGreaterThan(ResultID operand1, ResultID operand2);
 			void encodeBranch(ResultID targetLabel);
 			void encodeBranchConditional(ResultID condition, ResultID trueLabel, ResultID falseLabel);
 			ResultID encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks);
 			void encodeSelectionMerge(ResultID mergeBlock);
+			ResultID encodeSqrt(ResultID resultTypeID, ResultID target);
 
 			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 

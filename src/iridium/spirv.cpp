@@ -383,6 +383,23 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareUndefinedValue(ResultID
 	return result;
 };
 
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareNullValue(ResultID typeID) {
+	auto it = _nullValues.find(typeID);
+
+	if (it != _nullValues.end()) {
+		return it->second;
+	}
+
+	auto result = reserveResultID();
+
+	auto tmp = beginInstruction(Opcode::ConstantNull, _constants);
+	_constants.writeIntegerLE<uint32_t>(typeID);
+	_constants.writeIntegerLE<uint32_t>(result);
+	endInstruction(std::move(tmp));
+
+	return result;
+};
+
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::insertLabel(ResultID id) {
 	auto tmp = beginInstruction(Opcode::Label, *_currentFunctionWriter);
 	if (id == ResultIDInvalid) {
@@ -636,6 +653,18 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeVectorInsertDynamic(Resu
 	return result;
 };
 
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFOrdLessThan(ResultID operand1, ResultID operand2) {
+	auto result = reserveResultID();
+	auto resultTypeID = declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
+	auto tmp = beginInstruction(Opcode::FOrdLessThan, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand1);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand2);
+	endInstruction(std::move(tmp));
+	return result;
+};
+
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeFOrdGreaterThan(ResultID operand1, ResultID operand2) {
 	auto result = reserveResultID();
 	auto resultTypeID = declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
@@ -680,6 +709,14 @@ void Iridium::SPIRV::Builder::encodeSelectionMerge(ResultID mergeBlock) {
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(mergeBlock);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(0);
 	endInstruction(std::move(tmp));
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeSqrt(ResultID resultTypeID, ResultID target) {
+	auto result = reserveResultID();
+	auto tmp = beginGLSLInstruction(GLSLOpcode::Sqrt, *_currentFunctionWriter, resultTypeID, result);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(target);
+	endInstruction(std::move(tmp));
+	return result;
 };
 
 void Iridium::SPIRV::Builder::encodeDebugPrint(std::string format, std::vector<ResultID> arguments) {
