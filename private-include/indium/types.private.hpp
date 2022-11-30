@@ -555,8 +555,8 @@ namespace Indium {
 			case TextureType::e2D:                 return VK_IMAGE_TYPE_2D;
 			case TextureType::e2DArray:            return VK_IMAGE_TYPE_2D;
 			case TextureType::e2DMultisample:      return VK_IMAGE_TYPE_2D;
-			case TextureType::eCube:               return VK_IMAGE_TYPE_3D;
-			case TextureType::eCubeArray:          return VK_IMAGE_TYPE_3D;
+			case TextureType::eCube:               return VK_IMAGE_TYPE_2D;
+			case TextureType::eCubeArray:          return VK_IMAGE_TYPE_2D;
 			case TextureType::e3D:                 return VK_IMAGE_TYPE_3D;
 			case TextureType::e2DMultisampleArray: return VK_IMAGE_TYPE_2D;
 			case TextureType::eTextureBuffer:      return VK_IMAGE_TYPE_1D; // ?

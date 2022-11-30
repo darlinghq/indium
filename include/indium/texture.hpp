@@ -36,6 +36,20 @@ namespace Indium {
 			desc.mipmapLevelCount = ((mipmapped) ? static_cast<size_t>(std::floor(std::log2(std::max(width, height)))) : 0) + 1;
 			return desc;
 		};
+
+		static constexpr TextureDescriptor textureCubeDescriptor(PixelFormat pixelFormat, size_t sideLength, bool mipmapped) {
+			TextureDescriptor desc {};
+			desc.textureType = TextureType::eCube;
+			desc.pixelFormat = pixelFormat;
+			desc.width = sideLength;
+			desc.height = sideLength;
+			desc.depth = 1;
+			// TODO: check which formula Apple uses to calculate mipmap level count.
+			//       it's probably this same formula (from OpenGL and Vulkan), but check just in case.
+			desc.mipmapLevelCount = ((mipmapped) ? static_cast<size_t>(std::floor(std::log2(sideLength))) : 0) + 1;
+			desc.arrayLength = 6;
+			return desc;
+		};
 	};
 
 	class Texture: public Resource {

@@ -21,7 +21,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_pt
 
 	auto texType = texture->textureType();
 	bool is1D = texType == TextureType::e1D || texType == TextureType::e1DArray;
-	bool is2D = texType == TextureType::e2D || texType == TextureType::e2DArray || texType == TextureType::e2DMultisample || texType == TextureType::e2DMultisampleArray;
+	bool is2D = texType == TextureType::e2D || texType == TextureType::e2DArray || texType == TextureType::e2DMultisample || texType == TextureType::e2DMultisampleArray || texType == TextureType::eCube || texType == TextureType::eCubeArray;
 	bool is3D = texType == TextureType::e3D;
 
 	//

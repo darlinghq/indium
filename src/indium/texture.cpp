@@ -278,6 +278,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	//info.samples = _descriptor.sampleCount;
 	info.samples = VK_SAMPLE_COUNT_1_BIT;
 
+	if (_descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray) {
+		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	}
+
 	auto imageAspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
 	bool isColor = (imageAspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
 	bool isDepthStencil = (imageAspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
@@ -556,8 +560,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	barrier.subresourceRange.aspectMask = aspect;
 	barrier.subresourceRange.baseMipLevel = mipmapLevel;
 	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = _descriptor.arrayLength;
+	barrier.subresourceRange.baseArrayLayer = slice;
+	barrier.subresourceRange.layerCount = 1;
 
 	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
@@ -568,8 +572,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	copyInfo.bufferImageHeight = bytesPerImage / bytesPerRow;
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = mipmapLevel;
-	copyInfo.imageSubresource.baseArrayLayer = 0;
-	copyInfo.imageSubresource.layerCount = _descriptor.arrayLength;
+	copyInfo.imageSubresource.baseArrayLayer = slice;
+	copyInfo.imageSubresource.layerCount = 1;
 	copyInfo.imageOffset.x = region.origin.x;
 	copyInfo.imageOffset.y = region.origin.y;
 	copyInfo.imageOffset.z = region.origin.z;
