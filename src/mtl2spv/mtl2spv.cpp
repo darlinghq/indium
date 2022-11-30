@@ -67,7 +67,15 @@ int main(int argc, char** argv) {
 		outFileJSON << "{" << std::endl;
 		outFileJSON << "\t\"function-infos\": {" << std::endl;
 		for (auto it = outputInfo.functionInfos.begin(); it != outputInfo.functionInfos.end(); ++it) {
-			outFileJSON << "\t\t\"" << it->first << "\": {" << std::endl;
+			char funcTypeCode = 'u';
+
+			if (it->second.type == Iridium::FunctionType::Fragment) {
+				funcTypeCode = 'f';
+			} else if (it->second.type == Iridium::FunctionType::Vertex) {
+				funcTypeCode = 'v';
+			}
+
+			outFileJSON << "\t\t\"" << funcTypeCode << '@' << it->first << "\": {" << std::endl;
 
 			outFileJSON << "\t\t\t\"bindings\": [" << std::endl;
 			for (size_t i = 0; i < it->second.bindings.size(); ++i) {
@@ -81,13 +89,21 @@ int main(int argc, char** argv) {
 					outFileJSON << "texture";
 				} else if (binding.type == Iridium::BindingType::Sampler) {
 					outFileJSON << "sampler";
+				} else if (binding.type == Iridium::BindingType::VertexInput) {
+					outFileJSON << "vertex-input";
 				} else {
 					outFileJSON << "undefined";
 				}
 				outFileJSON << "\"," << std::endl;
 
-				outFileJSON << "\t\t\t\t\t\"index\": " << (binding.index == SIZE_MAX ? "-1" : std::to_string(binding.index)) << "," << std::endl;
-				outFileJSON << "\t\t\t\t\t\"internal-index\": " << std::to_string(binding.internalIndex) << (binding.type == Iridium::BindingType::Buffer ? "" : ",") << std::endl;
+				outFileJSON << "\t\t\t\t\t\"index\": " << (binding.index == SIZE_MAX ? "-1" : std::to_string(binding.index));
+
+				if (binding.type != Iridium::BindingType::VertexInput) {
+					outFileJSON << "," << std::endl;
+					outFileJSON << "\t\t\t\t\t\"internal-index\": " << std::to_string(binding.internalIndex) << (binding.type == Iridium::BindingType::Buffer ? "" : ",") << std::endl;
+				} else {
+					outFileJSON << std::endl;
+				}
 
 				if (binding.type == Iridium::BindingType::Texture) {
 					outFileJSON << "\t\t\t\t\t\"texture-access-type\": \"";

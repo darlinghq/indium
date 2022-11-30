@@ -557,6 +557,42 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
 			builder.setResultType(load, type);
+		} else if (kind == "air.vertex_input") {
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, type, 8));
+			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Input);
+			auto load = builder.encodeLoad(type, var);
+
+			// find the location index info
+			size_t infoIdx = 0;
+			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
+				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
+
+					if (str == "air.location_index") {
+						break;
+					}
+				}
+			}
+
+			if (infoIdx >= parameterInfo.size()) {
+				// weird, location index info not found
+				std::runtime_error("Failed to find location index info for buffer");
+			}
+
+			uint32_t locationIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+
+			funcInfo.bindings.push_back(BindingInfo { BindingType::VertexInput, locationIndex, /* ignored: */ 0, /* ignored: */ TextureAccessType::Read, /* ignored: */ 0 });
+
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { locationIndex } });
+
+			builder.referenceGlobalVariable(var);
+
+			_parameterIDs.push_back(load);
+
+			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.setResultType(load, type);
 		}
 	}
 

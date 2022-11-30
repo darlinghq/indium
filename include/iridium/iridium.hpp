@@ -19,6 +19,7 @@ namespace Iridium {
 		Buffer,
 		Texture,
 		Sampler,
+		VertexInput,
 	};
 
 	enum class TextureAccessType {
