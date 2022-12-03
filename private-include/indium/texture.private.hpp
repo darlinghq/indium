@@ -53,6 +53,8 @@ namespace Indium {
 
 		virtual VkImageLayout imageLayout() = 0;
 
+		virtual size_t vulkanArrayLength() const;
+
 		// TODO: figure out how to allow simultaneous reads and properly synchronize them with writes.
 		//       the problem is that we need to signal the timeline semaphore once the final read is done
 		//       because timeline semaphores only allow the counter to increase, but we can't know which
@@ -161,6 +163,7 @@ namespace Indium {
 		virtual VkImageView imageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
+		virtual size_t vulkanArrayLength() const override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;

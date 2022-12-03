@@ -154,7 +154,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	framebufferInfo.pAttachments = framebufferAttachments.data();
 	framebufferInfo.width = firstTexture->width();
 	framebufferInfo.height = firstTexture->height();
-	framebufferInfo.layers = firstTexture->arrayLength();
+	framebufferInfo.layers = std::dynamic_pointer_cast<PrivateTexture>(firstTexture)->vulkanArrayLength();
 	if (vkCreateFramebuffer(vkDevice, &framebufferInfo, nullptr, &_framebuffer) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -223,8 +223,9 @@ void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float sl
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthClipMode(DepthClipMode depthClipMode) {
-	// TODO
-	abort();
+	if (depthClipMode != DepthClipMode::Clip) {
+		throw std::runtime_error("TODO: support setting depth clip mode");
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::setViewport(const Viewport& viewport) {
@@ -474,15 +475,7 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 
 void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size_t length, size_t index) {
 	auto cmdBuf = _privateCommandBuffer.lock();
-
-	// TODO: we can make this "Private" instead
-	auto buf = cmdBuf->device()->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
-
-	if (_functionResources[0].buffers.size() <= index) {
-		_functionResources[0].buffers.resize(index + 1);
-	}
-
-	_functionResources[0].buffers[index] = std::make_pair(buf, 0);
+	_functionResources[0].setBytes(cmdBuf->device(), bytes, length, index);
 };
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
@@ -491,48 +484,96 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
-	if (_functionResources[0].buffers.size() <= index) {
-		_functionResources[0].buffers.resize(index + 1);
-	}
+	_functionResources[0].setBuffer(buffer, offset, index);
+};
 
-	_functionResources[0].buffers[index] = std::make_pair(buffer, offset);
+void Indium::PrivateRenderCommandEncoder::setVertexBuffers(const std::vector<std::shared_ptr<Buffer>>& buffers, const std::vector<size_t>& offsets, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setVertexBuffer(buffers[i], offsets[i], range.start + i);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexBufferOffset(size_t offset, size_t index) {
+	_functionResources[0].setBufferOffset(offset, index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+	_functionResources[0].setSamplerState(state, std::nullopt, index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+	_functionResources[0].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerStates(const std::vector<std::shared_ptr<SamplerState>>& states, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setVertexSamplerState(states[i], range.start + i);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerStates(const std::vector<std::shared_ptr<SamplerState>>& states, const std::vector<float>& lodMinClamps, const std::vector<float>& lodMaxClamps, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setVertexSamplerState(states[i], lodMinClamps[i], lodMaxClamps[i], range.start + i);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexTexture(std::shared_ptr<Texture> texture, size_t index) {
+	_functionResources[0].setTexture(texture, index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setVertexTextures(const std::vector<std::shared_ptr<Texture>>& textures, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setVertexTexture(textures[i], range.start + i);
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::setFragmentBytes(const void* bytes, size_t length, size_t index) {
 	auto cmdBuf = _privateCommandBuffer.lock();
-
-	// TODO: we can make this "Private" instead
-	auto buf = cmdBuf->device()->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
-
-	if (_functionResources[1].buffers.size() <= index) {
-		_functionResources[1].buffers.resize(index + 1);
-	}
-
-	_functionResources[1].buffers[index] = std::make_pair(buf, 0);
+	_functionResources[1].setBytes(cmdBuf->device(), bytes, length, index);
 };
 
 void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
-	if (_functionResources[1].buffers.size() <= index) {
-		_functionResources[1].buffers.resize(index + 1);
-	}
-
-	_functionResources[1].buffers[index] = std::make_pair(buffer, offset);
+	_functionResources[1].setBuffer(buffer, offset, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
-	if (_functionResources[1].textures.size() <= index) {
-		_functionResources[1].textures.resize(index + 1);
+void Indium::PrivateRenderCommandEncoder::setFragmentBuffers(const std::vector<std::shared_ptr<Buffer>>& buffers, const std::vector<size_t>& offsets, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setFragmentBuffer(buffers[i], offsets[i], range.start + i);
 	}
+};
 
-	_functionResources[1].textures[index] = texture;
+void Indium::PrivateRenderCommandEncoder::setFragmentBufferOffset(size_t offset, size_t index) {
+	_functionResources[1].setBufferOffset(offset, index);
 };
 
 void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
-	if (_functionResources[1].samplers.size() <= index) {
-		_functionResources[1].samplers.resize(index + 1);
-	}
+	_functionResources[1].setSamplerState(state, std::nullopt, index);
+};
 
-	_functionResources[1].samplers[index] = state;
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+	_functionResources[1].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerStates(const std::vector<std::shared_ptr<SamplerState>>& states, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setFragmentSamplerState(states[i], range.start + i);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerStates(const std::vector<std::shared_ptr<SamplerState>>& states, const std::vector<float>& lodMinClamps, const std::vector<float>& lodMaxClamps, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setFragmentSamplerState(states[i], lodMinClamps[i], lodMaxClamps[i], range.start + i);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
+	_functionResources[1].setTexture(texture, index);
+};
+
+void Indium::PrivateRenderCommandEncoder::setFragmentTextures(std::vector<std::shared_ptr<Texture>>& textures, Range<size_t> range) {
+	for (size_t i = 0; i < range.length; ++i) {
+		setFragmentTexture(textures[i], range.start + i);
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
@@ -622,4 +663,134 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<D
 			vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
 		}
 	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setTriangleFillMode(TriangleFillMode triangleFillMode) {
+	if (triangleFillMode != TriangleFillMode::Fill) {
+		// we might have to just create duplicate pipelines for each possible fill mode;
+		// there's only 2 at the moment, but this has to multiplied by the number of pipelines required
+		// for other combinations. for example, we currently have to create a pipeline for each topology class
+		// and there's 3 of those, so we would need 6 pipelines total. yikes.
+		throw std::runtime_error("TODO: support changing fill mode");
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t value) {
+	auto buf = _privateCommandBuffer.lock();
+	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_AND_BACK, value);
+};
+
+void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t front, uint32_t back) {
+	auto buf = _privateCommandBuffer.lock();
+	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, front);
+	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, back);
+};
+
+void Indium::PrivateRenderCommandEncoder::setVisibilityResultMode(VisibilityResultMode mode, size_t offset) {
+	auto buf = _privateCommandBuffer.lock();
+
+	// TODO: this can be implemented using Vulkan's occlusion queries
+	throw std::runtime_error("TODO: support visibility results");
+};
+
+void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage, RenderStages stages) {
+	useResources({ resource }, usage, stages);
+};
+
+void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage, RenderStages stages) {
+	// TODO: image layout transitions. maybe.
+	//       right now, we always keep images in the layout described by their imageLayout() method.
+	//       we only briefly transition them away for an operation and then transition them back.
+	//       however, these transitions are probably unnecessary in most cases, so we could optimize
+	//       performance by getting rid of them.
+
+	auto buf = _privateCommandBuffer.lock();
+
+	std::vector<VkBufferMemoryBarrier> bufferBarriers;
+	std::vector<VkImageMemoryBarrier> imageBarriers;
+
+	// TODO: relax this mask, maybe; it depends on what Metal does here.
+	VkAccessFlags source = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	VkAccessFlags dest = VK_ACCESS_NONE;
+
+	if (!!(usage & (ResourceUsage::Read | ResourceUsage::Sample))) {
+		dest |= VK_ACCESS_SHADER_READ_BIT;
+	}
+
+	if (!!(usage & ResourceUsage::Write)) {
+		dest |= VK_ACCESS_SHADER_WRITE_BIT;
+	}
+
+	for (const auto& resource: resources) {
+		if (auto buffer = std::dynamic_pointer_cast<PrivateBuffer>(resource)) {
+			VkBufferMemoryBarrier barrier {};
+
+			barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+			barrier.srcAccessMask = source;
+			barrier.dstAccessMask = dest;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.buffer = buffer->buffer();
+			barrier.offset = 0;
+			barrier.size = VK_WHOLE_SIZE;
+
+			bufferBarriers.push_back(barrier);
+		} else if (auto texture = std::dynamic_pointer_cast<PrivateTexture>(resource)) {
+			VkImageMemoryBarrier barrier {};
+
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcAccessMask = source;
+			barrier.dstAccessMask = dest;
+			barrier.oldLayout = texture->imageLayout();
+			barrier.newLayout = barrier.oldLayout;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = texture->image();
+			barrier.subresourceRange.aspectMask = pixelFormatToVkImageAspectFlags(texture->pixelFormat());
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = texture->mipmapLevelCount();
+			barrier.subresourceRange.baseArrayLayer = 0;
+			barrier.subresourceRange.layerCount = texture->vulkanArrayLength();
+
+			imageBarriers.push_back(barrier);
+		} else {
+			throw std::runtime_error("Unsupported resource");
+		}
+	}
+
+	// TODO: relax this, maybe, depending on what Metal does.
+	VkPipelineStageFlags srcStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+	VkPipelineStageFlags dstStages = VK_PIPELINE_STAGE_NONE;
+
+	if (!!(stages & RenderStages::Vertex)) {
+		dstStages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+	}
+
+	if (!!(stages & RenderStages::Fragment)) {
+		dstStages |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	}
+
+	if (!!(stages & RenderStages::Tile)) {
+		// XXX: not sure about this one
+		dstStages |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
+	}
+
+	if (!!(stages & RenderStages::Object)) {
+		// ???
+	}
+
+	if (!!(stages & RenderStages::Mesh)) {
+		dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
+	}
+
+	vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, 0, 0, nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(), imageBarriers.data());
+};
+
+void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) {
+	useResources({ resource }, usage);
+};
+
+void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) {
+	// TODO: check what Metal does in this case. this is just an educated guess
+	useResources(resources, usage, RenderStages::Vertex | RenderStages::Fragment | RenderStages::Tile | RenderStages::Object | RenderStages::Mesh);
 };

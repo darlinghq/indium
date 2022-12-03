@@ -47,7 +47,6 @@ namespace Indium {
 			// TODO: check which formula Apple uses to calculate mipmap level count.
 			//       it's probably this same formula (from OpenGL and Vulkan), but check just in case.
 			desc.mipmapLevelCount = ((mipmapped) ? static_cast<size_t>(std::floor(std::log2(sideLength))) : 0) + 1;
-			desc.arrayLength = 6;
 			return desc;
 		};
 	};

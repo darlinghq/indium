@@ -44,7 +44,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_pt
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = privateTexture->mipmapLevelCount();
 	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = privateTexture->arrayLength();
+	barrier.subresourceRange.layerCount = privateTexture->vulkanArrayLength();
 
 	vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
@@ -78,7 +78,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_pt
 		blit.srcSubresource.aspectMask = aspect;
 		blit.srcSubresource.mipLevel = i - 1;
 		blit.srcSubresource.baseArrayLayer = 0;
-		blit.srcSubresource.layerCount = privateTexture->arrayLength();
+		blit.srcSubresource.layerCount = privateTexture->vulkanArrayLength();
 
 		if (mipWidth > 1) {
 			mipWidth /= 2;
@@ -108,7 +108,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_pt
 		blit.dstSubresource.aspectMask = aspect;
 		blit.dstSubresource.mipLevel = i;
 		blit.dstSubresource.baseArrayLayer = 0;
-		blit.dstSubresource.layerCount = privateTexture->arrayLength();
+		blit.dstSubresource.layerCount = privateTexture->vulkanArrayLength();
 
 		// now blit the image
 		// TODO: determine the appropriate filter somehow. Metal docs say that the filter is implementation-determined, so we're technically free to use whatever,

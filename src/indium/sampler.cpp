@@ -4,7 +4,8 @@
 Indium::SamplerState::~SamplerState() {};
 
 Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> device, const SamplerDescriptor& descriptor):
-	_privateDevice(device)
+	_privateDevice(device),
+	_descriptor(descriptor)
 {
 	VkSamplerCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -36,4 +37,11 @@ Indium::PrivateSamplerState::~PrivateSamplerState() {
 
 std::shared_ptr<Indium::Device> Indium::PrivateSamplerState::device() {
 	return _privateDevice;
+};
+
+std::shared_ptr<Indium::PrivateSamplerState> Indium::PrivateSamplerState::cloneWithClamps(float lodMinClamp, float lodMaxClamp) {
+	SamplerDescriptor desc2 = _descriptor;
+	desc2.lodMinClamp = lodMinClamp;
+	desc2.lodMaxClamp = lodMaxClamp;
+	return std::make_shared<PrivateSamplerState>(_privateDevice, desc2);
 };

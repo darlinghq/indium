@@ -63,6 +63,10 @@ std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFor
 	);
 };
 
+size_t Indium::PrivateTexture::vulkanArrayLength() const {
+	return arrayLength();
+};
+
 Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<uint32_t>& levels, const Range<uint32_t>& layers):
 	PrivateTexture(std::dynamic_pointer_cast<PrivateDevice>(original->device())),
 	_original(original),
@@ -83,6 +87,8 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
 
+	bool isCube = _textureType == TextureType::eCube || _textureType == TextureType::eCubeArray;
+
 	VkImageViewCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	info.image = _original->image();
@@ -96,7 +102,7 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.subresourceRange.baseMipLevel = levelStart;
 	info.subresourceRange.levelCount = levelEnd - levelStart + 1;
 	info.subresourceRange.baseArrayLayer = layerStart;
-	info.subresourceRange.layerCount = layerEnd - layerStart + 1;
+	info.subresourceRange.layerCount = (layerEnd - layerStart + 1) * (isCube ? 6 : 1);
 
 	if (vkCreateImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), &info, nullptr, &_imageView) != VK_SUCCESS) {
 		// TODO
@@ -265,6 +271,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 {
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(_descriptor.resourceOptions) >> 4) & 0xf);
 
+	bool isCube = _descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray;
+
 	VkImageCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	info.imageType = textureTypeToVkImageType(_descriptor.textureType);
@@ -273,7 +281,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.extent.height = _descriptor.height;
 	info.extent.depth = _descriptor.depth;
 	info.mipLevels = _descriptor.mipmapLevelCount;
-	info.arrayLayers = _descriptor.arrayLength;
+	info.arrayLayers = _descriptor.arrayLength * (isCube ? 6 : 1);
 	// TODO
 	//info.samples = _descriptor.sampleCount;
 	info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -391,7 +399,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.levelCount = _descriptor.mipmapLevelCount;
 	barrier.subresourceRange.baseArrayLayer = 0;
-	barrier.subresourceRange.layerCount = _descriptor.arrayLength;
+	barrier.subresourceRange.layerCount = _descriptor.arrayLength * (isCube ? 6 : 1);
 
 	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
@@ -471,6 +479,16 @@ size_t Indium::ConcreteTexture::mipmapLevelCount() const {
 
 size_t Indium::ConcreteTexture::arrayLength() const {
 	return _descriptor.arrayLength;
+};
+
+size_t Indium::ConcreteTexture::vulkanArrayLength() const {
+	switch (_descriptor.textureType) {
+		case TextureType::eCube:
+		case TextureType::eCubeArray:
+			return 6 * _descriptor.arrayLength;
+		default:
+			return _descriptor.arrayLength;
+	}
 };
 
 size_t Indium::ConcreteTexture::sampleCount() const {

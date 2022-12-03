@@ -553,4 +553,30 @@ namespace Indium {
 		UInt16 = 0,
 		UInt32 = 1,
 	};
+
+	enum class VisibilityResultMode: size_t {
+		Disabled = 0,
+		Boolean = 1,
+		Counting = 2,
+	};
+
+	enum class ResourceUsage: size_t {
+		Read = 1 << 0,
+		Write = 1 << 1,
+
+		/**
+		 * @deprecated
+		 */
+		Sample = 1 << 2,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(ResourceUsage);
+
+	enum class RenderStages: size_t {
+		Vertex = 1 << 0,
+		Fragment = 1 << 1,
+		Tile = 1 << 2,
+		Object = 1 << 3,
+		Mesh = 1 << 4,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(RenderStages);
 };
