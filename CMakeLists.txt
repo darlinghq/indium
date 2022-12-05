@@ -10,6 +10,7 @@ add_library(indium SHARED
 	src/indium/command-buffer.cpp
 	src/indium/command-encoder.cpp
 	src/indium/command-queue.cpp
+	src/indium/counter.cpp
 	src/indium/depth-stencil.cpp
 	src/indium/device.cpp
 	src/indium/drawable.cpp

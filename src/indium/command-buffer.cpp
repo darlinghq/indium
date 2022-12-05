@@ -63,6 +63,15 @@ std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCo
 	return encoder;
 };
 
+std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoderWithDescriptor(const BlitPassDescriptor& descriptor) {
+	auto encoder = std::make_shared<Indium::PrivateBlitCommandEncoder>(shared_from_this(), descriptor);
+	{
+		std::scoped_lock lock(_mutex);
+		_commandEncoders.push_back(encoder);
+	}
+	return encoder;
+};
+
 void Indium::PrivateCommandBuffer::commit() {
 	std::unique_lock lock(_mutex);
 

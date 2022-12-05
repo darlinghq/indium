@@ -579,4 +579,12 @@ namespace Indium {
 		Mesh = 1 << 4,
 	};
 	INDIUM_BITFLAG_ENUM_CLASS(RenderStages);
+
+	enum class BlitOption: size_t {
+		None = 0,
+		DepthFromDepthStencil = 1 << 0,
+		StencilFromDepthStencil = 1 << 1,
+		RowLinearPVRTC = 1 << 2,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(BlitOption)
 };
