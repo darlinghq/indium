@@ -5,6 +5,7 @@
 #include <indium/texture.private.hpp>
 #include <indium/drawable.hpp>
 #include <indium/blit-command-encoder.private.hpp>
+#include <indium/compute-command-encoder.private.hpp>
 
 #include <condition_variable>
 
@@ -63,13 +64,30 @@ std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCo
 	return encoder;
 };
 
-std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoderWithDescriptor(const BlitPassDescriptor& descriptor) {
+std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoder(const BlitPassDescriptor& descriptor) {
 	auto encoder = std::make_shared<Indium::PrivateBlitCommandEncoder>(shared_from_this(), descriptor);
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
 	}
 	return encoder;
+};
+
+std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::computeCommandEncoder() {
+	return computeCommandEncoder(ComputePassDescriptor {});
+};
+
+std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::computeCommandEncoder(const ComputePassDescriptor& descriptor) {
+	auto encoder = std::make_shared<Indium::PrivateComputeCommandEncoder>(shared_from_this(), descriptor);
+	{
+		std::scoped_lock lock(_mutex);
+		_commandEncoders.push_back(encoder);
+	}
+	return encoder;
+};
+
+std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::computeCommandEncoder(DispatchType dispatchType) {
+	return computeCommandEncoder(ComputePassDescriptor { {}, dispatchType });
 };
 
 void Indium::PrivateCommandBuffer::commit() {

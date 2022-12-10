@@ -19,6 +19,10 @@ namespace Indium {
 	struct SamplerDescriptor;
 	class DepthStencilState;
 	struct DepthStencilDescriptor;
+	class ComputePipelineState;
+	struct ComputePipelineDescriptor;
+	class ComputePipelineReflection;
+	class Function;
 
 	class Device {
 	public:
@@ -28,6 +32,8 @@ namespace Indium {
 
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) = 0;
+		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(std::shared_ptr<Function> computeFunction, PipelineOption options = PipelineOption::None, std::shared_ptr<ComputePipelineReflection> reflection = nullptr) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) = 0;

@@ -10,6 +10,7 @@ namespace Indium {
 	class PrivateDevice;
 
 	class BadEnumValue: public std::exception {};
+	class UnsupportedEnumValue: public std::exception {};
 
 	struct TimelineSemaphore {
 		std::shared_ptr<PrivateDevice> device;
@@ -724,6 +725,22 @@ namespace Indium {
 			case VertexFormat::UShortNormalized:      return VK_FORMAT_R16_UNORM;
 			case VertexFormat::ShortNormalized:       return VK_FORMAT_R16_SNORM;
 			case VertexFormat::Half:                  return VK_FORMAT_R16_SFLOAT;
+		}
+		throw BadEnumValue();
+	};
+
+	static constexpr VkShaderStageFlags functionTypeToVkShaderStageFlags(FunctionType functionType) {
+		switch (functionType) {
+			case FunctionType::Vertex:       return VK_SHADER_STAGE_VERTEX_BIT;
+			case FunctionType::Fragment:     return VK_SHADER_STAGE_FRAGMENT_BIT;
+			case FunctionType::Kernel:       return VK_SHADER_STAGE_COMPUTE_BIT;
+			case FunctionType::Intersection: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
+			case FunctionType::Mesh:         return VK_SHADER_STAGE_MESH_BIT_EXT;
+
+			// TODO
+			case FunctionType::Visible:
+			case FunctionType::Object:
+				throw UnsupportedEnumValue();
 		}
 		throw BadEnumValue();
 	};

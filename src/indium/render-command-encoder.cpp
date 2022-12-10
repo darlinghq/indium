@@ -10,12 +10,7 @@
 #include <indium/library.private.hpp>
 #include <indium/sampler.private.hpp>
 #include <indium/depth-stencil.private.hpp>
-
-#include <forward_list>
-
-static const std::vector<VkDescriptorPoolSize> poolSizes {
-	VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1024 },
-};
+#include <indium/command-encoder.private.hpp>
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 
@@ -290,121 +285,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 2> descriptorSets {};
-
-	auto setLayouts = _privatePSO->descriptorSetLayouts();
-	VkDescriptorSetAllocateInfo setAllocateInfo {};
-	setAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	setAllocateInfo.descriptorPool = _pool;
-	setAllocateInfo.descriptorSetCount = descriptorSets.size();
-	setAllocateInfo.pSetLayouts = setLayouts.data();
-
-	if (vkAllocateDescriptorSets(_privateDevice->device(), &setAllocateInfo, descriptorSets.data()) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	for (size_t i = 0; i < descriptorSets.size(); ++i) {
-		std::vector<VkWriteDescriptorSet> writeDescSet;
-		std::forward_list<VkDescriptorBufferInfo> bufInfos;
-		std::forward_list<VkDescriptorImageInfo> imageInfos;
-
-		auto& functionResources = _functionResources[i];
-		auto& funcInfo = (i == 0) ? _privatePSO->vertexFunctionInfo() : _privatePSO->fragmentFunctionInfo();
-
-		if (functionResources.buffers.size() > 0) {
-			std::vector<uint64_t> addresses;
-
-			// find the right buffer for each binding (using the binding index)
-			for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
-				auto& bindingInfo = funcInfo.bindings[j];
-
-				if (bindingInfo.type != Iridium::BindingType::Buffer) {
-					continue;
-				}
-
-				if (bindingInfo.index >= functionResources.buffers.size()) {
-					addresses.push_back(0);
-					continue;
-				}
-
-				auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index].first);
-				addresses.push_back(privateBuf->gpuAddress() + functionResources.buffers[bindingInfo.index].second);
-			}
-
-			auto addressBuffer = _privateDevice->newBuffer(addresses.data(), functionResources.buffers.size() * 8, ResourceOptions::StorageModeShared);
-			auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
-
-			// we need to keep this buffer alive until the operation is completed
-			_keepAliveBuffers.push_back(addressBuffer);
-
-			auto& info = bufInfos.emplace_front();
-			info.buffer = privateAddrBuf->buffer();
-			info.offset = 0;
-			info.range = VK_WHOLE_SIZE;
-
-			auto& descSet = writeDescSet.emplace_back();
-			descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-			descSet.dstSet = descriptorSets[i];
-			descSet.dstBinding = 0;
-			descSet.dstArrayElement = 0;
-			descSet.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			descSet.descriptorCount = 1;
-			descSet.pBufferInfo = &info;
-		}
-
-		for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
-			auto& bindingInfo = funcInfo.bindings[j];
-
-			if (bindingInfo.type == Iridium::BindingType::Texture) {
-				if (bindingInfo.index >= functionResources.textures.size()) {
-					continue;
-				}
-
-				auto texture = functionResources.textures[bindingInfo.index];
-				auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-
-				auto& info = imageInfos.emplace_front();
-				info.imageView = privateTexture->imageView();
-				info.imageLayout = privateTexture->imageLayout();
-
-				auto& descSet = writeDescSet.emplace_back();
-				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descSet.dstSet = descriptorSets[i];
-				descSet.dstBinding = bindingInfo.internalIndex;
-				descSet.dstArrayElement = 0;
-				descSet.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-				descSet.descriptorCount = 1;
-				descSet.pImageInfo = &info;
-			} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
-				bool embeddedSampler = false;
-
-				if (bindingInfo.index == SIZE_MAX) {
-					// this binding uses an embedded sampler
-					embeddedSampler = true;
-				} else if (bindingInfo.index >= functionResources.samplers.size()) {
-					continue;
-				}
-
-				auto sampler = embeddedSampler ? funcInfo.embeddedSamplerStates[bindingInfo.embeddedSamplerIndex] : functionResources.samplers[bindingInfo.index];
-				auto privateSampler = std::dynamic_pointer_cast<PrivateSamplerState>(sampler);
-
-				auto& info = imageInfos.emplace_front();
-				info.sampler = privateSampler->sampler();
-
-				auto& descSet = writeDescSet.emplace_back();
-				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-				descSet.dstSet = descriptorSets[i];
-				descSet.dstBinding = bindingInfo.internalIndex;
-				descSet.dstArrayElement = 0;
-				descSet.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-				descSet.descriptorCount = 1;
-				descSet.pImageInfo = &info;
-			}
-		}
-
-		vkUpdateDescriptorSets(_privateDevice->device(), writeDescSet.size(), writeDescSet.data(), 0, nullptr);
-	}
+	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
 
 	vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
@@ -463,6 +344,12 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	updateBindings();
 
 	vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
+
+	// when we emit a draw call, we save the current function resources so that they stay alive until the command buffer is done.
+	// TODO: do this more efficiently by essentially doing COW: after a draw call, we only save additional references to resources
+	//       if someone tries to overwrite them.
+	_savedFunctionResources.push_back(_functionResources[0]);
+	_savedFunctionResources.push_back(_functionResources[1]);
 };
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount) {
@@ -610,6 +497,10 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 
 	vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
 	vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
+
+	// see drawPrimitives() to know why we do this
+	_savedFunctionResources.push_back(_functionResources[0]);
+	_savedFunctionResources.push_back(_functionResources[1]);
 };
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount) {

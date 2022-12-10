@@ -32,7 +32,10 @@ namespace Indium {
 
 		virtual std::shared_ptr<RenderCommandEncoder> renderCommandEncoder(const RenderPassDescriptor& descriptor) override;
 		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder() override;
-		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoderWithDescriptor(const BlitPassDescriptor& descriptor) override;
+		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder(const BlitPassDescriptor& descriptor) override;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder() override;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(const ComputePassDescriptor& descriptor) override;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(DispatchType dispatchType) override;
 
 		virtual void commit() override;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) override;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <indium/render-pipeline.hpp>
+#include <indium/pipeline.private.hpp>
 
 #include <vulkan/vulkan.h>
 
@@ -46,8 +47,7 @@ namespace Indium {
 			INDIUM_PROPERTY(PipelineArray, p, P,ipelines) {};
 			INDIUM_PROPERTY(VkPipelineLayout, p, P,ipelineLayout) = nullptr;
 
-			using DescriptorSetLayoutArray = std::array<VkDescriptorSetLayout, 2>;
-			INDIUM_PROPERTY(DescriptorSetLayoutArray, d, D,escriptorSetLayouts) {};
+			INDIUM_PROPERTY_REF(DescriptorSetLayouts<2>, d, D,escriptorSetLayouts);
 
 			INDIUM_PROPERTY_READONLY_REF(std::vector<size_t>, v,V,ertexInputBindings);
 	};

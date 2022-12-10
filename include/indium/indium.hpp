@@ -7,6 +7,8 @@
 #include <indium/command-buffer.hpp>
 #include <indium/command-encoder.hpp>
 #include <indium/command-queue.hpp>
+#include <indium/compute-command-encoder.hpp>
+#include <indium/compute-pipeline.hpp>
 #include <indium/counter.hpp>
 #include <indium/depth-stencil.hpp>
 #include <indium/device.hpp>

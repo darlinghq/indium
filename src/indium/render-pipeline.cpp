@@ -12,7 +12,8 @@ std::shared_ptr<Indium::Device> Indium::PrivateRenderPipelineState::device() {
 };
 
 Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<PrivateDevice> device, const RenderPipelineDescriptor& descriptor):
-	_privateDevice(device)
+	_privateDevice(device),
+	_descriptorSetLayouts(_privateDevice)
 {
 	_colorAttachments = descriptor.colorAttachments;
 	_vertexDescriptor = descriptor.vertexDescriptor;
@@ -21,56 +22,8 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	_vertexFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.vertexFunction);
 	_fragmentFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.fragmentFunction);
 
-	const auto processFunction = [&](std::shared_ptr<PrivateFunction> function, size_t layoutIndex) {
-		size_t index = 0;
-		std::vector<VkDescriptorSetLayoutBinding> bindings;
-
-		bool needUBO = false;
-
-		for (const auto bindingInfo: function->functionInfo().bindings) {
-			if (bindingInfo.type == Iridium::BindingType::Buffer) {
-				needUBO = true;
-			} else if (bindingInfo.type == Iridium::BindingType::Texture) {
-				auto& binding = bindings.emplace_back();
-				binding.binding = bindingInfo.internalIndex;
-				binding.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-				binding.descriptorCount = 1;
-				binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
-			} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
-				auto& binding = bindings.emplace_back();
-				binding.binding = bindingInfo.internalIndex;
-				binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-				binding.descriptorCount = 1;
-				binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
-			}
-		}
-
-		if (needUBO) {
-			// we need a UBO to store the buffer addresses
-			auto& binding = bindings.emplace_back();
-			binding.binding = 0;
-			binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-			binding.descriptorCount = 1;
-			binding.stageFlags = function->functionInfo().functionType == FunctionType::Vertex ? VK_SHADER_STAGE_VERTEX_BIT : VK_SHADER_STAGE_FRAGMENT_BIT;
-		}
-
-		VkDescriptorSetLayoutCreateInfo layoutInfo {};
-		layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-		layoutInfo.bindingCount = bindings.size();
-		layoutInfo.pBindings = bindings.data();
-
-		VkDescriptorSetLayout layout;
-
-		if (vkCreateDescriptorSetLayout(_privateDevice->device(), &layoutInfo, nullptr, &layout) != VK_SUCCESS) {
-			// TODO
-			abort();
-		}
-
-		_descriptorSetLayouts[layoutIndex] = layout;
-	};
-
-	processFunction(_vertexFunction, 0);
-	processFunction(_fragmentFunction, 1);
+	_descriptorSetLayouts.processFunction(_vertexFunction, 0);
+	_descriptorSetLayouts.processFunction(_fragmentFunction, 1);
 };
 
 Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
@@ -84,10 +37,6 @@ Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 	if (_pipelineLayout) {
 		vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
 		_pipelineLayout = nullptr;
-	}
-
-	for (auto descriptorSetLayout: _descriptorSetLayouts) {
-		vkDestroyDescriptorSetLayout(_privateDevice->device(), descriptorSetLayout, nullptr);
 	}
 };
 
@@ -258,8 +207,8 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	VkPipelineLayoutCreateInfo layoutCreateInfo {};
 	layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layoutCreateInfo.setLayoutCount = _descriptorSetLayouts.size();
-	layoutCreateInfo.pSetLayouts = _descriptorSetLayouts.data();
+	layoutCreateInfo.setLayoutCount = _descriptorSetLayouts.layouts.size();
+	layoutCreateInfo.pSetLayouts = _descriptorSetLayouts.layouts.data();
 	layoutCreateInfo.pushConstantRangeCount = pushConstantRanges.size();
 	layoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
 

@@ -6,7 +6,10 @@
 #include <indium/blit-command-encoder.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/command-buffer.private.hpp>
+#include <indium/command-encoder.hpp>
 #include <indium/command-queue.private.hpp>
+#include <indium/compute-command-encoder.private.hpp>
+#include <indium/compute-pipeline.private.hpp>
 #include <indium/depth-stencil.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/drawable.private.hpp>

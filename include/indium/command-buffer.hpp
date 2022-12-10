@@ -5,13 +5,13 @@
 
 #include <indium/render-command-encoder.hpp>
 #include <indium/blit-command-encoder.hpp>
+#include <indium/compute-command-encoder.hpp>
 #include <indium/base.hpp>
 
 namespace Indium {
 	class CommandQueue;
 	class Device;
 	class Drawable;
-	struct BlitPassDescriptor;
 
 	class CommandBuffer {
 	public:
@@ -19,7 +19,10 @@ namespace Indium {
 
 		virtual std::shared_ptr<RenderCommandEncoder> renderCommandEncoder(const RenderPassDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder() = 0;
-		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoderWithDescriptor(const BlitPassDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder(const BlitPassDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder() = 0;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(const ComputePassDescriptor& descriptor) = 0;
+		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(DispatchType dispatchType) = 0;
 
 		virtual void commit() = 0;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) = 0;

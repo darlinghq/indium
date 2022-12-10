@@ -4,6 +4,7 @@
 #include <indium/render-pass.hpp>
 #include <indium/sampler.private.hpp>
 #include <indium/device.hpp>
+#include <indium/command-encoder.private.hpp>
 
 #include <vulkan/vulkan.h>
 
@@ -29,55 +30,7 @@ namespace Indium {
 		VkRenderPass _renderPass = nullptr;
 		VkDescriptorPool _pool = nullptr;
 
-		struct FunctionResources {
-			std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
-			std::vector<std::shared_ptr<Texture>> textures;
-			std::vector<std::shared_ptr<SamplerState>> samplers;
-
-			void setBytes(std::shared_ptr<Device> device, const void* bytes, size_t length, size_t index) {
-				// TODO: we can make this "Private" instead
-				auto buf = device->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
-
-				if (buffers.size() <= index) {
-					buffers.resize(index + 1);
-				}
-
-				buffers[index] = std::make_pair(buf, 0);
-			};
-
-			void setBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
-				if (buffers.size() <= index) {
-					buffers.resize(index + 1);
-				}
-
-				buffers[index] = std::make_pair(buffer, offset);
-			};
-
-			void setBufferOffset(size_t offset, size_t index) {
-				buffers[index].second = offset;
-			};
-
-			void setSamplerState(std::shared_ptr<SamplerState> state, std::optional<std::pair<float, float>> lodClamps, size_t index) {
-				if (samplers.size() <= index) {
-					samplers.resize(index + 1);
-				}
-
-				if (lodClamps) {
-					auto privateState = std::dynamic_pointer_cast<PrivateSamplerState>(state);
-					samplers[index] = privateState->cloneWithClamps(lodClamps->first, lodClamps->second);
-				} else {
-					samplers[index] = state;
-				}
-			};
-
-			void setTexture(std::shared_ptr<Texture> texture, size_t index) {
-				if (textures.size() <= index) {
-					textures.resize(index + 1);
-				}
-
-				textures[index] = texture;
-			};
-		};
+		std::vector<FunctionResources> _savedFunctionResources;
 
 		std::array<FunctionResources, 2> _functionResources {};
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;

@@ -7,6 +7,7 @@
 #include <indium/sampler.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/depth-stencil.private.hpp>
+#include <indium/compute-pipeline.private.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -282,6 +283,9 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 };
 
 Indium::PrivateDevice::~PrivateDevice() {
+	if (_oneshotCommandPool) {
+		vkDestroyCommandPool(_device, _oneshotCommandPool, nullptr);
+	}
 	vkDestroySemaphore(_device, _eventLoopSemaphores[0], nullptr);
 	vkDestroyDevice(_device, nullptr);
 };
@@ -296,6 +300,17 @@ std::shared_ptr<Indium::CommandQueue> Indium::PrivateDevice::newCommandQueue() {
 
 std::shared_ptr<Indium::RenderPipelineState> Indium::PrivateDevice::newRenderPipelineState(const RenderPipelineDescriptor& descriptor) {
 	return std::make_shared<PrivateRenderPipelineState>(shared_from_this(), descriptor);
+};
+
+std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) {
+	if (options != PipelineOption::None) {
+		throw std::runtime_error("TODO: support compute pipeline options");
+	}
+	return std::make_shared<PrivateComputePipelineState>(shared_from_this(), descriptor);
+};
+
+std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::newComputePipelineState(std::shared_ptr<Function> computeFunction, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) {
+	return newComputePipelineState(ComputePipelineDescriptor { computeFunction }, options, reflection);
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, ResourceOptions options) {
@@ -322,6 +337,9 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 				break;
 			case Iridium::FunctionType::Vertex:
 				funcInfo.functionType = FunctionType::Vertex;
+				break;
+			case Iridium::FunctionType::Kernel:
+				funcInfo.functionType = FunctionType::Kernel;
 				break;
 		}
 
