@@ -275,11 +275,17 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	auto floatTypeInst = SPIRV::Type(SPIRV::Type::FloatTag {}, 32);
 	auto floatType = builder.declareType(floatTypeInst);
 	auto vec4Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, floatType, floatTypeInst.size * 4, 16));
+	auto u32Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 32, false));
+	auto uvec3Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 3, u32Type, 16, 16));
 
 	SPIRV::ResultID perVertexVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID vertexIndexVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID fragCoordVar = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID uboPointersVar = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID computeLocalSizeX = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID computeLocalSizeY = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID computeLocalSizeZ = SPIRV::ResultIDInvalid;
+	SPIRV::ResultID globalInvocationIdVar = SPIRV::ResultIDInvalid;
 
 	auto firstLabelID = builder.beginFunction(funcID.id);
 
@@ -363,6 +369,48 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
 		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+	} else if (auto kernelMD = LLVMGetNamedMetadata(_module.get(), "air.kernel", sizeof("air.kernel") - 1)) {
+		// this is a "kernel" (compute shader)
+
+		funcInfo.type = FunctionType::Kernel;
+
+		// declare the local size specialized constants
+		computeLocalSizeX = builder.declareConstantScalar<uint32_t>(0, 0);
+		computeLocalSizeY = builder.declareConstantScalar<uint32_t>(0, 1);
+		computeLocalSizeZ = builder.declareConstantScalar<uint32_t>(0, 2);
+
+		// declare the entry point
+		builder.addEntryPoint(SPIRV::EntryPoint {
+			SPIRV::ExecutionModel::GLCompute,
+			funcID.id,
+			_name,
+			{},
+			{
+				{ SPIRV::ExecutionMode::LocalSizeId, true, {
+					computeLocalSizeX,
+					computeLocalSizeY,
+					computeLocalSizeZ,
+				} },
+			},
+		});
+
+		// declare the various global/local/subgroup ids and indices
+		auto ptrUVec3Type = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, uvec3Type, 8));
+		globalInvocationIdVar = builder.addGlobalVariable(ptrUVec3Type, SPIRV::StorageClass::Input);
+
+		builder.addDecoration(globalInvocationIdVar, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::GlobalInvocationId) } });
+
+		builder.referenceGlobalVariable(globalInvocationIdVar);
+
+		// get the operands
+		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.kernel"));
+		LLVMGetNamedMetadataOperands(_module.get(), "air.kernel", operands.data());
+
+		// operand 0 contains the info for the compute shader
+		auto rootInfoMD = operands[0];
+
+		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
+		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
 	}
 
 	// TODO: inspect the output of some more compiled shaders; the current code is only valid for
@@ -413,7 +461,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				builder.referenceGlobalVariable(var);
 			}
 		}
-	} else {
+	} else if (LLVMGetTypeKind(funcRetType) != LLVMVoidTypeKind) {
 		// TODO: handle case of returning a special variable (like air.position) with a single return value
 
 		auto type = llvmTypeToSPIRVType(builder, funcRetType);
@@ -513,12 +561,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto llparam = LLVMGetParam(_function, i);
+		auto llparamVal = reinterpret_cast<uintptr_t>(llparam);
 
 		if (kind == "air.vertex_id") {
 			_vertexIDInputIndex = i;
 			auto load = builder.encodeLoad(intType, vertexIndexVar);
 			_parameterIDs.push_back(load);
-			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, intType);
 		} else if (kind == "air.buffer") {
 			// find the location index info
@@ -550,14 +600,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(load);
 
-			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, ptrType);
 
 			++bufferIndex;
 		} else if (kind == "air.position") {
 			auto load = builder.encodeLoad(vec4Type, fragCoordVar);
 			_parameterIDs.push_back(load);
-			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, vec4Type);
 		} else if (kind == "air.fragment_input") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
@@ -572,7 +622,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(load);
 
-			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.vertex_input") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
@@ -608,8 +658,32 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(load);
 
-			builder.associateExistingResultID(load, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
+		} else if (kind == "air.thread_position_in_grid") {
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto load = builder.encodeLoad(uvec3Type, globalInvocationIdVar);
+			auto typeInst = *builder.reverseLookupType(type);
+			auto target = load;
+			auto resultType = type;
+
+			// it's not clear what should happen with less than 3-component vectors (at least i can't find any documentation on it);
+			// they could either be restricted to fewer dimensions (i.e. only X or only X and Y)
+			// or have omitted dimensions multiplied and added in to the available dimensions (e.g. Y = Y + (max Y * Z)),
+			// but the first approach is more likely so that's what we assume
+			if (typeInst.backingType == SPIRV::Type::BackingType::Integer) {
+				// extract just the X component
+				target = builder.encodeCompositeExtract(u32Type, load, { 0 });
+				resultType = u32Type;
+			} else if (typeInst.entryCount == 2) {
+				// extract the X and Y components
+				auto uvec2Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 2, u32Type, 8, 8));
+				target = builder.encodeVectorShuffle(uvec2Type, load, load, { 0, 1 });
+				resultType = uvec2Type;
+			}
+
+			builder.associateExistingResultID(target, llparamVal);
+			builder.setResultType(target, resultType);
 		}
 	}
 
@@ -1039,6 +1113,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+				case LLVMStore: {
+					auto alignment = LLVMGetAlignment(inst);
+					auto llval = LLVMGetOperand(inst, 0);
+					auto llptr = LLVMGetOperand(inst, 1);
+					auto val = llvmValueToResultID(builder, llval);
+					auto ptr = llvmValueToResultID(builder, llptr);
+
+					// TODO: also handle runtime arrays properly here
+
+					builder.encodeStore(ptr, val, alignment);
+				} break;
+
 				case LLVMCall: {
 					auto target = LLVMGetCalledValue(inst);
 					auto targetType = LLVMTypeOf(inst);
@@ -1239,30 +1325,32 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMRet: {
-					auto llval = LLVMGetOperand(inst, 0);
+					if (LLVMGetNumOperands(inst) > 0) {
+						auto llval = LLVMGetOperand(inst, 0);
 
-					// should be the same as the function return value
-					auto type = LLVMTypeOf(llval);
-					auto val = llvmValueToResultID(builder, llval);
+						// should be the same as the function return value
+						auto type = LLVMTypeOf(llval);
+						auto val = llvmValueToResultID(builder, llval);
 
-					if (LLVMGetTypeKind(type) == LLVMStructTypeKind) {
-						auto structMemberCount = LLVMGetNumContainedTypes(type);
+						if (LLVMGetTypeKind(type) == LLVMStructTypeKind) {
+							auto structMemberCount = LLVMGetNumContainedTypes(type);
 
-						for (size_t i = 0; i < structMemberCount; ++i) {
-							auto memberType = LLVMStructGetTypeAtIndex(type, i);
-							auto type = llvmTypeToSPIRVType(builder, memberType);
-							auto elm = builder.encodeCompositeExtract(type, val, { static_cast<uint32_t>(i) });
+							for (size_t i = 0; i < structMemberCount; ++i) {
+								auto memberType = LLVMStructGetTypeAtIndex(type, i);
+								auto type = llvmTypeToSPIRVType(builder, memberType);
+								auto elm = builder.encodeCompositeExtract(type, val, { static_cast<uint32_t>(i) });
 
-							if (i == _positionOutputIndex) {
-								auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
-								auto ptr = builder.encodeAccessChain(ptrType, perVertexVar, { builder.declareConstantScalar<int32_t>(0) });
-								builder.encodeStore(ptr, elm);
-							} else {
-								builder.encodeStore(_outputValueIDs[i], elm);
+								if (i == _positionOutputIndex) {
+									auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
+									auto ptr = builder.encodeAccessChain(ptrType, perVertexVar, { builder.declareConstantScalar<int32_t>(0) });
+									builder.encodeStore(ptr, elm);
+								} else {
+									builder.encodeStore(_outputValueIDs[i], elm);
+								}
 							}
+						} else {
+							builder.encodeStore(_outputValueIDs[0], val);
 						}
-					} else {
-						builder.encodeStore(_outputValueIDs[0], val);
 					}
 
 					builder.encodeReturn();

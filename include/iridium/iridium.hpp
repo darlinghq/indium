@@ -13,6 +13,7 @@ namespace Iridium {
 	enum class FunctionType {
 		Vertex = 1,
 		Fragment = 2,
+		Kernel = 3,
 	};
 
 	enum class BindingType {

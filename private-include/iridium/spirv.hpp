@@ -27,9 +27,11 @@ namespace Iridium {
 		enum class ExecutionModel: uint32_t {
 			Vertex = 0,
 			Fragment = 4,
+			GLCompute = 5,
 		};
 
 		enum class DecorationType: uint32_t {
+			SpecId = 1,
 			Block = 2,
 			ArrayStride = 6,
 			Builtin = 11,
@@ -48,6 +50,15 @@ namespace Iridium {
 			VertexID = 5,
 			FragCoord = 15,
 			PointCoord = 16,
+			NumWorkgroups = 24,
+			WorkgroupId = 26,
+			LocalInvocationId = 27,
+			GlobalInvocationId = 28,
+			LocalInvocationIndex = 29,
+			SubgroupSize = 36,
+			NumSubgroups = 38,
+			SubgroupId = 40,
+			SubgroupLocalInvocationId = 41,
 			VertexIndex = 42,
 		};
 
@@ -103,11 +114,24 @@ namespace Iridium {
 		using ResultID = uint32_t;
 		constexpr ResultID ResultIDInvalid = 0;
 
+		enum class ExecutionMode: uint32_t {
+			OriginUpperLeft = 7,
+			OriginLowerLeft = 8,
+			LocalSizeId = 38,
+		};
+
+		struct ExecutionModeEntry {
+			ExecutionMode mode;
+			bool requiresIdOperands;
+			std::vector<uint32_t> arguments;
+		};
+
 		struct EntryPoint {
 			ExecutionModel executionModel;
 			ResultID functionID;
 			std::string name;
 			std::vector<ResultID> referencedGlobalVariables;
+			std::vector<ExecutionModeEntry> executionModes;
 		};
 
 		enum class Dim: uint32_t {
@@ -381,6 +405,9 @@ struct std::hash<std::pair<uintmax_t, Iridium::SPIRV::ResultID>> {
 
 namespace Iridium {
 	namespace SPIRV {
+		using SpecializationID = uint32_t;
+		constexpr SpecializationID SpecializationIDInvalid = UINT32_MAX;
+
 		struct GlobalVariable {
 			StorageClass storageClass;
 			ResultID typeID;
@@ -389,11 +416,6 @@ namespace Iridium {
 		struct FunctionVariable {
 			ResultID typeID;
 			ResultID initializer;
-		};
-
-		enum class ExecutionMode: uint32_t {
-			OriginUpperLeft = 7,
-			OriginLowerLeft = 8,
 		};
 
 		enum class Opcode: uint16_t {
@@ -428,6 +450,7 @@ namespace Iridium {
 			ConstantComposite = 44,
 			ConstantSampler = 45,
 			ConstantNull = 46,
+			SpecConstant = 50,
 			Function = 54,
 			FunctionParameter = 55,
 			FunctionEnd = 56,
@@ -478,6 +501,7 @@ namespace Iridium {
 			BranchConditional = 250,
 			Return = 253,
 			ReturnValue = 254,
+			ExecutionModeId = 331,
 		};
 
 		enum class GLSLOpcode: uint16_t {
@@ -619,7 +643,7 @@ namespace Iridium {
 			InstructionState beginInstruction(Opcode opcode, DynamicByteWriter& writer);
 			void endInstruction(InstructionState&& state);
 
-			ResultID declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords);
+			ResultID declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords, SpecializationID specializationID);
 
 			void ensureGLSLExtInstSet();
 
@@ -656,7 +680,7 @@ namespace Iridium {
 			void endFunction();
 
 			template<typename T>
-			ResultID declareConstantScalar(T value);
+			ResultID declareConstantScalar(T value, SpecializationID specializationID = SpecializationIDInvalid);
 
 			ResultID declareConstantComposite(ResultID typeID, std::vector<ResultID> elements);
 
@@ -668,7 +692,7 @@ namespace Iridium {
 			ResultID encodeUConvert(ResultID typeID, ResultID operand);
 			ResultID encodeAccessChain(ResultID resultTypeID, ResultID base, std::vector<ResultID> indices, bool asPointer = false);
 			ResultID encodeLoad(ResultID resultTypeID, ResultID pointer, uint8_t alignment = 0);
-			void encodeStore(ResultID pointer, ResultID object);
+			void encodeStore(ResultID pointer, ResultID object, uint8_t alignment = 0);
 			ResultID encodeConvertUToF(ResultID resultTypeID, ResultID operand);
 			ResultID encodeArithUnop(Opcode unop, ResultID resultTypeID, ResultID operand);
 			ResultID encodeArithBinop(Opcode binop, ResultID resultTypeID, ResultID operand1, ResultID operand2);
@@ -702,16 +726,16 @@ namespace Iridium {
 			void* finalize(size_t& outputSize);
 		};
 
-		template<> ResultID Builder::declareConstantScalar<uint8_t>(uint8_t value);
-		template<> ResultID Builder::declareConstantScalar<int8_t>(int8_t value);
-		template<> ResultID Builder::declareConstantScalar<uint16_t>(uint16_t value);
-		template<> ResultID Builder::declareConstantScalar<int16_t>(int16_t value);
-		template<> ResultID Builder::declareConstantScalar<uint32_t>(uint32_t value);
-		template<> ResultID Builder::declareConstantScalar<int32_t>(int32_t value);
-		template<> ResultID Builder::declareConstantScalar<uint64_t>(uint64_t value);
-		template<> ResultID Builder::declareConstantScalar<int64_t>(int64_t value);
-		template<> ResultID Builder::declareConstantScalar<_Float16>(_Float16 value);
-		template<> ResultID Builder::declareConstantScalar<float>(float value);
-		template<> ResultID Builder::declareConstantScalar<double>(double value);
+		template<> ResultID Builder::declareConstantScalar<uint8_t>(uint8_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<int8_t>(int8_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<uint16_t>(uint16_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<int16_t>(int16_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<uint32_t>(uint32_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<int32_t>(int32_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<uint64_t>(uint64_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<int64_t>(int64_t value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<_Float16>(_Float16 value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<float>(float value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<double>(double value, SpecializationID specializationID);
 	};
 };

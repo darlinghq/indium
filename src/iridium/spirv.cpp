@@ -284,19 +284,22 @@ void Iridium::SPIRV::Builder::endFunction() {
 	_currentFunctionWriter = nullptr;
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords) {
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(uintmax_t value, ResultID typeID, bool usesTwoWords, SpecializationID specializationID) {
 	auto key = std::make_pair(value, typeID);
-	auto it = _constantScalars.find(key);
 
-	if (it != _constantScalars.end()) {
-		return it->second;
+	if (specializationID == SpecializationIDInvalid) {
+		auto it = _constantScalars.find(key);
+
+		if (it != _constantScalars.end()) {
+			return it->second;
+		}
 	}
 
 	auto id = reserveResultID();
 
 	_constantScalars.emplace(key, id);
 
-	auto tmp = beginInstruction(Opcode::Constant, _constants);
+	auto tmp = beginInstruction((specializationID != SpecializationIDInvalid) ? Opcode::SpecConstant : Opcode::Constant, _constants);
 	_constants.writeIntegerLE<uint32_t>(typeID);
 	_constants.writeIntegerLE<uint32_t>(id);
 	_constants.writeIntegerLE<uint32_t>(value & 0xffffffff);
@@ -305,60 +308,64 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 	}
 	endInstruction(std::move(tmp));
 
+	if (specializationID != SpecializationIDInvalid) {
+		addDecoration(id, Decoration { DecorationType::SpecId, { specializationID } });
+	}
+
 	return id;
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint8_t>(uint8_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, false)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint8_t>(uint8_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, false)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int8_t>(int8_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, true)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int8_t>(int8_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 8, true)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint16_t>(uint16_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, false)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint16_t>(uint16_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, false)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int16_t>(int16_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, true)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int16_t>(int16_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 16, true)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint32_t>(uint32_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 32, false)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint32_t>(uint32_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 32, false)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int32_t>(int32_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 32, true)), false);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int32_t>(int32_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 32, true)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint64_t>(uint64_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, false)), true);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint64_t>(uint64_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, false)), true, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int64_t>(int64_t value) {
-	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, true)), true);
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<int64_t>(int64_t value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, true)), true, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<_Float16>(_Float16 value) {
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<_Float16>(_Float16 value, SpecializationID specializationID) {
 	// technically UB but it's fine
 	uintmax_t tmp = 0;
 	memcpy(&tmp, &value, sizeof(value));
-	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 16)), false);
+	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 16)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<float>(float value) {
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<float>(float value, SpecializationID specializationID) {
 	// technically UB but it's fine
 	uintmax_t tmp = 0;
 	memcpy(&tmp, &value, sizeof(value));
-	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 32)), false);
+	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 32)), false, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<double>(double value) {
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<double>(double value, SpecializationID specializationID) {
 	// technically UB but it's fine
 	uintmax_t tmp = 0;
 	memcpy(&tmp, &value, sizeof(value));
-	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 64)), true);
+	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 64)), true, specializationID);
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantComposite(ResultID typeID, std::vector<ResultID> elements) {
@@ -461,10 +468,14 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeLoad(ResultID resultType
 	return result;
 };
 
-void Iridium::SPIRV::Builder::encodeStore(ResultID pointer, ResultID object) {
+void Iridium::SPIRV::Builder::encodeStore(ResultID pointer, ResultID object, uint8_t alignment) {
 	auto tmp = beginInstruction(Opcode::Store, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(pointer);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(object);
+	if (alignment > 0) {
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(0x02 /* aligned */);
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(alignment);
+	}
 	endInstruction(std::move(tmp));
 };
 
@@ -860,6 +871,15 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 	// now emit execution modes
 	// TODO: allow this to be configured
 	for (const auto& entryPoint: _entryPoints) {
+		for (const auto& mode: entryPoint.executionModes) {
+			tmp = beginInstruction(mode.requiresIdOperands ? Opcode::ExecutionModeId : Opcode::ExecutionMode, _writer);
+			_writer.writeIntegerLE<uint32_t>(entryPoint.functionID);
+			_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(mode.mode));
+			for (const auto& arg: mode.arguments) {
+				_writer.writeIntegerLE<uint32_t>(arg);
+			}
+			endInstruction(std::move(tmp));
+		}
 		if (entryPoint.executionModel == ExecutionModel::Fragment) {
 			tmp = beginInstruction(Opcode::ExecutionMode, _writer);
 			_writer.writeIntegerLE<uint32_t>(entryPoint.functionID);

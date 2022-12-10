@@ -73,6 +73,8 @@ int main(int argc, char** argv) {
 				funcTypeCode = 'f';
 			} else if (it->second.type == Iridium::FunctionType::Vertex) {
 				funcTypeCode = 'v';
+			} else if (it->second.type == Iridium::FunctionType::Kernel) {
+				funcTypeCode = 'k';
 			}
 
 			outFileJSON << "\t\t\"" << funcTypeCode << '@' << it->first << "\": {" << std::endl;
