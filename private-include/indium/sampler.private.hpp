@@ -20,6 +20,6 @@ namespace Indium {
 
 		std::shared_ptr<PrivateSamplerState> cloneWithClamps(float lodMinClamp, float lodMaxClamp);
 
-		INDIUM_PROPERTY(VkSampler, s, S,ampler) = nullptr;
+		INDIUM_PROPERTY(VkSampler, s, S,ampler) = VK_NULL_HANDLE;
 	};
 };

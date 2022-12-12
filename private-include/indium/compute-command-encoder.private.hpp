@@ -14,7 +14,7 @@ namespace Indium {
 		ComputePassDescriptor _descriptor;
 		FunctionResources _functionResources;
 		std::shared_ptr<PrivateComputePipelineState> _pso;
-		VkDescriptorPool _pool = nullptr;
+		VkDescriptorPool _pool = VK_NULL_HANDLE;
 
 		// XXX: not sure if we actually need to store pipelines until the command buffer finishes executing,
 		//      but let's do it just in case.

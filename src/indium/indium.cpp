@@ -8,9 +8,9 @@
 
 #include <iostream>
 
-VkInstance Indium::globalInstance = nullptr;
+VkInstance Indium::globalInstance = VK_NULL_HANDLE;
 
-static VkDebugUtilsMessengerEXT debugMessenger = nullptr;
+static VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
 static PFN_vkCreateDebugUtilsMessengerEXT createMessenger = nullptr;
 static PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger = nullptr;
 
@@ -129,5 +129,5 @@ void Indium::finit() {
 	}
 
 	vkDestroyInstance(globalInstance, nullptr);
-	globalInstance = nullptr;
+	globalInstance = VK_NULL_HANDLE;
 };

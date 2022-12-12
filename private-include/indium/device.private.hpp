@@ -71,9 +71,9 @@ namespace Indium {
 
 		std::shared_ptr<BinarySemaphore> getWrappedBinarySemaphore();
 
-		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = nullptr;
+		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);
-		INDIUM_PROPERTY(VkDevice, d, D,evice) = nullptr;
+		INDIUM_PROPERTY(VkDevice, d, D,evice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(std::optional<uint32_t>, g, G,raphicsQueueFamilyIndex);
 		INDIUM_PROPERTY(std::optional<uint32_t>, c, C,omputeQueueFamilyIndex);
 		INDIUM_PROPERTY(std::optional<uint32_t>, t, T,ransferQueueFamilyIndex);
@@ -81,11 +81,11 @@ namespace Indium {
 		// but in practice, they're actually the same.
 		// TODO: maybe implement this just in case?
 		//INDIUM_PROPERTY(std::optional<uint32_t>, p, P,resentQueueFamilyIndex);
-		INDIUM_PROPERTY(VkQueue, g, G,raphicsQueue) = nullptr;
-		INDIUM_PROPERTY(VkQueue, c, C,omputeQueue) = nullptr;
-		INDIUM_PROPERTY(VkQueue, t, T,ransferQueue) = nullptr;
-		//INDIUM_PROPERTY(VkQueue, p, P,resentQueue) = nullptr;
-		INDIUM_PROPERTY(VkCommandPool, o,O,neshotCommandPool) = nullptr;
+		INDIUM_PROPERTY(VkQueue, g, G,raphicsQueue) = VK_NULL_HANDLE;
+		INDIUM_PROPERTY(VkQueue, c, C,omputeQueue) = VK_NULL_HANDLE;
+		INDIUM_PROPERTY(VkQueue, t, T,ransferQueue) = VK_NULL_HANDLE;
+		//INDIUM_PROPERTY(VkQueue, p, P,resentQueue) = VK_NULL_HANDLE;
+		INDIUM_PROPERTY(VkCommandPool, o,O,neshotCommandPool) = VK_NULL_HANDLE;
 
 		INDIUM_PROPERTY(VkPhysicalDeviceMemoryProperties, m, M,emoryProperties);
 	};

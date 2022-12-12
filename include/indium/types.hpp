@@ -589,8 +589,8 @@ namespace Indium {
 	INDIUM_BITFLAG_ENUM_CLASS(BlitOption);
 
 	enum class DispatchType: size_t {
-		Concurrent,
-		Serial,
+		Serial = 0,
+		Concurrent = 1,
 	};
 
 	enum class AttributeFormat: size_t {

@@ -30,13 +30,13 @@ Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
 			vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
-			pipeline = nullptr;
+			pipeline = VK_NULL_HANDLE;
 		}
 	}
 
 	if (_pipelineLayout) {
 		vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
-		_pipelineLayout = nullptr;
+		_pipelineLayout = VK_NULL_HANDLE;
 	}
 };
 
@@ -49,13 +49,13 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
 			vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
-			pipeline = nullptr;
+			pipeline = VK_NULL_HANDLE;
 		}
 	}
 
 	if (_pipelineLayout) {
 		vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
-		_pipelineLayout = nullptr;
+		_pipelineLayout = VK_NULL_HANDLE;
 	}
 
 	auto vertexFunctionName = _vertexFunction->name();
@@ -239,21 +239,21 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	// first, one for points
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), nullptr, 1, &pipelineCreateInfo, nullptr, &_pipelines[0]) != VK_SUCCESS) {
+	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[0]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	// now, one for lines
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), nullptr, 1, &pipelineCreateInfo, nullptr, &_pipelines[1]) != VK_SUCCESS) {
+	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[1]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	// finally, one for triangles
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), nullptr, 1, &pipelineCreateInfo, nullptr, &_pipelines[2]) != VK_SUCCESS) {
+	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[2]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}

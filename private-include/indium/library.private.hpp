@@ -60,6 +60,6 @@ namespace Indium {
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
-		INDIUM_PROPERTY(VkShaderModule, s, S,haderModule) = nullptr;
+		INDIUM_PROPERTY(VkShaderModule, s, S,haderModule) = VK_NULL_HANDLE;
 	};
 };

@@ -21,6 +21,6 @@ namespace Indium {
 
 			INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
-			INDIUM_PROPERTY(VkCommandPool, c, C,ommandPool) = nullptr;
+			INDIUM_PROPERTY(VkCommandPool, c, C,ommandPool) = VK_NULL_HANDLE;
 	};
 };

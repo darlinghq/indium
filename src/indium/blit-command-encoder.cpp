@@ -276,11 +276,14 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, st
 	size_t mipCount = std::min(sourceMipCount, destMipCount);
 	size_t sliceCount = std::min(privateSource->vulkanArrayLength(), privateDest->vulkanArrayLength());
 
-	copy(source, 0, sourceMipLevel, Origin { 0, 0, 0 }, destination, 0, destMipLevel, Origin { 0, 0, 0 }, sliceCount, mipCount, Size { source->width() / (1ull << sourceMipLevel), source->height() / (1ull << sourceMipLevel), source->depth() / (1ull << sourceMipLevel) });
+	size_t divisor = static_cast<size_t>(1) << sourceMipLevel;
+
+	copy(source, 0, sourceMipLevel, Origin { 0, 0, 0 }, destination, 0, destMipLevel, Origin { 0, 0, 0 }, sliceCount, mipCount, Size { source->width() / divisor, source->height() / divisor, source->depth() / divisor });
 };
 
 void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, size_t sourceSlice, size_t sourceLevel, std::shared_ptr<Texture> destination, size_t destinationSlice, size_t destinationLevel, size_t sliceCount, size_t levelCount) {
-	copy(source, sourceSlice, sourceLevel, Origin { 0, 0, 0 }, destination, destinationSlice, destinationLevel, Origin { 0, 0, 0 }, sliceCount, levelCount, Size { source->width() / (1ull << sourceLevel), source->height() / (1ull << sourceLevel), source->depth() / (1ull << sourceLevel) });
+	size_t divisor = static_cast<size_t>(1) << sourceLevel;
+	copy(source, sourceSlice, sourceLevel, Origin { 0, 0, 0 }, destination, destinationSlice, destinationLevel, Origin { 0, 0, 0 }, sliceCount, levelCount, Size { source->width() / divisor, source->height() / divisor, source->depth() / divisor });
 };
 
 void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, size_t sourceSlice, size_t sourceLevel, Origin sourceOrigin, Size sourceSize, std::shared_ptr<Texture> destination, size_t destinationSlice, size_t destinationLevel, Origin destinationOrigin) {

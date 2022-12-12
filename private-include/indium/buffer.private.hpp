@@ -27,7 +27,7 @@ namespace Indium {
 
 		virtual uint64_t gpuAddress() override;
 
-		INDIUM_PROPERTY(VkBuffer, b, B,uffer) = nullptr;
-		INDIUM_PROPERTY(VkDeviceMemory, m, M,emory) = nullptr;
+		INDIUM_PROPERTY(VkBuffer, b, B,uffer) = VK_NULL_HANDLE;
+		INDIUM_PROPERTY(VkDeviceMemory, m, M,emory) = VK_NULL_HANDLE;
 	};
 };

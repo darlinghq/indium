@@ -32,6 +32,6 @@ namespace Indium {
 		virtual std::shared_ptr<IntersectionFunctionTable> newIntersectionFunctionTable(const IntersectionFunctionTableDescriptor& descriptor) override;
 
 		INDIUM_PROPERTY_REF(DescriptorSetLayouts<1>, d,D,escriptorSetLayouts);
-		INDIUM_PROPERTY_READONLY(VkPipelineLayout, l,L,ayout) = nullptr;
+		INDIUM_PROPERTY_READONLY(VkPipelineLayout, l,L,ayout) = VK_NULL_HANDLE;
 	};
 };

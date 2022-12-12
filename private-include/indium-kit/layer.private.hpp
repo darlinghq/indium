@@ -10,10 +10,10 @@ namespace IndiumKit {
 	class PrivateDrawable: public Drawable, public Indium::PrivateTexture {
 	private:
 		std::shared_ptr<PrivateLayer> _layer;
-		VkSwapchainKHR _swapchain = nullptr;
+		VkSwapchainKHR _swapchain = VK_NULL_HANDLE;
 		uint32_t _swapchainImageIndex;
-		VkImageView _imageView = nullptr;
-		VkImage _image = nullptr;
+		VkImageView _imageView = VK_NULL_HANDLE;
+		VkImage _image = VK_NULL_HANDLE;
 		size_t _width;
 		size_t _height;
 		Indium::PixelFormat _pixelFormat;
@@ -51,8 +51,8 @@ namespace IndiumKit {
 	private:
 		std::shared_ptr<Indium::Device> _device;
 		Indium::PixelFormat _pixelFormat = Indium::PixelFormat::BGRA8Unorm;
-		VkSurfaceKHR _surface = nullptr;
-		VkSwapchainKHR _swapchain = nullptr;
+		VkSurfaceKHR _surface = VK_NULL_HANDLE;
+		VkSwapchainKHR _swapchain = VK_NULL_HANDLE;
 		std::vector<VkImage> _images;
 		std::vector<VkImageView> _imageViews;
 		size_t _width;

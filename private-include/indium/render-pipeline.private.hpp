@@ -45,7 +45,7 @@ namespace Indium {
 			// one for each topology class
 			using PipelineArray = std::array<VkPipeline, 3>;
 			INDIUM_PROPERTY(PipelineArray, p, P,ipelines) {};
-			INDIUM_PROPERTY(VkPipelineLayout, p, P,ipelineLayout) = nullptr;
+			INDIUM_PROPERTY(VkPipelineLayout, p, P,ipelineLayout) = VK_NULL_HANDLE;
 
 			INDIUM_PROPERTY_REF(DescriptorSetLayouts<2>, d, D,escriptorSetLayouts);
 

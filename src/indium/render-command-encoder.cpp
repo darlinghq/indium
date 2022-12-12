@@ -320,7 +320,7 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	auto buf = _privateCommandBuffer.lock();
 
 	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = nullptr;
+	VkPipeline pipeline = VK_NULL_HANDLE;
 	switch (primitiveType) {
 		case PrimitiveType::Point:
 			pipeline = _privatePSO->pipelines()[0];
@@ -467,7 +467,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	auto buf = _privateCommandBuffer.lock();
 
 	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = nullptr;
+	VkPipeline pipeline = VK_NULL_HANDLE;
 	switch (primitiveType) {
 		case PrimitiveType::Point:
 			pipeline = _privatePSO->pipelines()[0];

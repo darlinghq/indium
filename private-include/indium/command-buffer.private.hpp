@@ -49,6 +49,6 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateCommandQueue, p, P,rivateCommandQueue);
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
-		INDIUM_PROPERTY(VkCommandBuffer, c, C,ommandBuffer) = nullptr;
+		INDIUM_PROPERTY(VkCommandBuffer, c, C,ommandBuffer) = VK_NULL_HANDLE;
 	};
 };

@@ -26,9 +26,9 @@ namespace Indium {
 		std::weak_ptr<PrivateCommandBuffer> _privateCommandBuffer;
 		std::shared_ptr<PrivateDevice> _privateDevice;
 		std::shared_ptr<PrivateRenderPipelineState> _privatePSO;
-		VkFramebuffer _framebuffer = nullptr;
-		VkRenderPass _renderPass = nullptr;
-		VkDescriptorPool _pool = nullptr;
+		VkFramebuffer _framebuffer = VK_NULL_HANDLE;
+		VkRenderPass _renderPass = VK_NULL_HANDLE;
+		VkDescriptorPool _pool = VK_NULL_HANDLE;
 
 		std::vector<FunctionResources> _savedFunctionResources;
 

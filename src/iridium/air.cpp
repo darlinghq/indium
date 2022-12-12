@@ -182,8 +182,10 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 				case LLVMDoubleTypeKind:
 					return builder.declareConstantScalar<double>(val);
 
-				case LLVMHalfTypeKind:
-					return builder.declareConstantScalar<_Float16>(val);
+				case LLVMHalfTypeKind: {
+					Iridium::Float16 tmp = val;
+					return builder.declareConstantScalar<const Iridium::Float16*>(&tmp);
+				} break;
 
 				default:
 					throw ImpossibleResultID();
@@ -884,8 +886,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			uint16_t lodMinU16 = (val >> 24) & 0xffff;
 			uint16_t lodMaxU16 = (val >> 40) & 0xffff;
 
-			_Float16 lodMinHalf;
-			_Float16 lodMaxHalf;
+			Float16 lodMinHalf;
+			Float16 lodMaxHalf;
 
 			// technically UB, but it's fine
 			memcpy(&lodMinHalf, &lodMinU16, sizeof(lodMinHalf));

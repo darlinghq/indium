@@ -4,7 +4,6 @@
 #include <type_traits>
 #include <stdexcept>
 #include <string_view>
-#include <endian.h>
 #include <cstring>
 
 namespace Iridium {
@@ -377,6 +376,12 @@ namespace Iridium {
 		static_assert(std::is_integral_v<T>, "T must be an integral type");
 		return (integer + (powerOf2 - 1)) & ~(powerOf2 - 1);
 	};
+
+#ifdef __clang__
+	using Float16 = __fp16;
+#else
+	using Float16 = _Float16;
+#endif
 };
 
 template<typename T>

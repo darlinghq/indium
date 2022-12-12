@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <optional>
+#include <string>
 
 namespace Iridium {
 	namespace SPIRV {
@@ -734,7 +735,7 @@ namespace Iridium {
 		template<> ResultID Builder::declareConstantScalar<int32_t>(int32_t value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<uint64_t>(uint64_t value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<int64_t>(int64_t value, SpecializationID specializationID);
-		template<> ResultID Builder::declareConstantScalar<_Float16>(_Float16 value, SpecializationID specializationID);
+		template<> ResultID Builder::declareConstantScalar<const Float16*>(const Float16* value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<float>(float value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<double>(double value, SpecializationID specializationID);
 	};

@@ -347,10 +347,10 @@ template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScal
 	return declareConstantScalarCommon(static_cast<uintmax_t>(value), declareType(Type(Type::IntegerTag {}, 64, true)), true, specializationID);
 };
 
-template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<_Float16>(_Float16 value, SpecializationID specializationID) {
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<const Iridium::Float16*>(const Float16* value, SpecializationID specializationID) {
 	// technically UB but it's fine
 	uintmax_t tmp = 0;
-	memcpy(&tmp, &value, sizeof(value));
+	memcpy(&tmp, value, sizeof(*value));
 	return declareConstantScalarCommon(tmp, declareType(Type(Type::FloatTag {}, 16)), false, specializationID);
 };
 

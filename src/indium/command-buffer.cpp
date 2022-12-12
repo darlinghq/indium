@@ -228,7 +228,7 @@ void Indium::PrivateCommandBuffer::commit() {
 	//        the Device constructor tries to choose command queues that support as many operations as possible, but it's possible
 	//        that a particular device only supports certain operations on certain queues (e.g. maybe it only supports transfer operations
 	//        on an exclusive queue that doesn't support graphics or compute).
-	if (vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, nullptr) != VK_SUCCESS) {
+	if (vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}

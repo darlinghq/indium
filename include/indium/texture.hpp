@@ -5,6 +5,7 @@
 #include <indium/resource.hpp>
 
 #include <cmath>
+#include <algorithm>
 
 namespace Indium {
 	class Device;

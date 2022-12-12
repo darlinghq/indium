@@ -3,6 +3,8 @@
 #include <indium/library.private.hpp>
 #include <indium/device.private.hpp>
 
+#include <array>
+
 namespace Indium {
 	template<size_t count>
 	struct DescriptorSetLayouts {
@@ -17,13 +19,13 @@ namespace Indium {
 			privateDevice(device)
 		{
 			for (size_t i = 0; i < layouts.size(); ++i) {
-				layouts[i] = nullptr;
+				layouts[i] = VK_NULL_HANDLE;
 			}
 		};
 
 		~DescriptorSetLayouts() {
 			for (size_t i = 0; i < layouts.size(); ++i) {
-				if (layouts[i] == nullptr) {
+				if (layouts[i] == VK_NULL_HANDLE) {
 					continue;
 				}
 				vkDestroyDescriptorSetLayout(privateDevice->device(), layouts[i], nullptr);

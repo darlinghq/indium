@@ -219,7 +219,7 @@ const Indium::TimelineSemaphore& Indium::PrivateTexture::acquire(uint64_t& waitV
 
 	if (_extraWaitSemaphore) {
 		extraWaitSemaphore = std::move(_extraWaitSemaphore);
-		_extraWaitSemaphore = nullptr;
+		_extraWaitSemaphore = VK_NULL_HANDLE;
 	}
 
 	waitValue = _syncSemaphore->count;
@@ -244,7 +244,7 @@ std::shared_ptr<Indium::BinarySemaphore> Indium::PrivateTexture::synchronizePres
 
 	if (_presentationSemaphore) {
 		auto sema = std::move(_presentationSemaphore);
-		_presentationSemaphore = nullptr;
+		_presentationSemaphore = VK_NULL_HANDLE;
 		return sema;
 	}
 
@@ -408,7 +408,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	VkFenceCreateInfo fenceCreateInfo {};
 	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
-	VkFence theFence = nullptr;
+	VkFence theFence = VK_NULL_HANDLE;
 
 	if (vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
 		// TODO
@@ -612,7 +612,7 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	VkFenceCreateInfo fenceCreateInfo {};
 	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
-	VkFence theFence = nullptr;
+	VkFence theFence = VK_NULL_HANDLE;
 
 	if (vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
 		// TODO
