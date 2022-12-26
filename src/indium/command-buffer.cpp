@@ -229,6 +229,10 @@ void Indium::PrivateCommandBuffer::commit() {
 		for (const auto& handler: self->_completedHandlers) {
 			handler(self);
 		}
+
+		// the handlers may have captured a reference to us (from their surrounding scope), so clear out handlers so those references go away
+		self->_scheduledHandlers.clear();
+		self->_completedHandlers.clear();
 	});
 
 	commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -275,13 +279,21 @@ void Indium::PrivateCommandBuffer::presentDrawable(std::shared_ptr<Drawable> dra
 	_drawablesToPresent.push_back(drawable);
 };
 
+void Indium::PrivateCommandBuffer::addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler) {
+	_scheduledHandlers.push_back(handler);
+};
+
+void Indium::PrivateCommandBuffer::addCompletedHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler) {
+	_completedHandlers.push_back(handler);
+};
+
 void Indium::PrivateCommandBuffer::addScheduledHandler(std::function<void(std::shared_ptr<CommandBuffer>)> handler) {
 	std::scoped_lock lock(_mutex);
 	if (_committed) {
 		// TODO
 		abort();
 	}
-	_scheduledHandlers.push_back(handler);
+	addScheduledHandlerLocked(handler);
 };
 
 void Indium::PrivateCommandBuffer::addCompletedHandler(std::function<void(std::shared_ptr<CommandBuffer>)> handler) {
@@ -290,7 +302,7 @@ void Indium::PrivateCommandBuffer::addCompletedHandler(std::function<void(std::s
 		// TODO
 		abort();
 	}
-	_completedHandlers.push_back(handler);
+	addCompletedHandlerLocked(handler);
 };
 
 void Indium::PrivateCommandBuffer::waitUntilCompleted() {

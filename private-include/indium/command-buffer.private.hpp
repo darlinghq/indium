@@ -46,6 +46,9 @@ namespace Indium {
 		virtual std::shared_ptr<CommandQueue> commandQueue() override;
 		virtual std::shared_ptr<Device> device() override;
 
+		void addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
+		void addCompletedHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
+
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateCommandQueue, p, P,rivateCommandQueue);
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
