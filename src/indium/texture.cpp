@@ -214,6 +214,14 @@ void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLeve
 	throw std::runtime_error("TODO: support replaceRegion on texture views");
 };
 
+void Indium::TextureView::precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) {
+	return _original->precommit(cmdbuf);
+};
+
+bool Indium::TextureView::needsExportablePresentationSemaphore() const {
+	return _original->needsExportablePresentationSemaphore();
+};
+
 const Indium::TimelineSemaphore& Indium::PrivateTexture::acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) {
 	std::unique_lock lock(_syncMutex);
 
@@ -259,6 +267,15 @@ Indium::PrivateTexture::PrivateTexture(std::shared_ptr<PrivateDevice> device):
 
 std::shared_ptr<Indium::Device> Indium::PrivateTexture::device() {
 	return _device;
+};
+
+void Indium::PrivateTexture::precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) {
+	// do nothing by default
+};
+
+bool Indium::PrivateTexture::needsExportablePresentationSemaphore() const {
+	// by default, we do not need exportable presentation semaphores
+	return false;
 };
 
 //

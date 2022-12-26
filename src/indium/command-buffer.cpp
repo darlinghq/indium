@@ -95,6 +95,23 @@ void Indium::PrivateCommandBuffer::commit() {
 
 	_committed = true;
 
+	for (const auto& encoder: _commandEncoders) {
+		if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
+			for (const auto& texture: renderEncoder->readOnlyTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
+			for (const auto& texture: renderEncoder->readWriteTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
+		}
+
+		// TODO: same for other encoders
+	}
+
 	if (vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -119,11 +136,13 @@ void Indium::PrivateCommandBuffer::commit() {
 			readOnlyTextures.insert(readOnlyTextures.end(), readOnly.begin(), readOnly.end());
 			readWriteTextures.insert(readWriteTextures.end(), readWrite.begin(), readWrite.end());
 		}
+
+		// TODO: implement this for other encoders (we need to synchronize those texture accesses as well)
 	}
 
 	for (const auto& texture: readWriteTextures) {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-		auto sema = _privateDevice->getWrappedBinarySemaphore();
+		auto sema = _privateDevice->getWrappedBinarySemaphore(privateTexture->needsExportablePresentationSemaphore());
 		presentationSemaphores.push_back(sema);
 		privateTexture->beginUpdatingPresentationSemaphore(sema);
 	}

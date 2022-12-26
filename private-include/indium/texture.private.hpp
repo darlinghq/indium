@@ -9,6 +9,8 @@
 #include <unordered_map>
 
 namespace Indium {
+	class PrivateCommandBuffer;
+
 	/**
 	 * An abstract base class for Indium textures.
 	 *
@@ -83,6 +85,9 @@ namespace Indium {
 		virtual void beginUpdatingPresentationSemaphore(std::shared_ptr<BinarySemaphore> presentationSemaphore);
 		virtual void endUpdatingPresentationSemaphore();
 		virtual std::shared_ptr<BinarySemaphore> synchronizePresentation();
+
+		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
+		virtual bool needsExportablePresentationSemaphore() const;
 	};
 
 	class TextureView: public PrivateTexture {
@@ -131,6 +136,9 @@ namespace Indium {
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+
+		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) override;
+		virtual bool needsExportablePresentationSemaphore() const override;
 	};
 
 	class ConcreteTexture: public PrivateTexture {
