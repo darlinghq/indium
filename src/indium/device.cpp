@@ -211,6 +211,8 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 		VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
 	};
 	std::vector<const char*> extensions(extensionSet.begin(), extensionSet.end());
 
@@ -501,9 +503,18 @@ std::shared_ptr<Indium::TimelineSemaphore> Indium::PrivateDevice::getWrappedTime
 	});
 };
 
-Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore() {
+Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportable) {
 	VkSemaphoreCreateInfo createInfo {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+	VkExportSemaphoreCreateInfo exportInfo {};
+
+	if (exportable) {
+		exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+		exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+
+		createInfo.pNext = &exportInfo;
+	}
 
 	VkSemaphore semaphore;
 	if (vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
@@ -518,8 +529,8 @@ void Indium::PrivateDevice::putBinarySemaphore(const BinarySemaphore& semaphore)
 	vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
 };
 
-std::shared_ptr<Indium::BinarySemaphore> Indium::PrivateDevice::getWrappedBinarySemaphore() {
-	return std::shared_ptr<Indium::BinarySemaphore>(new BinarySemaphore(getBinarySemaphore()), [](BinarySemaphore* ptr) {
+std::shared_ptr<Indium::BinarySemaphore> Indium::PrivateDevice::getWrappedBinarySemaphore(bool exportable) {
+	return std::shared_ptr<Indium::BinarySemaphore>(new BinarySemaphore(getBinarySemaphore(exportable)), [](BinarySemaphore* ptr) {
 		ptr->device->putBinarySemaphore(*ptr);
 		delete ptr;
 	});

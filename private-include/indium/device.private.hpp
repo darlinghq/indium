@@ -66,10 +66,10 @@ namespace Indium {
 		 */
 		std::shared_ptr<TimelineSemaphore> getWrappedTimelineSemaphore();
 
-		BinarySemaphore getBinarySemaphore();
+		BinarySemaphore getBinarySemaphore(bool exportable = false);
 		void putBinarySemaphore(const BinarySemaphore& semaphore);
 
-		std::shared_ptr<BinarySemaphore> getWrappedBinarySemaphore();
+		std::shared_ptr<BinarySemaphore> getWrappedBinarySemaphore(bool exportable = false);
 
 		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);
