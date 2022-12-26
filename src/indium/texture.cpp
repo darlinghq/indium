@@ -36,12 +36,12 @@ std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFor
 	return newTextureView(
 		pixelFormat,
 		textureType(),
-		Range<uint32_t> { static_cast<uint32_t>(parentRelativeLevel()), static_cast<uint32_t>(mipmapLevelCount()) },
-		Range<uint32_t> { static_cast<uint32_t>(parentRelativeSlice()), static_cast<uint32_t>(arrayLength()) }
+		Range<size_t> { parentRelativeLevel(), mipmapLevelCount() },
+		Range<size_t> { parentRelativeSlice(), arrayLength() }
 	);
 };
 
-std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers) {
+std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers) {
 	return newTextureView(
 		pixelFormat,
 		textureType,
@@ -51,7 +51,7 @@ std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFor
 	);
 };
 
-std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers, const TextureSwizzleChannels& swizzle) {
+std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers, const TextureSwizzleChannels& swizzle) {
 	return std::make_shared<Indium::TextureView>(
 		shared_from_this(),
 		pixelFormat,
@@ -67,7 +67,7 @@ size_t Indium::PrivateTexture::vulkanArrayLength() const {
 	return arrayLength();
 };
 
-Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<uint32_t>& levels, const Range<uint32_t>& layers):
+Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers):
 	PrivateTexture(std::dynamic_pointer_cast<PrivateDevice>(original->device())),
 	_original(original),
 	_pixelFormat(pixelFormat),

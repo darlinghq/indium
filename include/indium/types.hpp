@@ -22,7 +22,7 @@ namespace Indium {
 		float y;
 	};
 
-	enum class TextureSwizzle: size_t {
+	enum class TextureSwizzle: uint8_t {
 		Zero = 0,
 		One = 1,
 		Red = 2,

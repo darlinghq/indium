@@ -6,6 +6,7 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <optional>
 
 namespace Indium {
 	class PrivateDevice;

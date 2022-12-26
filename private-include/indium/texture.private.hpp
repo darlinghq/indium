@@ -30,8 +30,8 @@ namespace Indium {
 		virtual ~PrivateTexture() = 0;
 
 		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat) override;
-		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers) override;
-		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers, const TextureSwizzleChannels& swizzle) override;
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers) override;
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers, const TextureSwizzleChannels& swizzle) override;
 
 		virtual std::shared_ptr<Indium::Device> device() override;
 
@@ -94,12 +94,12 @@ namespace Indium {
 		PixelFormat _pixelFormat;
 		TextureType _textureType;
 		VkImageAspectFlags _imageAspect;
-		Range<uint32_t> _levels;
-		Range<uint32_t> _layers;
+		Range<size_t> _levels;
+		Range<size_t> _layers;
 		TextureSwizzleChannels _swizzle;
 
 	public:
-		TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<uint32_t>& levels, const Range<uint32_t>& layers);
+		TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers);
 		~TextureView();
 
 		virtual TextureType textureType() const override;

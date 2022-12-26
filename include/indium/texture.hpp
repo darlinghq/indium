@@ -82,8 +82,8 @@ namespace Indium {
 		virtual size_t bufferBytesPerRow() const;
 
 		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat) = 0;
-		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers) = 0;
-		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<uint32_t>& levels, const Range<uint32_t>& layers, const TextureSwizzleChannels& swizzle) = 0;
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers) = 0;
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers, const TextureSwizzleChannels& swizzle) = 0;
 
 		virtual void replaceRegion(Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) = 0;
 		virtual void replaceRegion(Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) = 0;
