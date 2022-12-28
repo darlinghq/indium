@@ -210,7 +210,6 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 
 	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-		VK_EXT_DEPTH_RANGE_UNRESTRICTED_EXTENSION_NAME,
 		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
 	};

@@ -240,8 +240,13 @@ void Indium::PrivateRenderCommandEncoder::setViewports(const Viewport* viewports
 		vkViewport.y = viewport.height - viewport.originY;
 		vkViewport.width = viewport.width;
 		vkViewport.height = -viewport.height;
-		vkViewport.minDepth = viewport.znear;
-		vkViewport.maxDepth = viewport.zfar;
+		// the documentation for setViewport and setViewports states that znear and zfar must be between
+		// 0 and 1 (inclusive). however, one of Apple's examples ("Creating and Sampling Textures")
+		// uses a znear of -1. i haven't tested what the actual behavior is in this case, but i'm assuming
+		// that the values are simply clamped to [0, 1]. the sample in question seems to work identically
+		// with clamping or without clamping (which is only possible with VK_EXT_depth_range_unrestricted enabled).
+		vkViewport.minDepth = std::clamp(viewport.znear, 0., 1.);
+		vkViewport.maxDepth = std::clamp(viewport.zfar, 0., 1.);
 		tmp.push_back(vkViewport);
 	}
 	vkCmdSetViewportWithCount(buf->commandBuffer(), tmp.size(), tmp.data());
