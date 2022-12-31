@@ -1,8 +1,11 @@
 #include <iridium/air.hpp>
 #include <iridium/bits.hpp>
 #include <iridium/spirv.hpp>
+#include <iridium/dynamic-llvm.hpp>
 
 #include <llvm-c/BitReader.h>
+
+namespace DynamicLLVM = Iridium::DynamicLLVM;
 
 // special thanks to https://github.com/YuAo/MetalLibraryArchive for information on the library format
 
@@ -13,21 +16,21 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	_type(type)
 {
 	LLVMModuleRef moduleRef;
-	_bitcodeBuffer = LLVMSupport::MemoryBuffer(LLVMCreateMemoryBufferWithMemoryRange(reinterpret_cast<const char*>(bitcode), bitcodeSize, "", false), LLVMDisposeMemoryBuffer);
+	_bitcodeBuffer = LLVMSupport::MemoryBuffer(DynamicLLVM::LLVMCreateMemoryBufferWithMemoryRange(reinterpret_cast<const char*>(bitcode), bitcodeSize, "", false), DynamicLLVM::LLVMDisposeMemoryBuffer);
 
 	if (!_bitcodeBuffer) {
 		// TODO
 		abort();
 	}
 
-	if (LLVMParseBitcode2(_bitcodeBuffer.get(), &moduleRef)) {
+	if (DynamicLLVM::LLVMParseBitcode2(_bitcodeBuffer.get(), &moduleRef)) {
 		// TODO
 		abort();
 	}
 
-	_module = LLVMSupport::Module(moduleRef, LLVMDisposeModule);
+	_module = LLVMSupport::Module(moduleRef, DynamicLLVM::LLVMDisposeModule);
 
-	_function = LLVMGetNamedFunction(_module.get(), _name.c_str());
+	_function = DynamicLLVM::LLVMGetNamedFunction(_module.get(), _name.c_str());
 
 	if (!_function) {
 		// TODO
@@ -43,7 +46,7 @@ class ImpossibleResultID: public std::exception {};
 static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& builder, LLVMTypeRef llvmType) {
 	using namespace Iridium::SPIRV;
 
-	auto kind = LLVMGetTypeKind(llvmType);
+	auto kind = DynamicLLVM::LLVMGetTypeKind(llvmType);
 
 	switch (kind) {
 		case LLVMVoidTypeKind:
@@ -65,13 +68,13 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			return builder.declareType(Type(Type::FloatTag {}, 128));
 
 		case LLVMIntegerTypeKind:
-			return builder.declareType(Type(Type::IntegerTag {}, LLVMGetIntTypeWidth(llvmType), /* TODO: how to determine this? */ true));
+			return builder.declareType(Type(Type::IntegerTag {}, DynamicLLVM::LLVMGetIntTypeWidth(llvmType), /* TODO: how to determine this? */ true));
 
 		case LLVMFunctionTypeKind: {
-			auto retType = llvmTypeToSPIRVType(builder, LLVMGetReturnType(llvmType));
+			auto retType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetReturnType(llvmType));
 			std::vector<ResultID> paramTypes;
-			std::vector<LLVMTypeRef> llvmParamTypes(LLVMCountParamTypes(llvmType));
-			LLVMGetParamTypes(llvmType, llvmParamTypes.data());
+			std::vector<LLVMTypeRef> llvmParamTypes(DynamicLLVM::LLVMCountParamTypes(llvmType));
+			DynamicLLVM::LLVMGetParamTypes(llvmType, llvmParamTypes.data());
 			for (auto& typeRef: llvmParamTypes) {
 				paramTypes.push_back(llvmTypeToSPIRVType(builder, typeRef));
 			}
@@ -80,15 +83,15 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 
 		case LLVMStructTypeKind: {
 			std::vector<Type::Member> members;
-			auto len = LLVMCountStructElementTypes(llvmType);
+			auto len = DynamicLLVM::LLVMCountStructElementTypes(llvmType);
 			// unfortunately, LLVM's C API provides no way to determine the offset of a structure member.
 			// nor does it provide a way to determine the size or alignment of a type as a constant expression.
 			// therefore, we'll need to calculate these values ourselves.
 			auto structAlignment = 1;
-			if (!LLVMIsPackedStruct(llvmType)) {
+			if (!DynamicLLVM::LLVMIsPackedStruct(llvmType)) {
 				// see which member has the greatest alignment
 				for (size_t i = 0; i < len; ++i) {
-					auto typeAtIndex = LLVMStructGetTypeAtIndex(llvmType, i);
+					auto typeAtIndex = DynamicLLVM::LLVMStructGetTypeAtIndex(llvmType, i);
 					auto type = llvmTypeToSPIRVType(builder, typeAtIndex);
 					auto typeInst = *builder.reverseLookupType(type);
 					if (typeInst.alignment > structAlignment) {
@@ -102,7 +105,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			}
 			size_t offset = 0;
 			for (size_t i = 0; i < len; ++i) {
-				auto typeAtIndex = LLVMStructGetTypeAtIndex(llvmType, i);
+				auto typeAtIndex = DynamicLLVM::LLVMStructGetTypeAtIndex(llvmType, i);
 				auto type = llvmTypeToSPIRVType(builder, typeAtIndex);
 				auto typeInst = *builder.reverseLookupType(type);
 				auto alignmentToUse = (typeInst.alignment < structAlignment) ? typeInst.alignment : structAlignment;
@@ -120,21 +123,21 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 		case LLVMPointerTypeKind: {
 			StorageClass storageClass = StorageClass::Output;
 			// TODO: somehow determine the appropriate storage class
-			//auto addrSpace = LLVMGetPointerAddressSpace(llvmType);
-			return builder.declareType(Type(Type::PointerTag {}, storageClass, llvmTypeToSPIRVType(builder, LLVMGetElementType(llvmType)), 8));
+			//auto addrSpace = DynamicLLVM::LLVMGetPointerAddressSpace(llvmType);
+			return builder.declareType(Type(Type::PointerTag {}, storageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType)), 8));
 		} break;
 
 		case LLVMVectorTypeKind: {
-			auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(llvmType));
+			auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType));
 			auto typeInst = *builder.reverseLookupType(type);
-			auto elmCount = LLVMGetVectorSize(llvmType);
+			auto elmCount = DynamicLLVM::LLVMGetVectorSize(llvmType);
 			return builder.declareType(Type(Type::VectorTag {}, elmCount, type, typeInst.size * elmCount, ((elmCount == 3 || elmCount == 4) ? 4 : 2) * typeInst.alignment));
 		} break;
 
 		case LLVMArrayTypeKind: {
-			auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(llvmType));
+			auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType));
 			auto typeInst = *builder.reverseLookupType(type);
-			auto elmCount = LLVMGetArrayLength(llvmType);
+			auto elmCount = DynamicLLVM::LLVMGetArrayLength(llvmType);
 			return builder.declareType(Type(Type::ArrayTag {}, type, elmCount, typeInst.size * elmCount, typeInst.alignment));
 		} break;
 
@@ -145,16 +148,16 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 
 static std::string_view llvmMDStringToStringView(LLVMValueRef llvmMDString) {
 	unsigned int length = 0;
-	auto rawStr = LLVMGetMDString(llvmMDString, &length);
+	auto rawStr = DynamicLLVM::LLVMGetMDString(llvmMDString, &length);
 	return std::string_view(rawStr, length);
 };
 
 static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef llvmValue) {
 	using namespace Iridium::SPIRV;
 
-	auto kind = LLVMGetValueKind(llvmValue);
-	auto type = LLVMTypeOf(llvmValue);
-	auto typeKind = LLVMGetTypeKind(type);
+	auto kind = DynamicLLVM::LLVMGetValueKind(llvmValue);
+	auto type = DynamicLLVM::LLVMTypeOf(llvmValue);
+	auto typeKind = DynamicLLVM::LLVMGetTypeKind(type);
 
 	{
 		ResultID maybe = builder.lookupResultID(reinterpret_cast<uintptr_t>(llvmValue));
@@ -165,15 +168,15 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 
 	switch (kind) {
 		case LLVMConstantIntValueKind: {
-			auto val = LLVMConstIntGetZExtValue(llvmValue);
-			auto width = LLVMGetIntTypeWidth(type );
+			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(llvmValue);
+			auto width = DynamicLLVM::LLVMGetIntTypeWidth(type );
 			// TODO: how to determine if it's signed or not?
 			return (width <= 32) ? builder.declareConstantScalar<int32_t>(val) : builder.declareConstantScalar<int64_t>(val);
 		} break;
 
 		case LLVMConstantFPValueKind: {
 			LLVMBool losesInfo = false;
-			auto val = LLVMConstRealGetDouble(llvmValue, &losesInfo);
+			auto val = DynamicLLVM::LLVMConstRealGetDouble(llvmValue, &losesInfo);
 
 			switch (typeKind) {
 				case LLVMFloatTypeKind:
@@ -194,10 +197,10 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 
 		case LLVMConstantVectorValueKind: {
 			std::vector<ResultID> vals;
-			auto count = LLVMGetVectorSize(type);
+			auto count = DynamicLLVM::LLVMGetVectorSize(type);
 
 			for (size_t i = 0; i < count; ++i) {
-				auto constant = LLVMGetOperand(llvmValue, i);
+				auto constant = DynamicLLVM::LLVMGetOperand(llvmValue, i);
 				vals.push_back(llvmValueToResultID(builder, constant));
 			}
 
@@ -207,10 +210,10 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 		case LLVMConstantDataVectorValueKind: {
 			std::vector<ResultID> vals;
 
-			auto count = LLVMGetVectorSize(type);
+			auto count = DynamicLLVM::LLVMGetVectorSize(type);
 
 			for (size_t i = 0; i < count; ++i) {
-				auto constant = LLVMGetElementAsConstant(llvmValue, i);
+				auto constant = DynamicLLVM::LLVMGetElementAsConstant(llvmValue, i);
 				vals.push_back(llvmValueToResultID(builder, constant));
 			}
 
@@ -227,9 +230,9 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 		} break;
 
 		case LLVMConstantExprValueKind: {
-			switch (LLVMGetConstOpcode(llvmValue)) {
+			switch (DynamicLLVM::LLVMGetConstOpcode(llvmValue)) {
 				case LLVMBitCast: {
-					auto target = LLVMGetOperand(llvmValue, 0);
+					auto target = DynamicLLVM::LLVMGetOperand(llvmValue, 0);
 					auto targetID = llvmValueToResultID(builder, target);
 					auto targetType = builder.lookupResultType(targetID);
 					auto targetTypeInst = *builder.reverseLookupType(targetType);
@@ -261,13 +264,13 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 };
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
-	//auto tmp = LLVMPrintModuleToString(_module.get());
+	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
 	//std::cout << "    " << tmp << std::endl;
-	//LLVMDisposeMessage(tmp);
+	//DynamicLLVM::LLVMDisposeMessage(tmp);
 
 	auto& funcInfo = outputInfo.functionInfos[_name];
 
-	auto namedMD = LLVMGetFirstNamedMetadata(_module.get());
+	auto namedMD = DynamicLLVM::LLVMGetFirstNamedMetadata(_module.get());
 
 	auto voidType = builder.declareType(SPIRV::Type(SPIRV::Type::VoidTag {}));
 	auto funcType = builder.declareType(SPIRV::Type(SPIRV::Type::FunctionTag {}, voidType, {}, 8));
@@ -296,7 +299,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// and operand 2 contains information about the function's parameters.
 	std::vector<LLVMValueRef> rootInfoOperands;
 
-	if (auto vertexMD = LLVMGetNamedMetadata(_module.get(), "air.vertex", sizeof("air.vertex") - 1)) {
+	if (auto vertexMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.vertex", sizeof("air.vertex") - 1)) {
 		// this is a vertex shader
 
 		funcInfo.type = FunctionType::Vertex;
@@ -334,15 +337,15 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		builder.referenceGlobalVariable(vertexIndexVar);
 
 		// get the operands
-		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.vertex"));
-		LLVMGetNamedMetadataOperands(_module.get(), "air.vertex", operands.data());
+		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.vertex"));
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.vertex", operands.data());
 
 		// operand 0 contains the info for the vertex shader
 		auto rootInfoMD = operands[0];
 
-		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
-		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
-	} else if (auto fragmentMD = LLVMGetNamedMetadata(_module.get(), "air.fragment", sizeof("air.fragment") - 1)) {
+		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
+		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+	} else if (auto fragmentMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.fragment", sizeof("air.fragment") - 1)) {
 		// this is a fragment shader
 
 		funcInfo.type = FunctionType::Fragment;
@@ -363,15 +366,15 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		builder.referenceGlobalVariable(fragCoordVar);
 
 		// get the operands
-		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.fragment"));
-		LLVMGetNamedMetadataOperands(_module.get(), "air.fragment", operands.data());
+		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.fragment"));
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.fragment", operands.data());
 
 		// operand 0 contains the info for the fragment shader
 		auto rootInfoMD = operands[0];
 
-		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
-		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
-	} else if (auto kernelMD = LLVMGetNamedMetadata(_module.get(), "air.kernel", sizeof("air.kernel") - 1)) {
+		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
+		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+	} else if (auto kernelMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.kernel", sizeof("air.kernel") - 1)) {
 		// this is a "kernel" (compute shader)
 
 		funcInfo.type = FunctionType::Kernel;
@@ -405,14 +408,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		builder.referenceGlobalVariable(globalInvocationIdVar);
 
 		// get the operands
-		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.kernel"));
-		LLVMGetNamedMetadataOperands(_module.get(), "air.kernel", operands.data());
+		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.kernel"));
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.kernel", operands.data());
 
 		// operand 0 contains the info for the compute shader
 		auto rootInfoMD = operands[0];
 
-		rootInfoOperands = std::vector<LLVMValueRef>(LLVMGetMDNodeNumOperands(rootInfoMD));
-		LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
+		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
+		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
 	}
 
 	// TODO: inspect the output of some more compiled shaders; the current code is only valid for
@@ -422,22 +425,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// if the function returns a structure, we need to separate the components
 	// into separate output variables.
 
-	auto llfuncType = LLVMGetElementType(LLVMTypeOf(_function));
-	auto funcRetType = LLVMGetReturnType(llfuncType);
-	std::vector<LLVMTypeRef> funcParamTypes(LLVMCountParamTypes(llfuncType));
-	LLVMGetParamTypes(llfuncType, funcParamTypes.data());
+	auto llfuncType = DynamicLLVM::LLVMGetElementType(DynamicLLVM::LLVMTypeOf(_function));
+	auto funcRetType = DynamicLLVM::LLVMGetReturnType(llfuncType);
+	std::vector<LLVMTypeRef> funcParamTypes(DynamicLLVM::LLVMCountParamTypes(llfuncType));
+	DynamicLLVM::LLVMGetParamTypes(llfuncType, funcParamTypes.data());
 
-	std::vector<LLVMValueRef> returnValueOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
-	LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
+	std::vector<LLVMValueRef> returnValueOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
+	DynamicLLVM::LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
 
-	if (LLVMGetTypeKind(funcRetType) == LLVMStructTypeKind) {
+	if (DynamicLLVM::LLVMGetTypeKind(funcRetType) == LLVMStructTypeKind) {
 		// analyze return value and mark special values (like the position)
 		uint32_t location = 0;
 		for (size_t i = 0; i < returnValueOperands.size(); ++i) {
 			auto& returnValueOperand = returnValueOperands[i];
 
-			std::vector<LLVMValueRef> returnValueMemberInfo(LLVMGetMDNodeNumOperands(returnValueOperand));
-			LLVMGetMDNodeOperands(returnValueOperand, returnValueMemberInfo.data());
+			std::vector<LLVMValueRef> returnValueMemberInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(returnValueOperand));
+			DynamicLLVM::LLVMGetMDNodeOperands(returnValueOperand, returnValueMemberInfo.data());
 
 			bool isSpecial = false;
 
@@ -454,7 +457,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 
 			if (!isSpecial) {
-				auto type = llvmTypeToSPIRVType(builder, LLVMStructGetTypeAtIndex(funcRetType, i));
+				auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMStructGetTypeAtIndex(funcRetType, i));
 				auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
 				auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
 				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { location } });
@@ -463,7 +466,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				builder.referenceGlobalVariable(var);
 			}
 		}
-	} else if (LLVMGetTypeKind(funcRetType) != LLVMVoidTypeKind) {
+	} else if (DynamicLLVM::LLVMGetTypeKind(funcRetType) != LLVMVoidTypeKind) {
 		// TODO: handle case of returning a special variable (like air.position) with a single return value
 
 		auto type = llvmTypeToSPIRVType(builder, funcRetType);
@@ -474,8 +477,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		builder.referenceGlobalVariable(var);
 	}
 
-	std::vector<LLVMValueRef> parameterOperands(LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
-	LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
+	std::vector<LLVMValueRef> parameterOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
+	DynamicLLVM::LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
 
 	//
 	// analyze parameters and mark special values (like the vertex ID)
@@ -489,8 +492,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -510,13 +513,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// info[0] is the parameter index
 			// info[1] is the kind
 			// everything after that depends on the kind
-			std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-			LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+			std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+			DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 			auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
 			if (kind == "air.buffer") {
-				auto type = llvmTypeToSPIRVType(builder, LLVMGetElementType(funcParamTypes[i]));
+				auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(funcParamTypes[i]));
 				auto addrPtrTypeInst = SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::PhysicalStorageBuffer, type, 8);
 				auto addrPtrType = builder.declareType(addrPtrTypeInst);
 				bufferMembers.push_back(SPIRV::Type::Member { addrPtrType, 8 * bufferIndex, {} });
@@ -559,11 +562,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
-		auto llparam = LLVMGetParam(_function, i);
+		auto llparam = DynamicLLVM::LLVMGetParam(_function, i);
 		auto llparamVal = reinterpret_cast<uintptr_t>(llparam);
 
 		if (kind == "air.vertex_id") {
@@ -576,7 +579,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -590,8 +593,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				std::runtime_error("Failed to find location index info for buffer");
 			}
 
-			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex, 0 });
 
@@ -635,7 +638,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -649,8 +652,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				std::runtime_error("Failed to find location index info for buffer");
 			}
 
-			uint32_t locationIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t locationIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::VertexInput, locationIndex, /* ignored: */ 0, /* ignored: */ TextureAccessType::Read, /* ignored: */ 0 });
 
@@ -696,8 +699,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -707,7 +710,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			TextureAccessType accessType = TextureAccessType::Sample;
 			size_t argTypeIdx = SIZE_MAX;
 			for (size_t idx = 0; idx < parameterInfo.size(); ++idx) {
-				if (LLVMIsAMDString(parameterInfo[idx])) {
+				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[idx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[idx]);
 
 					if (str == "air.location_index") {
@@ -729,8 +732,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				std::runtime_error("Failed to find arg type info for buffer");
 			}
 
-			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 			auto argType = llvmMDStringToStringView(parameterInfo[argTypeIdx + 1]);
 			auto firstAngle = argType.find('<');
 			auto lastAngle = argType.find('>');
@@ -777,7 +780,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(var);
 
-			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(DynamicLLVM::LLVMGetParam(_function, i)));
 			builder.setResultType(var, imagePtrType);
 
 			++internalBindingIndex;
@@ -791,8 +794,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(LLVMGetMDNodeNumOperands(parameterOperand));
-		LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -800,7 +803,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -814,8 +817,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				std::runtime_error("Failed to find location index info for buffer");
 			}
 
-			uint32_t bindingIndex = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
+			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, bindingIndex, internalBindingIndex, /* ignored: */ TextureAccessType::Read, /* ignored: */ SIZE_MAX });
 
@@ -831,7 +834,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(var);
 
-			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(LLVMGetParam(_function, i)));
+			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(DynamicLLVM::LLVMGetParam(_function, i)));
 			builder.setResultType(var, samplerPtrType);
 
 			++internalBindingIndex;
@@ -843,18 +846,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// unlike Vulkan/SPIR-V, Metal allows you to declare/define samplers within the shader itself. fortunately for us, any such samplers
 	// must be constexprs; when compiled, they're saved as global constants and referenced by an "air.sampler_states" metadata node.
 	// this means we can find them, extract their values, and push this to the output info for Indium to pass to Vulkan.
-	if (auto samplerStatesMD = LLVMGetNamedMetadata(_module.get(), "air.sampler_states", sizeof("air.sampler_states") - 1)) {
+	if (auto samplerStatesMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.sampler_states", sizeof("air.sampler_states") - 1)) {
 		// get the operands
-		std::vector<LLVMValueRef> operands(LLVMGetNamedMetadataNumOperands(_module.get(), "air.sampler_states"));
-		LLVMGetNamedMetadataOperands(_module.get(), "air.sampler_states", operands.data());
+		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.sampler_states"));
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.sampler_states", operands.data());
 
 		// each operand contains "air.sampler_state" followed by a reference to a sampler state
 		for (const auto& operand: operands) {
-			std::vector<LLVMValueRef> suboperands(LLVMGetMDNodeNumOperands(operand));
-			LLVMGetMDNodeOperands(operand, suboperands.data());
+			std::vector<LLVMValueRef> suboperands(DynamicLLVM::LLVMGetMDNodeNumOperands(operand));
+			DynamicLLVM::LLVMGetMDNodeOperands(operand, suboperands.data());
 
-			auto init = LLVMGetInitializer(suboperands[1]);
-			auto val = LLVMConstIntGetZExtValue(init);
+			auto init = DynamicLLVM::LLVMGetInitializer(suboperands[1]);
+			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(init);
 
 			// bit positions of each state component (excluding the end point):
 			//   S address mode = [0, 3]
@@ -935,7 +938,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 	// assign an ID to each block
 	bool isFirst = true;
-	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
+	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
 		if (isFirst) {
 			isFirst = false;
 
@@ -965,36 +968,36 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 	std::unordered_map<SPIRV::ResultID, CFGInfo> cfgInfos;
 
-	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
-		auto lastInst = LLVMGetLastInstruction(bb);
-		auto lastInstOpcode = LLVMGetInstructionOpcode(lastInst);
+	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
+		auto lastInst = DynamicLLVM::LLVMGetLastInstruction(bb);
+		auto lastInstOpcode = DynamicLLVM::LLVMGetInstructionOpcode(lastInst);
 
 		CFGInfo cfgInfo {};
 
-		if (lastInstOpcode == LLVMBr && LLVMIsConditional(lastInst)) {
+		if (lastInstOpcode == LLVMBr && DynamicLLVM::LLVMIsConditional(lastInst)) {
 			// check if this is a basic conditional/selection (i.e. an `if`)
-			auto firstBlock = LLVMGetSuccessor(lastInst, 0);
-			auto secondBlock = LLVMGetSuccessor(lastInst, 1);
+			auto firstBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 0);
+			auto secondBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 1);
 
-			auto lastInstFirstBlock = LLVMGetLastInstruction(firstBlock);
-			auto lastInstSecondBlock = LLVMGetLastInstruction(secondBlock);
-			auto lastInstOpcodeFirstBlock = LLVMGetInstructionOpcode(lastInstFirstBlock);
-			auto lastInstOpcodeSecondBlock = LLVMGetInstructionOpcode(lastInstSecondBlock);
+			auto lastInstFirstBlock = DynamicLLVM::LLVMGetLastInstruction(firstBlock);
+			auto lastInstSecondBlock = DynamicLLVM::LLVMGetLastInstruction(secondBlock);
+			auto lastInstOpcodeFirstBlock = DynamicLLVM::LLVMGetInstructionOpcode(lastInstFirstBlock);
+			auto lastInstOpcodeSecondBlock = DynamicLLVM::LLVMGetInstructionOpcode(lastInstSecondBlock);
 
 			SPIRV::ResultID mergeBlock = SPIRV::ResultIDInvalid;
 
 			// check if the first block is the special block
-			if (lastInstOpcodeFirstBlock == LLVMBr && !LLVMIsConditional(lastInstFirstBlock)) {
+			if (lastInstOpcodeFirstBlock == LLVMBr && !DynamicLLVM::LLVMIsConditional(lastInstFirstBlock)) {
 				// make sure the target block is the same
-				auto block = LLVMGetSuccessor(lastInstFirstBlock, 0);
+				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstFirstBlock, 0);
 
 				if (block == secondBlock) {
 					// perfect, the second block is the merge block then
 					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(secondBlock));
 				}
-			} else if (lastInstOpcodeSecondBlock == LLVMBr && !LLVMIsConditional(lastInstSecondBlock)) {
+			} else if (lastInstOpcodeSecondBlock == LLVMBr && !DynamicLLVM::LLVMIsConditional(lastInstSecondBlock)) {
 				// make sure the target block is the same
-				auto block = LLVMGetSuccessor(lastInstSecondBlock, 0);
+				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstSecondBlock, 0);
 
 				if (block == firstBlock) {
 					// perfect, the first block is the merge block then
@@ -1017,7 +1020,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// translate instructions
 	//
 	isFirst = true;
-	for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = LLVMGetNextBasicBlock(bb)) {
+	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
 		if (isFirst) {
 			isFirst = false;
 
@@ -1027,13 +1030,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.insertLabel(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
 		}
 
-		for (LLVMValueRef inst = LLVMGetFirstInstruction(bb); inst != nullptr; inst = LLVMGetNextInstruction(inst)) {
-			auto opcode = LLVMGetInstructionOpcode(inst);
+		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+			auto opcode = DynamicLLVM::LLVMGetInstructionOpcode(inst);
 
 			switch (opcode) {
 				case LLVMZExt: {
-					auto source = LLVMGetOperand(inst, 0);
-					auto targetType = LLVMTypeOf(inst);
+					auto source = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
 					auto resID = builder.encodeUConvert(type, llvmValueToResultID(builder, source));
@@ -1046,14 +1049,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				//       (since i *think* that's the same addressing mode used by Metal code)
 
 				case LLVMGetElementPtr: {
-					auto base = LLVMGetOperand(inst, 0);
-					auto targetType = LLVMTypeOf(inst);
+					auto base = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 
 					std::vector<SPIRV::ResultID> indices;
-					auto operandCount = LLVMGetNumOperands(inst);
+					auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
 
 					for (size_t i = 1; i < operandCount; ++i) {
-						auto llindex = LLVMGetOperand(inst, i);
+						auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
 						indices.push_back(llvmValueToResultID(builder, llindex));
 					}
 
@@ -1093,9 +1096,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMLoad: {
-					auto alignment = LLVMGetAlignment(inst);
-					auto ptr = LLVMGetOperand(inst, 0);
-					auto targetType = LLVMTypeOf(inst);
+					auto alignment = DynamicLLVM::LLVMGetAlignment(inst);
+					auto ptr = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 					auto op = llvmValueToResultID(builder, ptr);
 					auto opType = *builder.reverseLookupType(builder.lookupResultType(op));
@@ -1116,9 +1119,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMStore: {
-					auto alignment = LLVMGetAlignment(inst);
-					auto llval = LLVMGetOperand(inst, 0);
-					auto llptr = LLVMGetOperand(inst, 1);
+					auto alignment = DynamicLLVM::LLVMGetAlignment(inst);
+					auto llval = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto llptr = DynamicLLVM::LLVMGetOperand(inst, 1);
 					auto val = llvmValueToResultID(builder, llval);
 					auto ptr = llvmValueToResultID(builder, llptr);
 
@@ -1128,11 +1131,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMCall: {
-					auto target = LLVMGetCalledValue(inst);
-					auto targetType = LLVMTypeOf(inst);
+					auto target = DynamicLLVM::LLVMGetCalledValue(inst);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 
 					size_t len = 0;
-					auto rawName = LLVMGetValueName2(target, &len);
+					auto rawName = DynamicLLVM::LLVMGetValueName2(target, &len);
 					std::string_view name;
 
 					if (rawName) {
@@ -1143,19 +1146,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
 					if (name == "air.convert.f.v2f32.u.v2i32") {
-						auto arg = LLVMGetOperand(inst, 0);
+						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
 					} else if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_2d.v4f32" || name == "air.sample_texture_cube.v4f16") {
-						auto textureArg = LLVMGetOperand(inst, 0);
-						auto samplerArg = LLVMGetOperand(inst, 1);
-						auto textureCoordArg = LLVMGetOperand(inst, 2);
-						auto someBooleanArgTODO = LLVMGetOperand(inst, 3);
-						auto offsetArg = LLVMGetOperand(inst, 4);
-						auto someOtherBooleanArgTODO = LLVMGetOperand(inst, 5);
-						auto someFloatArgTODO = LLVMGetOperand(inst, 6);
-						auto someOtherFloatArgTODO = LLVMGetOperand(inst, 6);
-						auto someI32ArgTODO = LLVMGetOperand(inst, 7);
+						auto textureArg = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto samplerArg = DynamicLLVM::LLVMGetOperand(inst, 1);
+						auto textureCoordArg = DynamicLLVM::LLVMGetOperand(inst, 2);
+						auto someBooleanArgTODO = DynamicLLVM::LLVMGetOperand(inst, 3);
+						auto offsetArg = DynamicLLVM::LLVMGetOperand(inst, 4);
+						auto someOtherBooleanArgTODO = DynamicLLVM::LLVMGetOperand(inst, 5);
+						auto someFloatArgTODO = DynamicLLVM::LLVMGetOperand(inst, 6);
+						auto someOtherFloatArgTODO = DynamicLLVM::LLVMGetOperand(inst, 6);
+						auto someI32ArgTODO = DynamicLLVM::LLVMGetOperand(inst, 7);
 
 						auto textureArgID = llvmValueToResultID(builder, textureArg);
 						auto samplerArgID = llvmValueToResultID(builder, samplerArg);
@@ -1190,34 +1193,34 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto partialResult = builder.encodeCompositeInsert(type, sampled, builder.declareUndefinedValue(type), { 0 });
 						resID = builder.encodeCompositeInsert(type, builder.declareConstantScalar<int8_t>(0), partialResult, { 1 });
 					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
-						auto arg = LLVMGetOperand(inst, 0);
+						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
 					} else if (name == "air.dot.v3f32" || name == "air.dot.v4f32") {
-						auto operand1 = LLVMGetOperand(inst, 0);
-						auto operand2 = LLVMGetOperand(inst, 1);
+						auto operand1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto operand2 = DynamicLLVM::LLVMGetOperand(inst, 1);
 
 						resID = builder.encodeArithBinop(SPIRV::Opcode::Dot, type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
 					} else if (name == "air.fast_rsqrt.f32") {
-						auto arg = LLVMGetOperand(inst, 0);
+						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeInverseSqrt(type, llvmValueToResultID(builder, arg));
 					} else if (name == "air.fast_saturate.f32") {
-						auto arg = LLVMGetOperand(inst, 0);
+						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFClamp(type, llvmValueToResultID(builder, arg), builder.declareConstantScalar<float>(0), builder.declareConstantScalar<float>(1));
 					} else if (name == "air.fast_pow.f32") {
-						auto base = LLVMGetOperand(inst, 0);
-						auto exponent = LLVMGetOperand(inst, 1);
+						auto base = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto exponent = DynamicLLVM::LLVMGetOperand(inst, 1);
 
 						resID = builder.encodePow(type, llvmValueToResultID(builder, base), llvmValueToResultID(builder, exponent));
 					} else if (name == "air.fast_sqrt.f32") {
-						auto arg = LLVMGetOperand(inst, 0);
+						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeSqrt(type, llvmValueToResultID(builder, arg));
 					} else if (name == "air.fast_fmax.f32") {
-						auto operand1 = LLVMGetOperand(inst, 0);
-						auto operand2 = LLVMGetOperand(inst, 1);
+						auto operand1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto operand2 = DynamicLLVM::LLVMGetOperand(inst, 1);
 
 						resID = builder.encodeFMax(type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
 					} else {
@@ -1232,9 +1235,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				case LLVMFDiv:
 				case LLVMFAdd:
 				case LLVMFSub: {
-					auto op1 = LLVMGetOperand(inst, 0);
-					auto op2 = LLVMGetOperand(inst, 1);
-					auto targetType = LLVMTypeOf(inst);
+					auto op1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto op2 = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 					SPIRV::Opcode binop;
 
@@ -1254,16 +1257,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMShuffleVector: {
-					auto vec1 = LLVMGetOperand(inst, 0);
-					auto vec2 = LLVMGetOperand(inst, 1);
-					auto targetType = LLVMTypeOf(inst);
+					auto vec1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto vec2 = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					std::vector<uint32_t> components(LLVMGetNumMaskElements(inst));
+					std::vector<uint32_t> components(DynamicLLVM::LLVMGetNumMaskElements(inst));
 
 					for (size_t i = 0; i < components.size(); ++i) {
-						auto val = LLVMGetMaskValue(inst, i);
-						components[i] = (val == LLVMGetUndefMaskElem()) ? UINT32_MAX : val;
+						auto val = DynamicLLVM::LLVMGetMaskValue(inst, i);
+						components[i] = (val == DynamicLLVM::LLVMGetUndefMaskElem()) ? UINT32_MAX : val;
 					}
 
 					auto resID = builder.encodeVectorShuffle(type, llvmValueToResultID(builder, vec1), llvmValueToResultID(builder, vec2), components);
@@ -1273,13 +1276,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMInsertValue: {
-					auto composite = LLVMGetOperand(inst, 0);
-					auto part = LLVMGetOperand(inst, 1);
-					auto targetType = LLVMTypeOf(inst);
+					auto composite = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto part = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					auto llindices = LLVMGetIndices(inst);
-					std::vector<uint32_t> indices(llindices, llindices + LLVMGetNumIndices(inst));
+					auto llindices = DynamicLLVM::LLVMGetIndices(inst);
+					std::vector<uint32_t> indices(llindices, llindices + DynamicLLVM::LLVMGetNumIndices(inst));
 
 					auto resID = builder.encodeCompositeInsert(type, llvmValueToResultID(builder, part), llvmValueToResultID(builder, composite), indices);
 
@@ -1288,12 +1291,12 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMExtractValue: {
-					auto composite = LLVMGetOperand(inst, 0);
-					auto targetType = LLVMTypeOf(inst);
+					auto composite = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					auto llindices = LLVMGetIndices(inst);
-					std::vector<uint32_t> indices(llindices, llindices + LLVMGetNumIndices(inst));
+					auto llindices = DynamicLLVM::LLVMGetIndices(inst);
+					std::vector<uint32_t> indices(llindices, llindices + DynamicLLVM::LLVMGetNumIndices(inst));
 
 					auto resID = builder.encodeCompositeExtract(type, llvmValueToResultID(builder, composite), indices);
 
@@ -1302,10 +1305,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMInsertElement: {
-					auto vector = LLVMGetOperand(inst, 0);
-					auto component = LLVMGetOperand(inst, 1);
-					auto index = LLVMGetOperand(inst, 2);
-					auto targetType = LLVMTypeOf(inst);
+					auto vector = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto component = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto index = DynamicLLVM::LLVMGetOperand(inst, 2);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
 					auto resID = builder.encodeVectorInsertDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, component), llvmValueToResultID(builder, index));
@@ -1315,9 +1318,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMExtractElement: {
-					auto vector = LLVMGetOperand(inst, 0);
-					auto index = LLVMGetOperand(inst, 1);
-					auto targetType = LLVMTypeOf(inst);
+					auto vector = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto index = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
 					auto resID = builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
@@ -1327,18 +1330,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMRet: {
-					if (LLVMGetNumOperands(inst) > 0) {
-						auto llval = LLVMGetOperand(inst, 0);
+					if (DynamicLLVM::LLVMGetNumOperands(inst) > 0) {
+						auto llval = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						// should be the same as the function return value
-						auto type = LLVMTypeOf(llval);
+						auto type = DynamicLLVM::LLVMTypeOf(llval);
 						auto val = llvmValueToResultID(builder, llval);
 
-						if (LLVMGetTypeKind(type) == LLVMStructTypeKind) {
-							auto structMemberCount = LLVMGetNumContainedTypes(type);
+						if (DynamicLLVM::LLVMGetTypeKind(type) == LLVMStructTypeKind) {
+							auto structMemberCount = DynamicLLVM::LLVMGetNumContainedTypes(type);
 
 							for (size_t i = 0; i < structMemberCount; ++i) {
-								auto memberType = LLVMStructGetTypeAtIndex(type, i);
+								auto memberType = DynamicLLVM::LLVMStructGetTypeAtIndex(type, i);
 								auto type = llvmTypeToSPIRVType(builder, memberType);
 								auto elm = builder.encodeCompositeExtract(type, val, { static_cast<uint32_t>(i) });
 
@@ -1359,9 +1362,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMFCmp: {
-					auto op1 = LLVMGetOperand(inst, 0);
-					auto op2 = LLVMGetOperand(inst, 1);
-					auto predicate = LLVMGetFCmpPredicate(inst);
+					auto op1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto op2 = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto predicate = DynamicLLVM::LLVMGetFCmpPredicate(inst);
 
 					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
 					auto type = builder.declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
@@ -1384,10 +1387,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMBr: {
-					if (LLVMIsConditional(inst)) {
-						auto condition = LLVMGetCondition(inst);
-						auto trueLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 0));
-						auto falseLabel = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 1));
+					if (DynamicLLVM::LLVMIsConditional(inst)) {
+						auto condition = DynamicLLVM::LLVMGetCondition(inst);
+						auto trueLabel = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetSuccessor(inst, 0));
+						auto falseLabel = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetSuccessor(inst, 1));
 
 						// TODO: detect more CFG structures
 
@@ -1408,22 +1411,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 						builder.encodeBranchConditional(llvmValueToResultID(builder, condition), llvmValueToResultID(builder, trueLabel), llvmValueToResultID(builder, falseLabel));
 					} else {
-						auto label = LLVMBasicBlockAsValue(LLVMGetSuccessor(inst, 0));
+						auto label = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetSuccessor(inst, 0));
 
 						builder.encodeBranch(llvmValueToResultID(builder, label));
 					}
 				} break;
 
 				case LLVMPHI: {
-					auto lltype = LLVMTypeOf(inst);
+					auto lltype = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, lltype);
 
 					std::vector<std::pair<SPIRV::ResultID, SPIRV::ResultID>> variablesAndBlocks;
 
-					auto opCount = LLVMCountIncoming(inst);
+					auto opCount = DynamicLLVM::LLVMCountIncoming(inst);
 					for (size_t i = 0; i < opCount; ++i) {
-						auto variable = LLVMGetIncomingValue(inst, i);
-						auto label = LLVMBasicBlockAsValue(LLVMGetIncomingBlock(inst, i));
+						auto variable = DynamicLLVM::LLVMGetIncomingValue(inst, i);
+						auto label = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetIncomingBlock(inst, i));
 						variablesAndBlocks.push_back(std::make_pair(llvmValueToResultID(builder, variable), llvmValueToResultID(builder, label)));
 					}
 
@@ -1434,8 +1437,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMBitCast: {
-					auto arg = LLVMGetOperand(inst, 0);
-					auto lltype = LLVMTypeOf(inst);
+					auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto lltype = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, lltype);
 					auto argID = llvmValueToResultID(builder, arg);
 
@@ -1453,8 +1456,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMFPTrunc: {
-					auto arg = LLVMGetOperand(inst, 0);
-					auto lltype = LLVMTypeOf(inst);
+					auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto lltype = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, lltype);
 					auto argID = llvmValueToResultID(builder, arg);
 

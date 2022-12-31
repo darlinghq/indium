@@ -2,6 +2,8 @@
 #include <indium/device.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <iridium/iridium.hpp>
+
 #include <unordered_set>
 
 #include <cstring>
@@ -27,6 +29,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 };
 
 void Indium::init(const char** additionalExtensions, size_t additionalExtensionCount, bool enableValidation) {
+	if (!Iridium::init()) {
+		return;
+	}
+
 	if (!DynamicVK::init()) {
 		return;
 	}
@@ -132,4 +138,6 @@ void Indium::finit() {
 	globalInstance = VK_NULL_HANDLE;
 
 	DynamicVK::finit();
+
+	Iridium::finit();
 };

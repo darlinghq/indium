@@ -34,6 +34,7 @@ set(indium_sources
 
 set(iridium_sources
 	src/iridium/air.cpp
+	src/iridium/dynamic-llvm.cpp
 	src/iridium/iridium.cpp
 	src/iridium/spirv.cpp
 )
@@ -157,14 +158,21 @@ if (NOT DARLING)
 	)
 endif()
 
+execute_process(
+	COMMAND llvm-config --link-shared --libnames
+	OUTPUT_VARIABLE HOST_LLVM_LIBNAME
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+target_compile_definitions(iridium PRIVATE
+	"HOST_LLVM_LIBNAME=\"${HOST_LLVM_LIBNAME}\""
+)
+
 if (DARLING)
 	target_link_libraries(iridium PRIVATE
-		host_LLVM
 		cxx
 		system
 	)
-else()
-	llvm_config(iridium USE_SHARED support core bitreader)
 endif()
 
 if (NOT DARLING)

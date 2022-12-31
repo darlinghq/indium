@@ -53,7 +53,10 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
-	Iridium::init();
+	if (!Iridium::init()) {
+		std::cerr << "Failed to initialize Iridium" << std::endl;
+		return 1;
+	}
 
 	size_t outputSize = 0;
 	Iridium::OutputInfo outputInfo;

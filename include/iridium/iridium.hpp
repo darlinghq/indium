@@ -7,7 +7,7 @@
 #include <string>
 
 namespace Iridium {
-	void init();
+	bool init();
 	void finit();
 
 	enum class FunctionType {

@@ -33,8 +33,8 @@ namespace Iridium {
 			};
 
 		private:
-			LLVMSupport::Module _module { nullptr, LLVMDisposeModule };
-			LLVMSupport::MemoryBuffer _bitcodeBuffer { nullptr, LLVMDisposeMemoryBuffer };
+			LLVMSupport::Module _module { nullptr, DynamicLLVM::LLVMDisposeModule };
+			LLVMSupport::MemoryBuffer _bitcodeBuffer { nullptr, DynamicLLVM::LLVMDisposeMemoryBuffer };
 			LLVMValueRef _function;
 			std::string _name;
 			Type _type;
