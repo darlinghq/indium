@@ -26,15 +26,15 @@ void Indium::initGlobalDeviceList() {
 
 	auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
 	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-		// TODO
-		abort();
+		// TODO: maybe warn?
+		return;
 	}
 
 	physicalDevices.resize(count);
 	result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, physicalDevices.data());
 	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-		// TODO
-		abort();
+		// TODO: maybe warn?
+		return;
 	}
 
 	for (auto&& device: physicalDevices) {

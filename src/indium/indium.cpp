@@ -30,10 +30,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 
 void Indium::init(const char** additionalExtensions, size_t additionalExtensionCount, bool enableValidation) {
 	if (!Iridium::init()) {
+		// TODO: maybe warn?
 		return;
 	}
 
 	if (!DynamicVK::init()) {
+		// TODO: maybe warn?
 		return;
 	}
 
@@ -107,8 +109,8 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 
 	auto result = DynamicVK::vkCreateInstance(&createInfo, nullptr, &globalInstance);
 	if (result != VK_SUCCESS) {
-		// TODO
-		abort();
+		// TODO: maybe warn?
+		return;
 	}
 
 	if (enableValidation && DynamicVK::vkCreateDebugUtilsMessengerEXT) {
@@ -119,8 +121,7 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 		debugCreateInfo.pfnUserCallback = debugCallback;
 
 		if (DynamicVK::vkCreateDebugUtilsMessengerEXT(globalInstance, &debugCreateInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
-			// TODO
-			abort();
+			// TODO: maybe warn?
 		}
 	}
 
