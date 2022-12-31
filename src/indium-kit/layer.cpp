@@ -1,4 +1,7 @@
 #include <indium-kit/layer.private.hpp>
+#include <indium/dynamic-vk.hpp>
+
+namespace DynamicVK = Indium::DynamicVK;
 
 IndiumKit::Drawable::~Drawable() {};
 IndiumKit::Layer::~Layer() {};
@@ -101,7 +104,7 @@ void IndiumKit::PrivateDrawable::present() {
 	info.pImageIndices = &_swapchainImageIndex;
 	info.pResults = nullptr;
 
-	if (vkQueuePresentKHR(privateDevice->graphicsQueue(), &info) != VK_SUCCESS) {
+	if (DynamicVK::vkQueuePresentKHR(privateDevice->graphicsQueue(), &info) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -129,19 +132,19 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 
 	VkSurfaceCapabilitiesKHR surfaceCaps;
 
-	vkGetPhysicalDeviceSurfaceCapabilitiesKHR(privateDevice->physicalDevice(), _surface, &surfaceCaps);
+	DynamicVK::vkGetPhysicalDeviceSurfaceCapabilitiesKHR(privateDevice->physicalDevice(), _surface, &surfaceCaps);
 
 	std::vector<VkPresentModeKHR> presentModes;
 	std::vector<VkSurfaceFormatKHR> surfaceFormats;
 	uint32_t count;
 
-	vkGetPhysicalDeviceSurfacePresentModesKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
+	DynamicVK::vkGetPhysicalDeviceSurfacePresentModesKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
 	presentModes.resize(count);
-	vkGetPhysicalDeviceSurfacePresentModesKHR(privateDevice->physicalDevice(), _surface, &count, presentModes.data());
+	DynamicVK::vkGetPhysicalDeviceSurfacePresentModesKHR(privateDevice->physicalDevice(), _surface, &count, presentModes.data());
 
-	vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
 	surfaceFormats.reserve(count);
-	vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, surfaceFormats.data());
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, surfaceFormats.data());
 
 	VkSwapchainCreateInfoKHR swapchainInfo {};
 	swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -160,14 +163,14 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 	swapchainInfo.presentMode = /*(std::find(presentModes.begin(), presentModes.end(), VK_PRESENT_MODE_MAILBOX_KHR) != presentModes.end()) ? VK_PRESENT_MODE_MAILBOX_KHR :*/ VK_PRESENT_MODE_FIFO_KHR;
 	swapchainInfo.clipped = VK_TRUE;
 
-	if (vkCreateSwapchainKHR(privateDevice->device(), &swapchainInfo, nullptr, &_swapchain) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSwapchainKHR(privateDevice->device(), &swapchainInfo, nullptr, &_swapchain) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkGetSwapchainImagesKHR(privateDevice->device(), _swapchain, &count, nullptr);
+	DynamicVK::vkGetSwapchainImagesKHR(privateDevice->device(), _swapchain, &count, nullptr);
 	_images.resize(count);
-	vkGetSwapchainImagesKHR(privateDevice->device(), _swapchain, &count, _images.data());
+	DynamicVK::vkGetSwapchainImagesKHR(privateDevice->device(), _swapchain, &count, _images.data());
 
 	for (auto& image: _images) {
 		VkImageViewCreateInfo viewInfo {};
@@ -186,7 +189,7 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 		viewInfo.subresourceRange.baseArrayLayer = 0;
 		viewInfo.subresourceRange.layerCount = 1;
 
-		if (vkCreateImageView(privateDevice->device(), &viewInfo, nullptr, &_imageViews.emplace_back()) != VK_SUCCESS) {
+		if (DynamicVK::vkCreateImageView(privateDevice->device(), &viewInfo, nullptr, &_imageViews.emplace_back()) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -197,12 +200,12 @@ IndiumKit::PrivateLayer::~PrivateLayer() {
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
 
 	for (auto& imageView: _imageViews) {
-		vkDestroyImageView(privateDevice->device(), imageView, nullptr);
+		DynamicVK::vkDestroyImageView(privateDevice->device(), imageView, nullptr);
 	}
 
-	vkDestroySwapchainKHR(privateDevice->device(), _swapchain, nullptr);
+	DynamicVK::vkDestroySwapchainKHR(privateDevice->device(), _swapchain, nullptr);
 
-	vkDestroySurfaceKHR(Indium::globalInstance, _surface, nullptr);
+	DynamicVK::vkDestroySurfaceKHR(Indium::globalInstance, _surface, nullptr);
 };
 
 std::shared_ptr<IndiumKit::Drawable> IndiumKit::PrivateLayer::nextDrawable() {
@@ -210,7 +213,7 @@ std::shared_ptr<IndiumKit::Drawable> IndiumKit::PrivateLayer::nextDrawable() {
 	auto binarySemaphore = privateDevice->getWrappedBinarySemaphore();
 	uint32_t index;
 
-	auto result = vkAcquireNextImageKHR(privateDevice->device(), _swapchain, /* 1 sec = 1e9 nsec */ 1000000000ULL, binarySemaphore->semaphore, nullptr, &index);
+	auto result = DynamicVK::vkAcquireNextImageKHR(privateDevice->device(), _swapchain, /* 1 sec = 1e9 nsec */ 1000000000ULL, binarySemaphore->semaphore, nullptr, &index);
 
 	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
 		// none was available

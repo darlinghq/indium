@@ -2,6 +2,7 @@
 
 #include <indium/library.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <array>
 
@@ -28,7 +29,7 @@ namespace Indium {
 				if (layouts[i] == VK_NULL_HANDLE) {
 					continue;
 				}
-				vkDestroyDescriptorSetLayout(privateDevice->device(), layouts[i], nullptr);
+				DynamicVK::vkDestroyDescriptorSetLayout(privateDevice->device(), layouts[i], nullptr);
 			}
 		};
 
@@ -72,7 +73,7 @@ namespace Indium {
 
 			VkDescriptorSetLayout layout;
 
-			if (vkCreateDescriptorSetLayout(privateDevice->device(), &layoutInfo, nullptr, &layout) != VK_SUCCESS) {
+			if (DynamicVK::vkCreateDescriptorSetLayout(privateDevice->device(), &layoutInfo, nullptr, &layout) != VK_SUCCESS) {
 				// TODO
 				abort();
 			}

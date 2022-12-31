@@ -6,6 +6,7 @@
 #include <indium/drawable.hpp>
 #include <indium/blit-command-encoder.private.hpp>
 #include <indium/compute-command-encoder.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <condition_variable>
 
@@ -29,21 +30,21 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
-	if (vkAllocateCommandBuffers(_privateDevice->device(), &allocInfo, &_commandBuffer) != VK_SUCCESS) {
+	if (DynamicVK::vkAllocateCommandBuffers(_privateDevice->device(), &allocInfo, &_commandBuffer) != VK_SUCCESS) {
 		// TODO: handle this in a more C++-friendly way
 		abort();
 	}
 
 	VkCommandBufferBeginInfo beginInfo {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	if (vkBeginCommandBuffer(_commandBuffer, &beginInfo) != VK_SUCCESS) {
+	if (DynamicVK::vkBeginCommandBuffer(_commandBuffer, &beginInfo) != VK_SUCCESS) {
 		// TODO: same
 		abort();
 	}
 };
 
 Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
-	vkFreeCommandBuffers(_privateDevice->device(), _privateCommandQueue->commandPool(), 1, &_commandBuffer);
+	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _privateCommandQueue->commandPool(), 1, &_commandBuffer);
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
@@ -112,7 +113,7 @@ void Indium::PrivateCommandBuffer::commit() {
 		// TODO: same for other encoders
 	}
 
-	if (vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
+	if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -251,7 +252,7 @@ void Indium::PrivateCommandBuffer::commit() {
 	//        the Device constructor tries to choose command queues that support as many operations as possible, but it's possible
 	//        that a particular device only supports certain operations on certain queues (e.g. maybe it only supports transfer operations
 	//        on an exclusive queue that doesn't support graphics or compute).
-	if (vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
+	if (DynamicVK::vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}

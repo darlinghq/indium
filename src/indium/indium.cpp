@@ -1,5 +1,6 @@
 #include <indium/instance.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <unordered_set>
 
@@ -11,8 +12,6 @@
 VkInstance Indium::globalInstance = VK_NULL_HANDLE;
 
 static VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
-static PFN_vkCreateDebugUtilsMessengerEXT createMessenger = nullptr;
-static PFN_vkDestroyDebugUtilsMessengerEXT destroyMessenger = nullptr;
 
 static volatile int noOptOut;
 
@@ -28,6 +27,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
 };
 
 void Indium::init(const char** additionalExtensions, size_t additionalExtensionCount, bool enableValidation) {
+	if (!DynamicVK::init()) {
+		return;
+	}
+
 	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
 		VK_KHR_SURFACE_EXTENSION_NAME,
 	};
@@ -35,9 +38,9 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 	uint32_t count;
 
 	std::vector<VkLayerProperties> layerProps;
-	vkEnumerateInstanceLayerProperties(&count, nullptr);
+	DynamicVK::vkEnumerateInstanceLayerProperties(&count, nullptr);
 	layerProps.resize(count);
-	vkEnumerateInstanceLayerProperties(&count, layerProps.data());
+	DynamicVK::vkEnumerateInstanceLayerProperties(&count, layerProps.data());
 
 	bool foundValidationLayer = false;
 
@@ -96,23 +99,20 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 		createInfo.pNext = &valFeat;
 	}
 
-	auto result = vkCreateInstance(&createInfo, nullptr, &globalInstance);
+	auto result = DynamicVK::vkCreateInstance(&createInfo, nullptr, &globalInstance);
 	if (result != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	if (enableValidation) {
-		createMessenger = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(globalInstance, "vkCreateDebugUtilsMessengerEXT"));
-		destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(globalInstance, "vkDestroyDebugUtilsMessengerEXT"));
-
+	if (enableValidation && DynamicVK::vkCreateDebugUtilsMessengerEXT) {
 		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo {};
 		debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
 		debugCreateInfo.messageSeverity = /* VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | */ VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
 		debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
 		debugCreateInfo.pfnUserCallback = debugCallback;
 
-		if (createMessenger(globalInstance, &debugCreateInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
+		if (DynamicVK::vkCreateDebugUtilsMessengerEXT(globalInstance, &debugCreateInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -124,10 +124,12 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 void Indium::finit() {
 	finitGlobalDeviceList();
 
-	if (debugMessenger && destroyMessenger) {
-		destroyMessenger(globalInstance, debugMessenger, nullptr);
+	if (debugMessenger && DynamicVK::vkDestroyDebugUtilsMessengerEXT) {
+		DynamicVK::vkDestroyDebugUtilsMessengerEXT(globalInstance, debugMessenger, nullptr);
 	}
 
-	vkDestroyInstance(globalInstance, nullptr);
+	DynamicVK::vkDestroyInstance(globalInstance, nullptr);
 	globalInstance = VK_NULL_HANDLE;
+
+	DynamicVK::finit();
 };

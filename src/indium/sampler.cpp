@@ -1,5 +1,6 @@
 #include <indium/sampler.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 Indium::SamplerState::~SamplerState() {};
 
@@ -25,14 +26,14 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 	info.borderColor = samplerBorderColorToVkBorderColor(descriptor.borderColor);
 	info.unnormalizedCoordinates = descriptor.normalizedCoordinates ? VK_FALSE : VK_TRUE;
 
-	if (vkCreateSampler(_privateDevice->device(), &info, nullptr, &_sampler) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSampler(_privateDevice->device(), &info, nullptr, &_sampler) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 };
 
 Indium::PrivateSamplerState::~PrivateSamplerState() {
-	vkDestroySampler(_privateDevice->device(), _sampler, nullptr);
+	DynamicVK::vkDestroySampler(_privateDevice->device(), _sampler, nullptr);
 };
 
 std::shared_ptr<Indium::Device> Indium::PrivateSamplerState::device() {

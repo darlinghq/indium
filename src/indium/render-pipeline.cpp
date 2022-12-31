@@ -2,6 +2,7 @@
 #include <indium/device.private.hpp>
 #include <indium/library.private.hpp>
 #include <indium/types.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <stdexcept>
 
@@ -29,13 +30,13 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
-			vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
+			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 			pipeline = VK_NULL_HANDLE;
 		}
 	}
 
 	if (_pipelineLayout) {
-		vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
+		DynamicVK::vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
 		_pipelineLayout = VK_NULL_HANDLE;
 	}
 };
@@ -48,13 +49,13 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
-			vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
+			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 			pipeline = VK_NULL_HANDLE;
 		}
 	}
 
 	if (_pipelineLayout) {
-		vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
+		DynamicVK::vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
 		_pipelineLayout = VK_NULL_HANDLE;
 	}
 
@@ -212,7 +213,7 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	layoutCreateInfo.pushConstantRangeCount = pushConstantRanges.size();
 	layoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
 
-	if (vkCreatePipelineLayout(_privateDevice->device(), &layoutCreateInfo, nullptr, &_pipelineLayout) != VK_SUCCESS) {
+	if (DynamicVK::vkCreatePipelineLayout(_privateDevice->device(), &layoutCreateInfo, nullptr, &_pipelineLayout) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -239,21 +240,21 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	// first, one for points
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[0]) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[0]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	// now, one for lines
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[1]) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[1]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	// finally, one for triangles
 	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	if (vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[2]) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[2]) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}

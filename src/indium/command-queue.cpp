@@ -1,6 +1,7 @@
 #include <indium/command-queue.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/command-buffer.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 Indium::CommandQueue::~CommandQueue() {};
 
@@ -17,7 +18,7 @@ Indium::PrivateCommandQueue::PrivateCommandQueue(std::shared_ptr<PrivateDevice> 
 		createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 		createInfo.queueFamilyIndex = _privateDevice->graphicsQueueFamilyIndex() ? *_privateDevice->graphicsQueueFamilyIndex() : *_privateDevice->computeQueueFamilyIndex();
 
-		if (vkCreateCommandPool(_privateDevice->device(), &createInfo, nullptr, &_commandPool) != VK_SUCCESS) {
+		if (DynamicVK::vkCreateCommandPool(_privateDevice->device(), &createInfo, nullptr, &_commandPool) != VK_SUCCESS) {
 			// TODO: handle this in a more C++-friendly way
 			abort();
 		}
@@ -29,7 +30,7 @@ Indium::PrivateCommandQueue::PrivateCommandQueue(std::shared_ptr<PrivateDevice> 
 
 Indium::PrivateCommandQueue::~PrivateCommandQueue() {
 	if (_commandPool) {
-		vkDestroyCommandPool(_privateDevice->device(), _commandPool, nullptr);
+		DynamicVK::vkDestroyCommandPool(_privateDevice->device(), _commandPool, nullptr);
 	}
 };
 

@@ -1,6 +1,7 @@
 #include <indium/compute-pipeline.private.hpp>
 #include <indium/device.private.hpp>
 #include <stdexcept>
+#include <indium/dynamic-vk.hpp>
 
 Indium::ComputePipelineState::~ComputePipelineState() {};
 
@@ -25,7 +26,7 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 	layoutInfo.setLayoutCount = _descriptorSetLayouts.layouts.size();
 	layoutInfo.pSetLayouts = _descriptorSetLayouts.layouts.data();
 
-	if (vkCreatePipelineLayout(_privateDevice->device(), &layoutInfo, nullptr, &_layout) != VK_SUCCESS) {
+	if (DynamicVK::vkCreatePipelineLayout(_privateDevice->device(), &layoutInfo, nullptr, &_layout) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -36,7 +37,7 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 	VkPhysicalDeviceProperties2 props {};
 	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 	props.pNext = &vk13Props;
-	vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
+	DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
 
 	_maxTotalThreadsPerThreadgroup = vk13Props.maxSubgroupSize;
 	_threadExecutionWidth = props.properties.limits.maxComputeWorkGroupInvocations;
@@ -45,7 +46,7 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 
 Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {
 	if (_layout) {
-		vkDestroyPipelineLayout(_privateDevice->device(), _layout, nullptr);
+		DynamicVK::vkDestroyPipelineLayout(_privateDevice->device(), _layout, nullptr);
 	}
 };
 
@@ -84,7 +85,7 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 	info.stage.pSpecializationInfo = &specInfo;
 	info.layout = _layout;
 
-	if (vkCreateComputePipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateComputePipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}

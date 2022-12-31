@@ -13,6 +13,7 @@
 #include <indium/depth-stencil.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/drawable.private.hpp>
+#include <indium/dynamic-vk.hpp>
 #include <indium/instance.private.hpp>
 #include <indium/library.private.hpp>
 #include <indium/render-command-encoder.private.hpp>

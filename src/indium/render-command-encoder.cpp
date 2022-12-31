@@ -11,6 +11,7 @@
 #include <indium/sampler.private.hpp>
 #include <indium/depth-stencil.private.hpp>
 #include <indium/command-encoder.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 
@@ -30,7 +31,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	poolCreateInfo.pPoolSizes = poolSizes.data();
 	poolCreateInfo.maxSets = 64; // i guess
 
-	if (vkCreateDescriptorPool(vkDevice, &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateDescriptorPool(vkDevice, &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -127,7 +128,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassInfo.dependencyCount = dependencies.size();
 	renderPassInfo.pDependencies = dependencies.data();
 
-	if (vkCreateRenderPass(vkDevice, &renderPassInfo, nullptr, &_renderPass) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateRenderPass(vkDevice, &renderPassInfo, nullptr, &_renderPass) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -150,7 +151,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	framebufferInfo.width = firstTexture->width();
 	framebufferInfo.height = firstTexture->height();
 	framebufferInfo.layers = std::dynamic_pointer_cast<PrivateTexture>(firstTexture)->vulkanArrayLength();
-	if (vkCreateFramebuffer(vkDevice, &framebufferInfo, nullptr, &_framebuffer) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateFramebuffer(vkDevice, &framebufferInfo, nullptr, &_framebuffer) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -163,7 +164,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassBeginInfo.renderArea.extent.height = firstTexture->height();
 	renderPassBeginInfo.clearValueCount = clearValues.size();
 	renderPassBeginInfo.pClearValues = clearValues.data();
-	vkCmdBeginRenderPass(vkCmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	DynamicVK::vkCmdBeginRenderPass(vkCmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	// set default values
 
@@ -172,26 +173,26 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	setCullMode(CullMode::None);
 	setFrontFacingWinding(Winding::Clockwise);
 
-	vkCmdSetDepthCompareOp(vkCmdBuf, VK_COMPARE_OP_ALWAYS);
-	vkCmdSetDepthBiasEnable(vkCmdBuf, false);
-	vkCmdSetDepthTestEnable(vkCmdBuf, false);
-	vkCmdSetDepthWriteEnable(vkCmdBuf, false);
-	vkCmdSetDepthBoundsTestEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetDepthCompareOp(vkCmdBuf, VK_COMPARE_OP_ALWAYS);
+	DynamicVK::vkCmdSetDepthBiasEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetDepthTestEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetDepthWriteEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetDepthBoundsTestEnable(vkCmdBuf, false);
 
-	vkCmdSetStencilTestEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetStencilTestEnable(vkCmdBuf, false);
 
 	setBlendColor(0, 0, 0, 0);
-	vkCmdSetRasterizerDiscardEnable(vkCmdBuf, false);
+	DynamicVK::vkCmdSetRasterizerDiscardEnable(vkCmdBuf, false);
 };
 
 Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	if (_framebuffer) {
-		vkDestroyFramebuffer(_privateDevice->device(), _framebuffer, nullptr);
+		DynamicVK::vkDestroyFramebuffer(_privateDevice->device(), _framebuffer, nullptr);
 	}
 	if (_renderPass) {
-		vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
+		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
 	}
-	vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
+	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
 void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(std::shared_ptr<RenderPipelineState> renderPipelineState) {
@@ -202,19 +203,19 @@ void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(std::shared_ptr
 
 void Indium::PrivateRenderCommandEncoder::setFrontFacingWinding(Winding frontFaceWinding) {
 	auto buf = _privateCommandBuffer.lock();
-	vkCmdSetFrontFace(buf->commandBuffer(), windingToVkFrontFace(frontFaceWinding));
+	DynamicVK::vkCmdSetFrontFace(buf->commandBuffer(), windingToVkFrontFace(frontFaceWinding));
 };
 
 void Indium::PrivateRenderCommandEncoder::setCullMode(CullMode cullMode) {
 	auto buf = _privateCommandBuffer.lock();
-	vkCmdSetCullMode(buf->commandBuffer(), cullModeToVkCullMode(cullMode));
+	DynamicVK::vkCmdSetCullMode(buf->commandBuffer(), cullModeToVkCullMode(cullMode));
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float slopeScale, float clamp) {
 	auto buf = _privateCommandBuffer.lock();
 	auto vkCmdBuf = buf->commandBuffer();
-	vkCmdSetDepthBiasEnable(vkCmdBuf, true);
-	vkCmdSetDepthBias(vkCmdBuf, depthBias, clamp, slopeScale);
+	DynamicVK::vkCmdSetDepthBiasEnable(vkCmdBuf, true);
+	DynamicVK::vkCmdSetDepthBias(vkCmdBuf, depthBias, clamp, slopeScale);
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthClipMode(DepthClipMode depthClipMode) {
@@ -249,7 +250,7 @@ void Indium::PrivateRenderCommandEncoder::setViewports(const Viewport* viewports
 		vkViewport.maxDepth = std::clamp(viewport.zfar, 0., 1.);
 		tmp.push_back(vkViewport);
 	}
-	vkCmdSetViewportWithCount(buf->commandBuffer(), tmp.size(), tmp.data());
+	DynamicVK::vkCmdSetViewportWithCount(buf->commandBuffer(), tmp.size(), tmp.data());
 };
 
 void Indium::PrivateRenderCommandEncoder::setViewports(const std::vector<Viewport>& viewports) {
@@ -272,7 +273,7 @@ void Indium::PrivateRenderCommandEncoder::setScissorRects(const ScissorRect* sci
 		vkRect.extent.height = scissorRect.height;
 		tmp.push_back(vkRect);
 	}
-	vkCmdSetScissorWithCount(buf->commandBuffer(), tmp.size(), tmp.data());
+	DynamicVK::vkCmdSetScissorWithCount(buf->commandBuffer(), tmp.size(), tmp.data());
 };
 
 void Indium::PrivateRenderCommandEncoder::setScissorRects(const std::vector<ScissorRect>& scissorRects) {
@@ -282,7 +283,7 @@ void Indium::PrivateRenderCommandEncoder::setScissorRects(const std::vector<Scis
 void Indium::PrivateRenderCommandEncoder::setBlendColor(float red, float green, float blue, float alpha) {
 	auto buf = _privateCommandBuffer.lock();
 	const float tmp[4] = { red, green, blue, alpha };
-	vkCmdSetBlendConstants(buf->commandBuffer(), tmp);
+	DynamicVK::vkCmdSetBlendConstants(buf->commandBuffer(), tmp);
 };
 
 void Indium::PrivateRenderCommandEncoder::updateBindings() {
@@ -292,7 +293,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
 
-	vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
+	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
 	const auto& vertexInputBindings = _privatePSO->vertexInputBindings();
 	if (vertexInputBindings.size() > 0) {
@@ -317,7 +318,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 			}
 		}
 
-		vkCmdBindVertexBuffers(buf->commandBuffer(), 0, vertexInputBindings.size(), buffers.data(), offsets.data());
+		DynamicVK::vkCmdBindVertexBuffers(buf->commandBuffer(), 0, vertexInputBindings.size(), buffers.data(), offsets.data());
 	}
 };
 
@@ -341,14 +342,14 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 		default:
 			throw BadEnumValue();
 	}
-	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-	vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
 
 	// TODO: avoid re-binding descriptors on every draw.
 	updateBindings();
 
-	vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
+	DynamicVK::vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
 
 	// when we emit a draw call, we save the current function resources so that they stay alive until the command buffer is done.
 	// TODO: do this more efficiently by essentially doing COW: after a draw call, we only save additional references to resources
@@ -372,7 +373,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
-	vkCmdEndRenderPass(buf->commandBuffer());
+	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
@@ -488,9 +489,9 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 		default:
 			throw BadEnumValue();
 	}
-	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-	vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
 
 	// TODO: avoid re-binding descriptors on every draw.
 	updateBindings();
@@ -500,8 +501,8 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 
 	auto privateIndexBuffer = std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer);
 
-	vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
-	vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
+	DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
+	DynamicVK::vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
 
 	// see drawPrimitives() to know why we do this
 	_savedFunctionResources.push_back(_functionResources[0]);
@@ -521,18 +522,18 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<D
 	auto privateState = std::dynamic_pointer_cast<PrivateDepthStencilState>(state);
 	auto& desc = privateState->descriptor();
 
-	vkCmdSetDepthWriteEnable(buf->commandBuffer(), desc.depthWriteEnabled ? VK_TRUE : VK_FALSE);
-	vkCmdSetDepthCompareOp(buf->commandBuffer(), compareFunctionToVkCompareOp(desc.depthCompareFunction));
-	vkCmdSetDepthTestEnable(buf->commandBuffer(), VK_TRUE);
+	DynamicVK::vkCmdSetDepthWriteEnable(buf->commandBuffer(), desc.depthWriteEnabled ? VK_TRUE : VK_FALSE);
+	DynamicVK::vkCmdSetDepthCompareOp(buf->commandBuffer(), compareFunctionToVkCompareOp(desc.depthCompareFunction));
+	DynamicVK::vkCmdSetDepthTestEnable(buf->commandBuffer(), VK_TRUE);
 
-	vkCmdSetStencilTestEnable(buf->commandBuffer(), (desc.frontFaceStencil || desc.backFaceStencil) ? VK_TRUE : VK_FALSE);
+	DynamicVK::vkCmdSetStencilTestEnable(buf->commandBuffer(), (desc.frontFaceStencil || desc.backFaceStencil) ? VK_TRUE : VK_FALSE);
 
 	if (desc.frontFaceStencil || desc.backFaceStencil) {
 		if (desc.frontFaceStencil) {
-			vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->readMask);
-			vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->writeMask);
+			DynamicVK::vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->readMask);
+			DynamicVK::vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, desc.frontFaceStencil->writeMask);
 
-			vkCmdSetStencilOp(
+			DynamicVK::vkCmdSetStencilOp(
 				buf->commandBuffer(),
 				VK_STENCIL_FACE_FRONT_BIT,
 				stencilOperationToVkStencilOp(desc.frontFaceStencil->stencilFailureOperation),
@@ -541,13 +542,13 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<D
 				compareFunctionToVkCompareOp(desc.frontFaceStencil->stencilCompareFunction)
 			);
 		} else {
-			vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+			DynamicVK::vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
 		}
 		if (desc.backFaceStencil) {
-			vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->readMask);
-			vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->writeMask);
+			DynamicVK::vkCmdSetStencilCompareMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->readMask);
+			DynamicVK::vkCmdSetStencilWriteMask(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, desc.backFaceStencil->writeMask);
 
-			vkCmdSetStencilOp(
+			DynamicVK::vkCmdSetStencilOp(
 				buf->commandBuffer(),
 				VK_STENCIL_FACE_BACK_BIT,
 				stencilOperationToVkStencilOp(desc.backFaceStencil->stencilFailureOperation),
@@ -556,7 +557,7 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<D
 				compareFunctionToVkCompareOp(desc.backFaceStencil->stencilCompareFunction)
 			);
 		} else {
-			vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
+			DynamicVK::vkCmdSetStencilOp(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS);
 		}
 	}
 };
@@ -573,13 +574,13 @@ void Indium::PrivateRenderCommandEncoder::setTriangleFillMode(TriangleFillMode t
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t value) {
 	auto buf = _privateCommandBuffer.lock();
-	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_AND_BACK, value);
+	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_AND_BACK, value);
 };
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t front, uint32_t back) {
 	auto buf = _privateCommandBuffer.lock();
-	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, front);
-	vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, back);
+	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, front);
+	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, back);
 };
 
 void Indium::PrivateRenderCommandEncoder::setVisibilityResultMode(VisibilityResultMode mode, size_t offset) {
@@ -679,7 +680,7 @@ void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::sh
 		dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
 	}
 
-	vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, 0, 0, nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(), imageBarriers.data());
+	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, 0, 0, nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(), imageBarriers.data());
 };
 
 void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) {

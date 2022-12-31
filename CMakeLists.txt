@@ -22,6 +22,7 @@ set(indium_sources
 	src/indium/depth-stencil.cpp
 	src/indium/device.cpp
 	src/indium/drawable.cpp
+	src/indium/dynamic-vk.cpp
 	src/indium/indium.cpp
 	src/indium/library.cpp
 	src/indium/render-command-encoder.cpp
@@ -123,34 +124,26 @@ target_compile_definitions(iridium PRIVATE ${LLVM_DEFINITIONS_LIST})
 
 if (DARLING)
 	target_link_libraries(indium PRIVATE
-		Vulkan
 		iridium
 		cxx
 		system
 	)
 
 	target_link_libraries(indium_private INTERFACE
-		Vulkan
 		indium
 	)
 else()
 	target_link_libraries(indium PRIVATE
-		${Vulkan_LIBRARIES}
 		iridium
 	)
 
-	# if you're linking to the private interface, you're going to want to link to
-	# Vulkan so that you can implement things like Textures and Drawables
 	target_link_libraries(indium_private INTERFACE
-		${Vulkan_LIBRARIES}
 		indium
 	)
 endif()
 
 if (NOT DARLING)
-	# IndiumKit's API requires the caller to provide Vulkan objects in certain places
 	target_link_libraries(indium_kit PUBLIC
-		${Vulkan_LIBRARIES}
 		indium
 	)
 

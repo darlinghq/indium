@@ -1,6 +1,7 @@
 #include <indium/library.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/sampler.hpp>
+#include <indium/dynamic-vk.hpp>
 
 Indium::Function::~Function() {};
 Indium::Library::~Library() {};
@@ -30,7 +31,7 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 	createInfo.codeSize = dataLength;
 	createInfo.pCode = reinterpret_cast<const uint32_t*>(data);
 
-	if (vkCreateShaderModule(_privateDevice->device(), &createInfo, nullptr, &_shaderModule) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateShaderModule(_privateDevice->device(), &createInfo, nullptr, &_shaderModule) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -139,7 +140,7 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 };
 
 Indium::PrivateLibrary::~PrivateLibrary() {
-	vkDestroyShaderModule(_privateDevice->device(), _shaderModule, nullptr);
+	DynamicVK::vkDestroyShaderModule(_privateDevice->device(), _shaderModule, nullptr);
 };
 
 std::shared_ptr<Indium::Function> Indium::PrivateLibrary::newFunction(const std::string& name) {

@@ -1,5 +1,6 @@
 #include <indium/buffer.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <cstring>
 
@@ -33,14 +34,14 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	//       that info is available in the PrivateDevice instance.
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	if (vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	VkMemoryRequirements requirements;
 
-	vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
+	DynamicVK::vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
 
 	size_t targetIndex = SIZE_MAX;
 
@@ -79,12 +80,12 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 
 	allocateInfo.pNext = &allocateFlags;
 
-	if (vkAllocateMemory(_privateDevice->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
+	if (DynamicVK::vkAllocateMemory(_privateDevice->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, 0);
+	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, 0);
 };
 
 Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, const void* pointer, size_t length, ResourceOptions options):
@@ -105,7 +106,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 		range.memory = _memory;
 		range.size = VK_WHOLE_SIZE;
 		range.offset = 0;
-		if (vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &range) != VK_SUCCESS) {
+		if (DynamicVK::vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &range) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -114,11 +115,11 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 
 Indium::PrivateBuffer::~PrivateBuffer() {
 	if (_mapped) {
-		vkUnmapMemory(_privateDevice->device(), _memory);
+		DynamicVK::vkUnmapMemory(_privateDevice->device(), _memory);
 	}
 
-	vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
-	vkFreeMemory(_privateDevice->device(), _memory, nullptr);
+	DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+	DynamicVK::vkFreeMemory(_privateDevice->device(), _memory, nullptr);
 };
 
 std::shared_ptr<Indium::Device> Indium::PrivateBuffer::device() {
@@ -135,7 +136,7 @@ void* Indium::PrivateBuffer::contents() {
 	}
 
 	if (!_mapped) {
-		if (vkMapMemory(_privateDevice->device(), _memory, 0, VK_WHOLE_SIZE, 0, &_mapped) != VK_SUCCESS) {
+		if (DynamicVK::vkMapMemory(_privateDevice->device(), _memory, 0, VK_WHOLE_SIZE, 0, &_mapped) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -150,7 +151,7 @@ void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
 	vulkanRange.memory = _memory;
 	vulkanRange.size = range.length;
 	vulkanRange.offset = range.start;
-	if (vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &vulkanRange) != VK_SUCCESS) {
+	if (DynamicVK::vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &vulkanRange) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -160,5 +161,5 @@ uint64_t Indium::PrivateBuffer::gpuAddress() {
 	VkBufferDeviceAddressInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	info.buffer = _buffer;
-	return vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	return DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
 };

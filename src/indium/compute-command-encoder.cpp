@@ -1,5 +1,6 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 Indium::ComputeCommandEncoder::~ComputeCommandEncoder() {};
 
@@ -14,7 +15,7 @@ Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_p
 	poolCreateInfo.pPoolSizes = poolSizes.data();
 	poolCreateInfo.maxSets = 64;
 
-	if (vkCreateDescriptorPool(_privateDevice->device(), &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateDescriptorPool(_privateDevice->device(), &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -22,9 +23,9 @@ Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_p
 
 Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 	for (auto& pipeline: _savedPipelines) {
-		vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
+		DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 	}
-	vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
+	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
@@ -93,12 +94,12 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 	auto pipeline = _pso->createPipeline(threadsPerThreadgroup);
 	_savedPipelines.push_back(pipeline);
 
-	vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
 	// TODO: avoid re-binding descriptors on every dispatch
 	updateBindings();
 
-	vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
+	DynamicVK::vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);
@@ -139,5 +140,5 @@ void Indium::PrivateComputeCommandEncoder::updateBindings() {
 
 	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers);
 
-	vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pso->layout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
+	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pso->layout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 };

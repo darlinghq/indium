@@ -8,6 +8,7 @@
 #include <indium/texture.private.hpp>
 #include <indium/depth-stencil.private.hpp>
 #include <indium/compute-pipeline.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -23,14 +24,14 @@ void Indium::initGlobalDeviceList() {
 	std::vector<VkPhysicalDevice> physicalDevices;
 	uint32_t count = 0;
 
-	auto result = vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
+	auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
 	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
 		// TODO
 		abort();
 	}
 
 	physicalDevices.resize(count);
-	result = vkEnumeratePhysicalDevices(globalInstance, &count, physicalDevices.data());
+	result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, physicalDevices.data());
 	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
 		// TODO
 		abort();
@@ -38,7 +39,7 @@ void Indium::initGlobalDeviceList() {
 
 	for (auto&& device: physicalDevices) {
 		VkPhysicalDeviceProperties props;
-		vkGetPhysicalDeviceProperties(device, &props);
+		DynamicVK::vkGetPhysicalDeviceProperties(device, &props);
 
 		if (VK_API_VERSION_VARIANT(props.apiVersion) != 0 || props.apiVersion < VK_API_VERSION_1_3) {
 			// unsupported device
@@ -61,7 +62,7 @@ void Indium::initGlobalDeviceList() {
 
 		features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 
-		vkGetPhysicalDeviceFeatures2(device, &features);
+		DynamicVK::vkGetPhysicalDeviceFeatures2(device, &features);
 
 		if (!features12.timelineSemaphore) {
 			// unsupported device
@@ -81,16 +82,16 @@ Indium::Device::~Device() {};
 Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	_physicalDevice(physicalDevice)
 {
-	vkGetPhysicalDeviceProperties(_physicalDevice, &_properties);
+	DynamicVK::vkGetPhysicalDeviceProperties(_physicalDevice, &_properties);
 
 	std::vector<VkQueueFamilyProperties> queueFamilies;
 	uint32_t count = 0;
 
-	vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, nullptr);
+	DynamicVK::vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, nullptr);
 	queueFamilies.resize(count);
-	vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, queueFamilies.data());
+	DynamicVK::vkGetPhysicalDeviceQueueFamilyProperties(_physicalDevice, &count, queueFamilies.data());
 
-	vkGetPhysicalDeviceMemoryProperties(_physicalDevice, &_memoryProperties);
+	DynamicVK::vkGetPhysicalDeviceMemoryProperties(_physicalDevice, &_memoryProperties);
 
 	uint32_t index = 0;
 	size_t maxSupportedSameQueueFamily = 0;
@@ -201,12 +202,12 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 
 	features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 
-	vkGetPhysicalDeviceFeatures2(_physicalDevice, &features);
+	DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &features);
 
 	std::vector<VkExtensionProperties> extProps;
-	vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, nullptr);
+	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, nullptr);
 	extProps.resize(count);
-	vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
+	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
 
 	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -229,14 +230,14 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	deviceCreateInfo.pNext = &features; // enable all features
 	deviceCreateInfo.enabledExtensionCount = extensions.size();
 	deviceCreateInfo.ppEnabledExtensionNames = extensions.data();
-	if (vkCreateDevice(_physicalDevice, &deviceCreateInfo, nullptr, &_device) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateDevice(_physicalDevice, &deviceCreateInfo, nullptr, &_device) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	for (const auto& index: queueFamilyIndices) {
 		VkQueue queue;
-		vkGetDeviceQueue(_device, index, 0, &queue);
+		DynamicVK::vkGetDeviceQueue(_device, index, 0, &queue);
 
 		if (_graphicsQueueFamilyIndex && *_graphicsQueueFamilyIndex == index) {
 			_graphicsQueue = queue;
@@ -262,7 +263,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	semaphoreCreateInfo.pNext = &semaphoreTypeInfo;
 
 	VkSemaphore wakeupSemaphore;
-	if (vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &wakeupSemaphore) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSemaphore(_device, &semaphoreCreateInfo, nullptr, &wakeupSemaphore) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -276,7 +277,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		createInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
 		createInfo.queueFamilyIndex = _graphicsQueueFamilyIndex ? *_graphicsQueueFamilyIndex : *_computeQueueFamilyIndex;
 
-		if (vkCreateCommandPool(_device, &createInfo, nullptr, &_oneshotCommandPool) != VK_SUCCESS) {
+		if (DynamicVK::vkCreateCommandPool(_device, &createInfo, nullptr, &_oneshotCommandPool) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -285,10 +286,10 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 
 Indium::PrivateDevice::~PrivateDevice() {
 	if (_oneshotCommandPool) {
-		vkDestroyCommandPool(_device, _oneshotCommandPool, nullptr);
+		DynamicVK::vkDestroyCommandPool(_device, _oneshotCommandPool, nullptr);
 	}
-	vkDestroySemaphore(_device, _eventLoopSemaphores[0], nullptr);
-	vkDestroyDevice(_device, nullptr);
+	DynamicVK::vkDestroySemaphore(_device, _eventLoopSemaphores[0], nullptr);
+	DynamicVK::vkDestroyDevice(_device, nullptr);
 };
 
 std::string Indium::PrivateDevice::name() const {
@@ -390,7 +391,7 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	info.pValues = values.data();
 	info.flags = VK_SEMAPHORE_WAIT_ANY_BIT;
 
-	auto result = vkWaitSemaphores(_device, &info, timeoutNanoseconds);
+	auto result = DynamicVK::vkWaitSemaphores(_device, &info, timeoutNanoseconds);
 
 	if (result == VK_TIMEOUT) {
 		// timed out with no semaphores ready
@@ -404,7 +405,7 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	for (size_t i = 1; i < semaphores.size(); ++i) {
 		uint64_t count;
 
-		if (vkGetSemaphoreCounterValue(_device, semaphores[i], &count) != VK_SUCCESS) {
+		if (DynamicVK::vkGetSemaphoreCounterValue(_device, semaphores[i], &count) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -451,7 +452,7 @@ void Indium::PrivateDevice::wakeupEventLoop() {
 	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
 	info.semaphore = _eventLoopSemaphores[0];
 	info.value = oldVal;
-	vkSignalSemaphore(_device, &info);
+	DynamicVK::vkSignalSemaphore(_device, &info);
 };
 
 void Indium::PrivateDevice::waitForSemaphore(VkSemaphore semaphore, uint64_t targetValue, std::function<void()> callback) {
@@ -479,7 +480,7 @@ Indium::TimelineSemaphore Indium::PrivateDevice::getTimelineSemaphore() {
 	createInfo.pNext = &typeInfo;
 
 	VkSemaphore semaphore;
-	if (vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -492,7 +493,7 @@ Indium::TimelineSemaphore Indium::PrivateDevice::getTimelineSemaphore() {
 };
 
 void Indium::PrivateDevice::putTimelineSemaphore(const TimelineSemaphore& semaphore) {
-	vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
+	DynamicVK::vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
 };
 
 std::shared_ptr<Indium::TimelineSemaphore> Indium::PrivateDevice::getWrappedTimelineSemaphore() {
@@ -516,7 +517,7 @@ Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportabl
 	}
 
 	VkSemaphore semaphore;
-	if (vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -525,7 +526,7 @@ Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportabl
 };
 
 void Indium::PrivateDevice::putBinarySemaphore(const BinarySemaphore& semaphore) {
-	vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
+	DynamicVK::vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
 };
 
 std::shared_ptr<Indium::BinarySemaphore> Indium::PrivateDevice::getWrappedBinarySemaphore(bool exportable) {

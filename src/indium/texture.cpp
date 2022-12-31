@@ -2,6 +2,7 @@
 #include <indium/device.private.hpp>
 #include <indium/types.private.hpp>
 #include <indium/buffer.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <cstring>
 
@@ -104,14 +105,14 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.subresourceRange.baseArrayLayer = layerStart;
 	info.subresourceRange.layerCount = (layerEnd - layerStart + 1) * (isCube ? 6 : 1);
 
-	if (vkCreateImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), &info, nullptr, &_imageView) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), &info, nullptr, &_imageView) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 };
 
 Indium::TextureView::~TextureView() {
-	vkDestroyImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), _imageView, nullptr);
+	DynamicVK::vkDestroyImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), _imageView, nullptr);
 };
 
 Indium::PixelFormat Indium::TextureView::pixelFormat() const {
@@ -337,14 +338,14 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.pQueueFamilyIndices = nullptr;
 	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	if (vkCreateImage(_device->device(), &info, nullptr, &_image) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateImage(_device->device(), &info, nullptr, &_image) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
 	VkMemoryRequirements reqs;
 
-	vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
+	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
 	size_t targetIndex = SIZE_MAX;
 
@@ -377,12 +378,12 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	allocateInfo.allocationSize = reqs.size;
 	allocateInfo.memoryTypeIndex = targetIndex;
 
-	if (vkAllocateMemory(_device->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
+	if (DynamicVK::vkAllocateMemory(_device->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkBindImageMemory(_device->device(), _image, _memory, 0);
+	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, 0);
 
 	// transition the image into the general layout
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
@@ -392,7 +393,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	cmdBufAllocInfo.commandBufferCount = 1;
 
 	VkCommandBuffer cmdBuf;
-	if (vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
+	if (DynamicVK::vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -401,7 +402,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-	vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
+	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
 
 	VkImageMemoryBarrier barrier {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -418,16 +419,16 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	barrier.subresourceRange.baseArrayLayer = 0;
 	barrier.subresourceRange.layerCount = _descriptor.arrayLength * (isCube ? 6 : 1);
 
-	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-	vkEndCommandBuffer(cmdBuf);
+	DynamicVK::vkEndCommandBuffer(cmdBuf);
 
 	VkFenceCreateInfo fenceCreateInfo {};
 	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
 	VkFence theFence = VK_NULL_HANDLE;
 
-	if (vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -437,15 +438,15 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
-	if (vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
+	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkDestroyFence(_device->device(), theFence, nullptr);
+	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
-	vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
 
 	VkImageViewCreateInfo info2 {};
 	info2.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -458,16 +459,16 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info2.components.a = textureSwizzleToVkComponentSwizzle(_descriptor.swizzle.alpha);
 	info2.subresourceRange = barrier.subresourceRange;
 
-	if (vkCreateImageView(_device->device(), &info2, nullptr, &_imageView) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateImageView(_device->device(), &info2, nullptr, &_imageView) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 };
 
 Indium::ConcreteTexture::~ConcreteTexture() {
-	vkDestroyImageView(_device->device(), _imageView, nullptr);
-	vkDestroyImage(_device->device(), _image, nullptr);
-	vkFreeMemory(_device->device(), _memory, nullptr);
+	DynamicVK::vkDestroyImageView(_device->device(), _imageView, nullptr);
+	DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+	DynamicVK::vkFreeMemory(_device->device(), _memory, nullptr);
 };
 
 Indium::TextureType Indium::ConcreteTexture::textureType() const {
@@ -571,7 +572,7 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	cmdBufAllocInfo.commandBufferCount = 1;
 
 	VkCommandBuffer cmdBuf;
-	if (vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
+	if (DynamicVK::vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -580,7 +581,7 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-	vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
+	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
 
 	// first, transition the image to the optimal layout for transfer destinations
 	VkImageMemoryBarrier barrier {};
@@ -598,7 +599,7 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	barrier.subresourceRange.baseArrayLayer = slice;
 	barrier.subresourceRange.layerCount = 1;
 
-	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
@@ -615,23 +616,23 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	copyInfo.imageExtent.width = region.size.width;
 	copyInfo.imageExtent.height = region.size.height;
 	copyInfo.imageExtent.depth = region.size.depth;
-	vkCmdCopyBufferToImage(cmdBuf, tmpBuf->buffer(), _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyInfo);
+	DynamicVK::vkCmdCopyBufferToImage(cmdBuf, tmpBuf->buffer(), _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyInfo);
 
 	// finally, transition the image back to the general layout
 	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-	vkEndCommandBuffer(cmdBuf);
+	DynamicVK::vkEndCommandBuffer(cmdBuf);
 
 	VkFenceCreateInfo fenceCreateInfo {};
 	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
 	VkFence theFence = VK_NULL_HANDLE;
 
-	if (vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -641,13 +642,13 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
-	if (vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
+	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	vkDestroyFence(_device->device(), theFence, nullptr);
+	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
-	vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
 };

@@ -13,6 +13,7 @@
 #include <indium/buffer.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/library.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -77,7 +78,7 @@ namespace Indium {
 		setAllocateInfo.descriptorSetCount = descriptorSets.size();
 		setAllocateInfo.pSetLayouts = setLayouts.data();
 
-		if (vkAllocateDescriptorSets(privateDevice->device(), &setAllocateInfo, descriptorSets.data()) != VK_SUCCESS) {
+		if (DynamicVK::vkAllocateDescriptorSets(privateDevice->device(), &setAllocateInfo, descriptorSets.data()) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -181,7 +182,7 @@ namespace Indium {
 				}
 			}
 
-			vkUpdateDescriptorSets(privateDevice->device(), writeDescSet.size(), writeDescSet.data(), 0, nullptr);
+			DynamicVK::vkUpdateDescriptorSets(privateDevice->device(), writeDescSet.size(), writeDescSet.data(), 0, nullptr);
 		}
 
 		return descriptorSets;
