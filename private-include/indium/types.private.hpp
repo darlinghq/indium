@@ -5,6 +5,7 @@
 #include <vulkan/vulkan.h>
 
 #include <memory>
+#include <vulkan/vulkan_core.h>
 
 namespace Indium {
 	class PrivateDevice;
@@ -453,7 +454,9 @@ namespace Indium {
 
 			case PixelFormat::Invalid:
 			default:
-				return VK_IMAGE_ASPECT_NONE;
+				// not yet defined on all platforms as standard instead of 'KHR'
+				//return VK_IMAGE_ASPECT_NONE;
+				return VK_IMAGE_ASPECT_NONE_KHR;
 		}
 	};
 
