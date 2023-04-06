@@ -735,7 +735,10 @@ namespace Indium {
 			case FunctionType::Fragment:     return VK_SHADER_STAGE_FRAGMENT_BIT;
 			case FunctionType::Kernel:       return VK_SHADER_STAGE_COMPUTE_BIT;
 			case FunctionType::Intersection: return VK_SHADER_STAGE_INTERSECTION_BIT_KHR;
-			case FunctionType::Mesh:         return VK_SHADER_STAGE_MESH_BIT_EXT;
+
+			// not yet defined on all platforms as 'EXT' instead of 'NV'
+			//case FunctionType::Mesh:         return VK_SHADER_STAGE_MESH_BIT_EXT;
+			case FunctionType::Mesh:         return VK_SHADER_STAGE_MESH_BIT_NV;
 
 			// TODO
 			case FunctionType::Visible:

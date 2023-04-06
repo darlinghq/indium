@@ -12,6 +12,7 @@
 #include <indium/depth-stencil.private.hpp>
 #include <indium/command-encoder.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <vulkan/vulkan_core.h>
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 
@@ -677,7 +678,9 @@ void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::sh
 	}
 
 	if (!!(stages & RenderStages::Mesh)) {
-		dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
+		// not yet defined on all platforms as 'EXT' instead of 'NV'
+		//dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
+		dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_NV;
 	}
 
 	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, 0, 0, nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(), imageBarriers.data());
