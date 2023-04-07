@@ -1,5 +1,8 @@
 #pragma once
 
+#include "indium/base.hpp"
+#include <cstdint>
+#include <type_traits>
 #include <vulkan/vulkan.h>
 
 #include <indium/device.hpp>
@@ -35,6 +38,25 @@ namespace Indium {
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
 		~PrivateDevice();
+
+		enum class Feature: uint64_t {
+			Swapchain           = 1 << 0,
+			ExternalMemoryFD    = 1 << 1,
+			ExternalSemaphoreFD = 1 << 2,
+			NonSemanticInfo     = 1 << 3,
+		};
+
+		friend inline Feature operator|(Feature lhs, Feature rhs) {
+			return static_cast<Feature>(static_cast<std::underlying_type_t<Feature>>(lhs) | static_cast<std::underlying_type_t<Feature>>(rhs));
+		}
+
+		friend inline Feature operator&(Feature lhs, Feature rhs) {
+			return static_cast<Feature>(static_cast<std::underlying_type_t<Feature>>(lhs) & static_cast<std::underlying_type_t<Feature>>(rhs));
+		}
+
+		friend inline bool operator!(Feature features) {
+			return features == static_cast<Feature>(0);
+		}
 
 		virtual std::string name() const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
@@ -88,5 +110,6 @@ namespace Indium {
 		INDIUM_PROPERTY(VkCommandPool, o,O,neshotCommandPool) = VK_NULL_HANDLE;
 
 		INDIUM_PROPERTY(VkPhysicalDeviceMemoryProperties, m, M,emoryProperties);
+		INDIUM_PROPERTY_READONLY(Feature, f, F,eatures);
 	};
 };

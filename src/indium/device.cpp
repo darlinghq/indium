@@ -13,10 +13,12 @@
 #include <iridium/iridium.hpp>
 
 #include <set>
+#include <stdexcept>
 #include <thread>
 #include <unordered_set>
 
 #include <cstring>
+#include <vector>
 
 std::vector<std::shared_ptr<Indium::PrivateDevice>> Indium::globalDeviceList;
 
@@ -209,17 +211,25 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	extProps.resize(count);
 	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
 
-	std::unordered_set<const char*, std::hash<std::string_view>, std::equal_to<std::string_view>> extensionSet {
-		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+	std::vector<const char*> extensions {
+		// put required extensions here
 	};
-	std::vector<const char*> extensions(extensionSet.begin(), extensionSet.end());
+	auto indiumFeatures = static_cast<Feature>(0);
+
+	std::vector<std::pair<const char*, Feature>> optionalExtensions {
+		// put optional extensions here
+		{ VK_KHR_SWAPCHAIN_EXTENSION_NAME, Feature::Swapchain },
+		{ VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, Feature::ExternalMemoryFD },
+		{ VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, Feature::ExternalSemaphoreFD },
+		{ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, Feature::NonSemanticInfo },
+	};
 
 	for (const auto& prop: extProps) {
-		if (strcmp(prop.extensionName, VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME) == 0) {
-			extensionSet.insert(VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME);
-			break;
+		for (const auto& [name, feature]: optionalExtensions) {
+			if (strcmp(prop.extensionName, name) == 0) {
+				extensions.push_back(name);
+				indiumFeatures = indiumFeatures | feature;
+			}
 		}
 	}
 
@@ -234,6 +244,8 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		// TODO
 		abort();
 	}
+
+	_features = indiumFeatures;
 
 	for (const auto& index: queueFamilyIndices) {
 		VkQueue queue;
@@ -504,6 +516,10 @@ std::shared_ptr<Indium::TimelineSemaphore> Indium::PrivateDevice::getWrappedTime
 };
 
 Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportable) {
+	if (exportable && !(_features & Feature::ExternalSemaphoreFD)) {
+		throw std::runtime_error("Device does not support exportable semaphores");
+	}
+
 	VkSemaphoreCreateInfo createInfo {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 

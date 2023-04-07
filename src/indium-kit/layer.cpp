@@ -1,5 +1,6 @@
 #include <indium-kit/layer.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <stdexcept>
 
 namespace DynamicVK = Indium::DynamicVK;
 
@@ -129,6 +130,10 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 	_height(framebufferHeight)
 {
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(device);
+
+	if (!(privateDevice->features() & Indium::PrivateDevice::Feature::Swapchain)) {
+		throw std::runtime_error("Device does not support swapchains");
+	}
 
 	VkSurfaceCapabilitiesKHR surfaceCaps;
 
