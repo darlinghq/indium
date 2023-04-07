@@ -6,11 +6,10 @@
 #include <functional>
 #include <iostream>
 
-// DO NOT COMMIT
-#define ENABLE_VALIDATION 1
+#include <cstdlib>
 
 #ifndef ENABLE_VALIDATION
-	#define ENABLE_VALIDATION 0
+	#define ENABLE_VALIDATION (!!getenv("INDIUM_TEST_VALIDATION"))
 #endif
 
 static constexpr unsigned int arrayLength = 1 << 24;

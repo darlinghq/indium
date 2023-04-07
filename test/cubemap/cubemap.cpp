@@ -32,11 +32,12 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-//#define ENABLE_VALIDATION 1
 //#define SINGLE_FRAME 1
 
+#include <cstdlib>
+
 #ifndef ENABLE_VALIDATION
-	#define ENABLE_VALIDATION 0
+	#define ENABLE_VALIDATION (!!getenv("INDIUM_TEST_VALIDATION"))
 #endif
 
 #ifndef SINGLE_FRAME
