@@ -15,6 +15,14 @@ PFN_vkEnumerateInstanceLayerProperties Indium::DynamicVK::vkEnumerateInstanceLay
 
 INDIUM_DYNAMICVK_FUNCTION_FOREACH(DYNAMICVK_FUNCTION_DEF)
 
+// these functions may be invoked during exit (by destructors for global variables like `Indium::globalDeviceList`).
+// trying to resolve them during exit causes segfaults, so let's resolve them eagerly at initialization-time instead.
+static Indium::DynamicVK::DynamicFunctionBase* const eagerlyResolvedFunctions[] = {
+	&Indium::DynamicVK::vkDestroyCommandPool,
+	&Indium::DynamicVK::vkDestroySemaphore,
+	&Indium::DynamicVK::vkDestroyDevice,
+};
+
 bool Indium::DynamicVK::init() {
 #ifdef DARLING
 	// check if the host system has a Vulkan library available
@@ -54,6 +62,13 @@ bool Indium::DynamicVK::init() {
 
 	if (!vkEnumerateInstanceLayerProperties) {
 		return false;
+	}
+
+	for (size_t i = 0; i < sizeof(eagerlyResolvedFunctions) / sizeof(*eagerlyResolvedFunctions); ++i) {
+		if (!eagerlyResolvedFunctions[i]->resolve()) {
+			// failed to resolve a required function
+			return false;
+		}
 	}
 
 	return true;

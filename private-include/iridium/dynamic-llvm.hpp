@@ -14,22 +14,18 @@ namespace Iridium {
 		bool init();
 		void finit();
 
-		template<typename FuncPtr>
-		struct DynamicFunction;
-
-		template<typename Ret, typename... Arg>
-		struct DynamicFunction<Ret(Arg...)> {
-			Ret (*pointer)(Arg...);
+		struct DynamicFunctionBase {
+			void* pointer;
 			std::once_flag _resolveFlag;
 			const char* name;
 
-			DynamicFunction(const char* _name):
+			DynamicFunctionBase(const char* _name):
 				name(_name)
 				{};
 
 			bool resolve() {
 				std::call_once(_resolveFlag, [&]() {
-					pointer = reinterpret_cast<decltype(pointer)>(dlsym(libraryHandle, name));
+					pointer = dlsym(libraryHandle, name);
 				});
 				return !!pointer;
 			};
@@ -41,12 +37,23 @@ namespace Iridium {
 			operator bool() {
 				return isAvailable();
 			};
+		};
+
+		template<typename FuncPtr>
+		struct DynamicFunction;
+
+		template<typename Ret, typename... Arg>
+		struct DynamicFunction<Ret(Arg...)>: public DynamicFunctionBase {
+			DynamicFunction(const char* _name):
+				DynamicFunctionBase(_name)
+				{};
 
 			Ret operator ()(Arg... arg) {
 				if (!resolve()) {
 					throw std::runtime_error(std::string("Failed to resolve ") + name);
 				}
-				return pointer(std::forward<Arg>(arg)...);
+				Ret (*func)(Arg...) = reinterpret_cast<decltype(func)>(pointer);
+				return func(std::forward<Arg>(arg)...);
 			};
 		};
 
