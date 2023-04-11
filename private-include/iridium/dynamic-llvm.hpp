@@ -9,10 +9,10 @@
 
 namespace Iridium {
 	namespace DynamicLLVM {
-		extern void* libraryHandle;
-
 		bool init();
 		void finit();
+
+		void* resolveSymbol(const char* name);
 
 		struct DynamicFunctionBase {
 			void* pointer;
@@ -25,7 +25,7 @@ namespace Iridium {
 
 			bool resolve() {
 				std::call_once(_resolveFlag, [&]() {
-					pointer = dlsym(libraryHandle, name);
+					pointer = resolveSymbol(name);
 				});
 				return !!pointer;
 			};

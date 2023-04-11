@@ -5,7 +5,7 @@
 	extern "C" struct elf_calls* _elfcalls;
 #endif
 
-void* Indium::DynamicVK::libraryHandle = NULL;
+static void* libraryHandle = NULL;
 PFN_vkGetInstanceProcAddr Indium::DynamicVK::vkGetInstanceProcAddr = NULL;
 PFN_vkCreateInstance Indium::DynamicVK::vkCreateInstance = NULL;
 PFN_vkEnumerateInstanceLayerProperties Indium::DynamicVK::vkEnumerateInstanceLayerProperties = NULL;
@@ -16,28 +16,24 @@ PFN_vkEnumerateInstanceLayerProperties Indium::DynamicVK::vkEnumerateInstanceLay
 INDIUM_DYNAMICVK_FUNCTION_FOREACH(DYNAMICVK_FUNCTION_DEF)
 
 // these functions may be invoked during exit (by destructors for global variables like `Indium::globalDeviceList`).
-// trying to resolve them during exit causes segfaults, so let's resolve them eagerly at initialization-time instead.
+// trying to resolve them during exit may cause segfaults, so let's resolve them eagerly at initialization-time instead.
 static Indium::DynamicVK::DynamicFunctionBase* const eagerlyResolvedFunctions[] = {
 	&Indium::DynamicVK::vkDestroyCommandPool,
 	&Indium::DynamicVK::vkDestroySemaphore,
 	&Indium::DynamicVK::vkDestroyDevice,
 };
 
+#ifdef DARLING
+	#define DLSYM _elfcalls->dlsym
+	#define DLCLOSE _elfcalls->dlclose
+#else
+	#define DLSYM dlsym
+	#define DLCLOSE dlclose
+#endif
+
 bool Indium::DynamicVK::init() {
 #ifdef DARLING
-	// check if the host system has a Vulkan library available
-	// (since our wrapper will die if it fails to load the host library)
-	void* tmp = _elfcalls->dlopen("libvulkan.so.1");
-	if (!tmp) {
-		// nope, host has no (compatible) Vulkan library
-		return false;
-	}
-	// keep it open to avoid having to reopen it when we load the wrapper
-
-	libraryHandle = dlopen("/usr/lib/native/libVulkan.dylib", RTLD_LAZY);
-
-	// now we can close the native handle
-	_elfcalls->dlclose(tmp);
+	libraryHandle = _elfcalls->dlopen("libvulkan.so.1");
 #else
 	libraryHandle = dlopen("libvulkan.so.1", RTLD_LAZY);
 #endif
@@ -46,7 +42,7 @@ bool Indium::DynamicVK::init() {
 		return false;
 	}
 
-	vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(libraryHandle, "vkGetInstanceProcAddr"));
+	vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(DLSYM(libraryHandle, "vkGetInstanceProcAddr"));
 
 	if (!vkGetInstanceProcAddr) {
 		return false;
@@ -64,13 +60,6 @@ bool Indium::DynamicVK::init() {
 		return false;
 	}
 
-	for (size_t i = 0; i < sizeof(eagerlyResolvedFunctions) / sizeof(*eagerlyResolvedFunctions); ++i) {
-		if (!eagerlyResolvedFunctions[i]->resolve()) {
-			// failed to resolve a required function
-			return false;
-		}
-	}
-
 	return true;
 };
 
@@ -78,7 +67,17 @@ void Indium::DynamicVK::finit() {
 	vkCreateInstance = NULL;
 	vkGetInstanceProcAddr = NULL;
 	if (libraryHandle) {
-		dlclose(libraryHandle);
+		DLCLOSE(libraryHandle);
 		libraryHandle = NULL;
 	}
+};
+
+bool Indium::DynamicVK::eagerlyResolveRequired() {
+	for (size_t i = 0; i < sizeof(eagerlyResolvedFunctions) / sizeof(*eagerlyResolvedFunctions); ++i) {
+		if (!eagerlyResolvedFunctions[i]->resolve()) {
+			// failed to resolve a required function
+			return false;
+		}
+	}
+	return true;
 };

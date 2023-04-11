@@ -9,13 +9,19 @@
 
 namespace Indium {
 	namespace DynamicVK {
-		extern void* libraryHandle;
 		extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 		extern PFN_vkCreateInstance vkCreateInstance;
 		extern PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;
 
 		bool init();
 		void finit();
+
+		/**
+		 * Eagerly resolves any and all required Vulkan functions.
+		 *
+		 * @note The global Vulkan instance (`globalInstance`) must be created prior to calling this function.
+		 */
+		bool eagerlyResolveRequired();
 
 		struct DynamicFunctionBase {
 			void* pointer;

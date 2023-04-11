@@ -113,6 +113,11 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 		return;
 	}
 
+	if (!DynamicVK::eagerlyResolveRequired()) {
+		// TODO: maybe warn?
+		return;
+	}
+
 	if (enableValidation && DynamicVK::vkCreateDebugUtilsMessengerEXT) {
 		VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo {};
 		debugCreateInfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
