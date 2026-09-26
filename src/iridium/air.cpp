@@ -227,6 +227,15 @@ static void splitMetalTypeName(std::string_view name, std::string_view& base, si
 
 // Returns std::nullopt for a name that is not a Metal scalar, so callers can
 // fall back to resolving it as a named module type.
+//
+// Integer signedness is deliberately not taken from the Metal name. LLVM IR
+// integers carry no signedness, so a type derived from IR (a getelementptr's
+// source element type, say) is always signed here. Deriving unsigned types
+// from air.arg_type_name would make the two paths disagree: spirv-val rejects
+// the mismatch because OpTypeInt 32 0 and OpTypeInt 32 1 are distinct types
+// even though the bytes are identical. Metal only gives unsignedness meaning
+// at arithmetic sites, so storage and access-chain types are uniformly signed
+// to keep one type per layout.
 static std::optional<Iridium::SPIRV::Type> spirvScalarTypeForMetalBase(std::string_view base) {
 	using Iridium::SPIRV::Type;
 
@@ -234,15 +243,13 @@ static std::optional<Iridium::SPIRV::Type> spirvScalarTypeForMetalBase(std::stri
 	if (base == "half") { return Type(Type::FloatTag {}, 16); }
 	if (base == "double") { return Type(Type::FloatTag {}, 64); }
 
-	if (base == "int") { return Type(Type::IntegerTag {}, 32, true); }
-	if (base == "short") { return Type(Type::IntegerTag {}, 16, true); }
-	if (base == "long") { return Type(Type::IntegerTag {}, 64, true); }
+	if (base == "int" || base == "uint") { return Type(Type::IntegerTag {}, 32, true); }
+	if (base == "short" || base == "ushort") { return Type(Type::IntegerTag {}, 16, true); }
+	if (base == "long" || base == "ulong") { return Type(Type::IntegerTag {}, 64, true); }
 	if (base == "char" || base == "bool") { return Type(Type::IntegerTag {}, 8, true); }
 
-	if (base == "uint") { return Type(Type::IntegerTag {}, 32, false); }
-	if (base == "ushort") { return Type(Type::IntegerTag {}, 16, false); }
-	if (base == "ulong") { return Type(Type::IntegerTag {}, 64, false); }
-	if (base == "uchar") { return Type(Type::IntegerTag {}, 8, false); }
+
+	if (base == "uchar") { return Type(Type::IntegerTag {}, 8, true); }
 
 	return std::nullopt;
 }
