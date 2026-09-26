@@ -930,8 +930,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, false, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
 			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
 			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
-			//auto load = builder.encodeLoad(imageType, var);
-
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
 
@@ -1635,13 +1633,23 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 				case LLVMBitCast: {
 					auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
-					auto lltype = DynamicLLVM::LLVMTypeOf(inst);
-					auto type = llvmTypeToSPIRVType(builder, lltype);
 					auto argID = llvmValueToResultID(builder, arg);
+					auto origType = builder.lookupResultType(argID);
+
+					// AIR bitcasts texture handles as
+					// "bitcast ptr addrspace(2) %x to ptr addrspace(2)". With
+					// opaque pointers LLVMTypeOf reports the same bare pointer
+					// for both sides, so the LLVM type carries no pointee to
+					// translate. The source operand's SPIR-V type does carry
+					// one, so reuse that; the bitcast is then a no-op on types,
+					// which is what a same-address-space pointer cast is.
+					SPIRV::ResultID type = origType;
+					if (type == SPIRV::ResultIDInvalid) {
+						type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					}
 
 					// ensure the resulting pointer storage class is the same as the input pointer storage class
 					auto typeInst = *builder.reverseLookupType(type);
-					auto origType = builder.lookupResultType(argID);
 					auto origTypeInst = *builder.reverseLookupType(origType);
 					typeInst.pointerStorageClass = origTypeInst.pointerStorageClass;
 					auto resultType = builder.declareType(typeInst);
