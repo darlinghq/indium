@@ -6,6 +6,8 @@
 #include <dlfcn.h>
 
 #include <mutex>
+#include <stdexcept>
+#include <string>
 
 namespace Iridium {
 	namespace DynamicLLVM {
