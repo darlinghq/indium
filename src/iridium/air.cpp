@@ -41,6 +41,7 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 
 // TEST
 #include <iostream>
+#include <cctype>
 #include <string>
 
 #if LLVM_VERSION_MAJOR >= 23
@@ -148,7 +149,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			// we could recover, so fail explicitly instead.
 			auto addrSpace = DynamicLLVM::LLVMGetPointerAddressSpace(llvmType);
 			throw ImpossibleResultID("cannot resolve pointee of opaque pointer (addrspace "
-				+ std::to_string((unsigned)addrSpace) + ")");
+				+ std::to_string((unsigned)addrSpace) + "); derive it from AIR argument metadata");
 		} break;
 
 		case LLVMVectorTypeKind: {
@@ -1131,7 +1132,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 				case LLVMGetElementPtr: {
 					auto base = DynamicLLVM::LLVMGetOperand(inst, 0);
-					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
+
+					// With opaque pointers LLVMTypeOf(inst) is just the
+					// pointer, so the result pointee is recovered from the
+					// instruction's source element type: the first index
+					// steps the pointer itself, and each later index
+					// descends one level into an aggregate.
+					auto currentType = DynamicLLVM::LLVMGetGEPSourceElementType(inst);
+					if (!currentType) {
+						throw ImpossibleResultID("getelementptr has no source element type");
+					}
 
 					std::vector<SPIRV::ResultID> indices;
 					auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
@@ -1139,9 +1149,33 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					for (size_t i = 1; i < operandCount; ++i) {
 						auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
 						indices.push_back(llvmValueToResultID(builder, llindex));
+
+						if (i > 1) {
+							switch (DynamicLLVM::LLVMGetTypeKind(currentType)) {
+								case LLVMArrayTypeKind:
+								case LLVMVectorTypeKind:
+									currentType = DynamicLLVM::LLVMGetElementType(currentType);
+									break;
+
+								case LLVMStructTypeKind: {
+									auto indexValue = DynamicLLVM::LLVMIsAConstantInt(llindex)
+										? DynamicLLVM::LLVMConstIntGetZExtValue(llindex)
+										: 0;
+									auto fieldType = DynamicLLVM::LLVMStructGetTypeAtIndex(currentType, indexValue);
+									if (!fieldType) {
+										throw ImpossibleResultID("getelementptr into a struct with a non-constant index");
+									}
+									currentType = fieldType;
+								} break;
+
+								default:
+									throw ImpossibleResultID("getelementptr descends into a non-aggregate type");
+							}
+						}
 					}
 
-					auto tmp = llvmTypeToSPIRVType(builder, targetType);
+					auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
+					auto tmp = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, pointeeType, 8));
 					auto tmp2 = llvmValueToResultID(builder, base);
 
 					// ensure the resulting pointer storage class is the same as the input pointer storage class
