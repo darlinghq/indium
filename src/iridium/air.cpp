@@ -42,6 +42,7 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 // TEST
 #include <iostream>
 #include <cctype>
+#include <optional>
 #include <string>
 
 #if LLVM_VERSION_MAJOR >= 23
@@ -197,33 +198,91 @@ static LLVMValueRef findAIMDValue(LLVMValueRef mdNode, std::string_view key) {
 	return nullptr;
 }
 
-// Metal argument descriptors carry the pointee type as the "air.arg_type_name"
-// MDString, because with opaque pointers the LLVM parameter type is just
-// "ptr addrspace(n)" and no longer holds the element type.
-static Iridium::SPIRV::Type spirvTypeForMetalTypeName(std::string_view name) {
+// Splits a Metal type name into its scalar base name and component count.
+// Metal spells vectors by suffixing the scalar with a count ("float4", "uint2")
+// and marks the padded vector layouts with a "packed_" prefix, which does not
+// change the element type.
+static void splitMetalTypeName(std::string_view name, std::string_view& base, size_t& count) {
+	count = 1;
+
+	constexpr std::string_view packedPrefix = "packed_";
+
+	std::string_view rest = name;
+	if (rest.substr(0, packedPrefix.size()) == packedPrefix) {
+		rest.remove_prefix(packedPrefix.size());
+	}
+
+	auto digits = rest.find_first_of("0123456789");
+	if (digits == std::string_view::npos) {
+		base = rest;
+		return;
+	}
+
+	base = rest.substr(0, digits);
+	count = 0;
+	for (char c: rest.substr(digits)) {
+		count = count * 10 + static_cast<size_t>(c - '0');
+	}
+}
+
+// Returns std::nullopt for a name that is not a Metal scalar, so callers can
+// fall back to resolving it as a named module type.
+static std::optional<Iridium::SPIRV::Type> spirvScalarTypeForMetalBase(std::string_view base) {
 	using Iridium::SPIRV::Type;
 
-	if (name == "float") { return Type(Type::FloatTag {}, 32); }
-	if (name == "half") { return Type(Type::FloatTag {}, 16); }
-	if (name == "double") { return Type(Type::FloatTag {}, 64); }
+	if (base == "float") { return Type(Type::FloatTag {}, 32); }
+	if (base == "half") { return Type(Type::FloatTag {}, 16); }
+	if (base == "double") { return Type(Type::FloatTag {}, 64); }
 
-	if (name == "int" || name == "short" || name == "long" || name == "char" || name == "bool") {
-		size_t width = 32;
-		if (name == "short") { width = 16; }
-		else if (name == "long") { width = 64; }
-		else if (name == "char" || name == "bool") { width = 8; }
-		return Type(Type::IntegerTag {}, width, true);
+	if (base == "int") { return Type(Type::IntegerTag {}, 32, true); }
+	if (base == "short") { return Type(Type::IntegerTag {}, 16, true); }
+	if (base == "long") { return Type(Type::IntegerTag {}, 64, true); }
+	if (base == "char" || base == "bool") { return Type(Type::IntegerTag {}, 8, true); }
+
+	if (base == "uint") { return Type(Type::IntegerTag {}, 32, false); }
+	if (base == "ushort") { return Type(Type::IntegerTag {}, 16, false); }
+	if (base == "ulong") { return Type(Type::IntegerTag {}, 64, false); }
+	if (base == "uchar") { return Type(Type::IntegerTag {}, 8, false); }
+
+	return std::nullopt;
+}
+
+// A buffer argument's air.arg_type_name is a scalar, a vector, or the name of a
+// struct declared in the module ("Uniforms", "AAPLVertex"). Struct names are
+// resolved against the module, since the opaque pointer parameter no longer
+// carries the type. LLVM prefixes named struct types with "struct.".
+static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder& builder, LLVMModuleRef module, std::string_view name) {
+	using Iridium::SPIRV::Type;
+
+	std::string_view base;
+	size_t count = 0;
+	splitMetalTypeName(name, base, count);
+
+	if (auto scalar = spirvScalarTypeForMetalBase(base)) {
+		auto scalarID = builder.declareType(*scalar);
+
+		if (count == 1) {
+			return scalarID;
+		}
+
+		// Mirrors the layout the LLVMVectorTypeKind case computes: a 3- or
+		// 4-component vector is padded out to a full vec4 register.
+		auto registerScale = scalar->size / 4 > 0 ? scalar->size / 4 : 1;
+		size_t vectorAlignment = ((count == 3 || count == 4) ? 4 : 2) * registerScale;
+
+		return builder.declareType(Type(Type::VectorTag {}, count, scalarID, scalar->size * count, vectorAlignment));
 	}
 
-	if (name == "uint" || name == "ushort" || name == "ulong" || name == "uchar") {
-		size_t width = 32;
-		if (name == "ushort") { width = 16; }
-		else if (name == "ulong") { width = 64; }
-		else if (name == "uchar") { width = 8; }
-		return Type(Type::IntegerTag {}, width, false);
+	std::string owned(name);
+	auto named = DynamicLLVM::LLVMGetTypeByName(module, owned.c_str());
+	if (!named) {
+		named = DynamicLLVM::LLVMGetTypeByName(module, ("struct." + owned).c_str());
+	}
+	if (named) {
+		return llvmTypeToSPIRVType(builder, named);
 	}
 
-	throw ImpossibleResultID("unmapped Metal type name \"" + std::string(name) + "\"");
+	throw ImpossibleResultID("neither a Metal scalar nor a module type named \"" + std::string(name) + "\"");
 }
 
 static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef llvmValue) {
@@ -508,6 +567,17 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	std::vector<LLVMTypeRef> funcParamTypes(DynamicLLVM::LLVMCountParamTypes(llfuncType));
 	DynamicLLVM::LLVMGetParamTypes(llfuncType, funcParamTypes.data());
 
+	// With opaque pointers an argument's LLVM type is just "ptr addrspace(n)",
+	// so the real type of every non-buffer argument has to come from its AIR
+	// descriptor rather than from funcParamTypes.
+	auto airArgumentType = [&](LLVMValueRef parameterOperand) {
+		auto typeNameNode = findAIMDValue(parameterOperand, "air.arg_type_name");
+		if (!typeNameNode) {
+			throw ImpossibleResultID("argument descriptor has no air.arg_type_name");
+		}
+		return spirvTypeForAIRTypeName(builder, _module.get(), llvmMDStringToStringView(typeNameNode));
+	};
+
 	std::vector<LLVMValueRef> returnValueOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
 	DynamicLLVM::LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
 
@@ -601,7 +671,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				if (!typeNameNode) {
 					throw ImpossibleResultID("air.buffer descriptor has no air.arg_type_name");
 				}
-				auto type = builder.declareType(spirvTypeForMetalTypeName(llvmMDStringToStringView(typeNameNode)));
+				auto type = spirvTypeForAIRTypeName(builder, _module.get(), llvmMDStringToStringView(typeNameNode));
 				auto addrPtrTypeInst = SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::PhysicalStorageBuffer, type, 8);
 				auto addrPtrType = builder.declareType(addrPtrTypeInst);
 				bufferMembers.push_back(SPIRV::Type::Member { addrPtrType, 8 * bufferIndex, {} });
@@ -697,7 +767,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, vec4Type);
 		} else if (kind == "air.fragment_input") {
-			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto type = airArgumentType(parameterOperand);
 			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, type, 8));
 			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Input);
 			auto load = builder.encodeLoad(type, var);

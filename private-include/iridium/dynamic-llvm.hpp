@@ -110,6 +110,7 @@ namespace Iridium {
 			_macro(LLVMGetPointerAddressSpace) \
 			_macro(LLVMGetReturnType) \
 			_macro(LLVMGetSuccessor) \
+			_macro(LLVMGetTypeByName) \
 			_macro(LLVMGetTypeKind) \
 			_macro(LLVMGetUndefMaskElem) \
 			_macro(LLVMGetValueKind) \
