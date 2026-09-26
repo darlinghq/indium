@@ -128,10 +128,16 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 		} break;
 
 		case LLVMPointerTypeKind: {
-			StorageClass storageClass = StorageClass::Output;
-			// TODO: somehow determine the appropriate storage class
-			//auto addrSpace = DynamicLLVM::LLVMGetPointerAddressSpace(llvmType);
-			return builder.declareType(Type(Type::PointerTag {}, storageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType)), 8));
+			// AIR is compiled with opaque pointers, so LLVMGetElementType on a
+			// "ptr" returns garbage rather than null, and recursing into it
+			// dereferenced that garbage. The pointee type now only exists in
+			// the AIR argument descriptors (air.arg_type_name), which callers
+			// resolve themselves; a bare pointer type here carries no pointee
+			// we could recover, so fail explicitly instead.
+			auto addrSpace = DynamicLLVM::LLVMGetPointerAddressSpace(llvmType);
+			fprintf(stderr, "Iridium: cannot resolve pointee of opaque pointer (addrspace %u); "
+				"derive it from AIR argument metadata\n", (unsigned)addrSpace);
+			throw ImpossibleResultID();
 		} break;
 
 		case LLVMVectorTypeKind: {
@@ -158,6 +164,55 @@ static std::string_view llvmMDStringToStringView(LLVMValueRef llvmMDString) {
 	auto rawStr = DynamicLLVM::LLVMGetMDString(llvmMDString, &length);
 	return std::string_view(rawStr, length);
 };
+
+// Returns the operand that follows the given MDString key in an AIR argument
+// descriptor, or nullptr if the key is absent.
+static LLVMValueRef findAIMDValue(LLVMValueRef mdNode, std::string_view key) {
+	unsigned int count = DynamicLLVM::LLVMGetMDNodeNumOperands(mdNode);
+	std::vector<LLVMValueRef> operands(count);
+	DynamicLLVM::LLVMGetMDNodeOperands(mdNode, operands.data());
+
+	for (unsigned int i = 0; i + 1 < count; i++) {
+		unsigned int length = 0;
+		if (!DynamicLLVM::LLVMGetMDString(operands[i], &length)) {
+			continue;
+		}
+		if (llvmMDStringToStringView(operands[i]) == key) {
+			return operands[i + 1];
+		}
+	}
+
+	return nullptr;
+}
+
+// Metal argument descriptors carry the pointee type as the "air.arg_type_name"
+// MDString, because with opaque pointers the LLVM parameter type is just
+// "ptr addrspace(n)" and no longer holds the element type.
+static Iridium::SPIRV::Type spirvTypeForMetalTypeName(std::string_view name) {
+	using Iridium::SPIRV::Type;
+
+	if (name == "float") { return Type(Type::FloatTag {}, 32); }
+	if (name == "half") { return Type(Type::FloatTag {}, 16); }
+	if (name == "double") { return Type(Type::FloatTag {}, 64); }
+
+	if (name == "int" || name == "short" || name == "long" || name == "char" || name == "bool") {
+		size_t width = 32;
+		if (name == "short") { width = 16; }
+		else if (name == "long") { width = 64; }
+		else if (name == "char" || name == "bool") { width = 8; }
+		return Type(Type::IntegerTag {}, width, true);
+	}
+
+	if (name == "uint" || name == "ushort" || name == "ulong" || name == "uchar") {
+		size_t width = 32;
+		if (name == "ushort") { width = 16; }
+		else if (name == "ulong") { width = 64; }
+		else if (name == "uchar") { width = 8; }
+		return Type(Type::IntegerTag {}, width, false);
+	}
+
+	throw ImpossibleResultID();
+}
 
 static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef llvmValue) {
 	using namespace Iridium::SPIRV;
@@ -432,7 +487,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// if the function returns a structure, we need to separate the components
 	// into separate output variables.
 
-	auto llfuncType = DynamicLLVM::LLVMGetElementType(DynamicLLVM::LLVMTypeOf(_function));
+	// With opaque pointers LLVMTypeOf(_function) is just "ptr", and
+	// LLVMGetElementType on that returns null, which used to segfault in
+	// LLVMGetReturnType below. LLVMGlobalGetValueType is the correct way to
+	// get a global's or function's own type.
+	auto llfuncType = DynamicLLVM::LLVMGlobalGetValueType(_function);
 	auto funcRetType = DynamicLLVM::LLVMGetReturnType(llfuncType);
 	std::vector<LLVMTypeRef> funcParamTypes(DynamicLLVM::LLVMCountParamTypes(llfuncType));
 	DynamicLLVM::LLVMGetParamTypes(llfuncType, funcParamTypes.data());
@@ -526,7 +585,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
 			if (kind == "air.buffer") {
-				auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(funcParamTypes[i]));
+				auto typeNameNode = findAIMDValue(parameterOperand, "air.arg_type_name");
+				if (!typeNameNode) {
+					throw ImpossibleResultID();
+				}
+				auto type = builder.declareType(spirvTypeForMetalTypeName(llvmMDStringToStringView(typeNameNode)));
 				auto addrPtrTypeInst = SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::PhysicalStorageBuffer, type, 8);
 				auto addrPtrType = builder.declareType(addrPtrTypeInst);
 				bufferMembers.push_back(SPIRV::Type::Member { addrPtrType, 8 * bufferIndex, {} });

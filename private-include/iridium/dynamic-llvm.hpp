@@ -114,6 +114,7 @@ namespace Iridium {
 			_macro(LLVMGetValueKind) \
 			_macro(LLVMGetValueName2) \
 			_macro(LLVMGetVectorSize) \
+			_macro(LLVMGlobalGetValueType) \
 			_macro(LLVMIsAMDString) \
 			_macro(LLVMIsConditional) \
 			_macro(LLVMIsPackedStruct) \
