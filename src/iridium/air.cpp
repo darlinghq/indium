@@ -1300,6 +1300,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto access = builder.encodeAccessChain(accessType, op, { builder.declareConstantScalar<int32_t>(0) });
 						builder.setResultType(access, accessType);
 						op = access;
+					} else {
+						// AIR's pointers are opaque, so the operand's declared
+						// pointee is only whatever its producer managed to
+						// recover, and that is not necessarily what is being
+						// loaded: "bitcast ptr %a to ptr" carries no destination
+						// pointee, and a getelementptr names the aggregate it
+						// descends from, not the field it lands on. The load's
+						// own result type is the one place the intended pointee
+						// survives, so re-type the pointer to it.
+						auto loadPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, type, 8));
+
+						if (loadPtrType != builder.lookupResultType(op)) {
+							auto casted = builder.encodeBitcast(loadPtrType, op);
+							builder.setResultType(casted, loadPtrType);
+							op = casted;
+						}
 					}
 
 					auto resID = builder.encodeLoad(type, op, alignment);
@@ -1639,10 +1655,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// AIR bitcasts texture handles as
 					// "bitcast ptr addrspace(2) %x to ptr addrspace(2)". With
 					// opaque pointers LLVMTypeOf reports the same bare pointer
-					// for both sides, so the LLVM type carries no pointee to
-					// translate. The source operand's SPIR-V type does carry
-					// one, so reuse that; the bitcast is then a no-op on types,
-					// which is what a same-address-space pointer cast is.
+					// for both sides, so the LLVM type carries no destination
+					// pointee to translate, and none is recorded anywhere else
+					// in the AIR either. The source operand's SPIR-V type does
+					// carry one, so reuse that rather than failing the
+					// translation; the bitcast is then inert on types. A
+					// consumer that needs a different pointee re-types the
+					// pointer itself -- see LLVMLoad.
 					SPIRV::ResultID type = origType;
 					if (type == SPIRV::ResultIDInvalid) {
 						type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
