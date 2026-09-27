@@ -6,6 +6,8 @@
 #include <indium/instance.private.hpp>
 
 #include <mutex>
+#include <stdexcept>
+#include <string>
 
 namespace Indium {
 	namespace DynamicVK {
