@@ -1685,10 +1685,20 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
 					}
 
-					// ensure the resulting pointer storage class is the same as the input pointer storage class
+					// ensure the resulting pointer storage class is the same as the input
+					// pointer storage class. a storage class only exists on a pointer type,
+					// so there is nothing to inherit from a non-pointer source, and nothing
+					// at all from an operand with no type recorded -- which is every
+					// constant, since declareConstantScalar and its siblings never call
+					// setResultType. the recovered type then stands on its own. dereferencing
+					// the missing lookup anyway did not report it: std::optional's operator*
+					// on an empty optional neither throws nor crashes, it reads the zeroed
+					// storage, in which pointerStorageClass is 0, i.e. UniformConstant, a
+					// read-only class.
 					auto typeInst = *builder.reverseLookupType(type);
-					auto origTypeInst = *builder.reverseLookupType(origType);
-					typeInst.pointerStorageClass = origTypeInst.pointerStorageClass;
+					if (auto origTypeInst = builder.reverseLookupType(origType); origTypeInst && origTypeInst->backingType == SPIRV::Type::BackingType::Pointer) {
+						typeInst.pointerStorageClass = origTypeInst->pointerStorageClass;
+					}
 					auto resultType = builder.declareType(typeInst);
 
 					auto resID = builder.encodeBitcast(resultType, argID);
