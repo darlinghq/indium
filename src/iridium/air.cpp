@@ -1333,6 +1333,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					// TODO: also handle runtime arrays properly here
 
+					// The same asymmetry a load has: AIR's pointers are opaque,
+					// so the operand's declared pointee is only whatever its
+					// producer recovered, which need not be what is being
+					// stored through it. A store's own result type is void, so
+					// unlike a load it preserves nothing; the stored value's
+					// type is the equivalent source of truth, so re-type the
+					// pointer to it. Taken from the value's LLVM type rather
+					// than from its recorded SPIR-V result type because a
+					// constant operand never gets one recorded.
+					auto opType = *builder.reverseLookupType(builder.lookupResultType(ptr));
+					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval)), 8));
+
+					if (storePtrType != builder.lookupResultType(ptr)) {
+						auto casted = builder.encodeBitcast(storePtrType, ptr);
+						builder.setResultType(casted, storePtrType);
+						ptr = casted;
+					}
+
 					builder.encodeStore(ptr, val, alignment);
 				} break;
 
