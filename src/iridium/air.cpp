@@ -925,6 +925,12 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				dimensionality = SPIRV::Dim::e2D;
 			} else if (textureClassName == "texturecube") {
 				dimensionality = SPIRV::Dim::eCube;
+			} else {
+				// Any other texture class (texture3d, texture1d, the array and
+				// buffer variants) used to leave `dimensionality` uninitialised, so
+				// the emitted image type carried an arbitrary Dim.
+				throw std::runtime_error(std::string("TODO: support the texture class ") +
+					std::string(textureClassName));
 			}
 
 			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, false, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
