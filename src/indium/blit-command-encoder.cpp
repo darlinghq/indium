@@ -72,8 +72,8 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Buffer> source, siz
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = sourceBytesPerRow / bytesPerPixel;
-	copyInfo.bufferImageHeight = sourceBytesPerImage / sourceBytesPerRow;
+	copyInfo.bufferRowLength = texelsPerRow(sourceBytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(sourceBytesPerImage, sourceBytesPerRow, bytesPerPixel);
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = destinationLevel;
 	copyInfo.imageSubresource.baseArrayLayer = destinationSlice;
@@ -130,8 +130,8 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, si
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = destinationBytesPerRow / bytesPerPixel;
-	copyInfo.bufferImageHeight = destinationBytesPerImage / destinationBytesPerRow;
+	copyInfo.bufferRowLength = texelsPerRow(destinationBytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(destinationBytesPerImage, destinationBytesPerRow, bytesPerPixel);
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = sourceLevel;
 	copyInfo.imageSubresource.baseArrayLayer = sourceSlice;

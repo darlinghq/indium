@@ -604,8 +604,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = bytesPerRow / bytesPerPixel;
-	copyInfo.bufferImageHeight = bytesPerImage / bytesPerRow;
+	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = mipmapLevel;
 	copyInfo.imageSubresource.baseArrayLayer = slice;
