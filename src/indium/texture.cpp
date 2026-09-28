@@ -215,6 +215,14 @@ void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLeve
 	throw std::runtime_error("TODO: support replaceRegion on texture views");
 };
 
+void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	throw std::runtime_error("TODO: support getBytes on texture views");
+};
+
+void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	throw std::runtime_error("TODO: support getBytes on texture views");
+};
+
 void Indium::TextureView::precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) {
 	return _original->precommit(cmdbuf);
 };
@@ -651,4 +659,129 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+};
+
+void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	return getBytes(region, mipmapLevel, 0, bytes, bytesPerRow, 0);
+};
+
+void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	if (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared) {
+		throw std::runtime_error("Invalid usage of getBytes on non-managed and non-shared texture");
+	}
+
+	// FIXME: handle compressed formats
+	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+	if (bytesPerPixel == 0) {
+		throw std::runtime_error("Invalid usage of getBytes on a format with no known texel size");
+	}
+
+	// VkBufferImageCopy expresses the buffer's row stride in texels, so a
+	// bytesPerRow that is not a whole number of texels cannot be honoured here.
+	// Rounding it down would hand back a buffer laid out at a different stride
+	// than the caller asked for, so refuse it instead.
+	if (bytesPerRow % bytesPerPixel != 0) {
+		throw std::runtime_error("Invalid bytesPerRow for getBytes: not a whole number of texels");
+	}
+
+	if (bytesPerImage != 0 && bytesPerImage % bytesPerRow != 0) {
+		throw std::runtime_error("Invalid bytesPerImage for getBytes: not a whole number of rows");
+	}
+
+	// The read direction of replaceRegion: the image goes the other way, into a
+	// temporary host-visible buffer we then read the answer out of. replaceRegion
+	// says why a command buffer is needed here at all rather than a host write.
+	auto aspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
+
+	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
+	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
+
+	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
+	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cmdBufAllocInfo.commandPool = _device->oneshotCommandPool();
+	cmdBufAllocInfo.commandBufferCount = 1;
+
+	VkCommandBuffer cmdBuf;
+	if (DynamicVK::vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	VkCommandBufferBeginInfo cmdBufBeginInfo {};
+	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
+
+	// first, transition the image to the optimal layout for transfer sources
+	VkImageMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_NONE;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _image;
+	barrier.subresourceRange.aspectMask = aspect;
+	barrier.subresourceRange.baseMipLevel = mipmapLevel;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = slice;
+	barrier.subresourceRange.layerCount = 1;
+
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	// now encode the copy
+	VkBufferImageCopy copyInfo {};
+	copyInfo.bufferOffset = 0;
+	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
+	copyInfo.imageSubresource.aspectMask = aspect;
+	copyInfo.imageSubresource.mipLevel = mipmapLevel;
+	copyInfo.imageSubresource.baseArrayLayer = slice;
+	copyInfo.imageSubresource.layerCount = 1;
+	copyInfo.imageOffset.x = region.origin.x;
+	copyInfo.imageOffset.y = region.origin.y;
+	copyInfo.imageOffset.z = region.origin.z;
+	copyInfo.imageExtent.width = region.size.width;
+	copyInfo.imageExtent.height = region.size.height;
+	copyInfo.imageExtent.depth = region.size.depth;
+	DynamicVK::vkCmdCopyImageToBuffer(cmdBuf, _image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmpBuf->buffer(), 1, &copyInfo);
+
+	// finally, transition the image back to the general layout
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	DynamicVK::vkEndCommandBuffer(cmdBuf);
+
+	VkFenceCreateInfo fenceCreateInfo {};
+	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	VkFence theFence = VK_NULL_HANDLE;
+
+	if (DynamicVK::vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	VkSubmitInfo submitInfo {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &cmdBuf;
+
+	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
+
+	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+
+	memcpy(bytes, tmpBuf->contents(), byteSize);
 };

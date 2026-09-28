@@ -87,5 +87,17 @@ namespace Indium {
 
 		virtual void replaceRegion(Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) = 0;
 		virtual void replaceRegion(Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) = 0;
+
+		// The read direction of replaceRegion. `bytes` is filled with `bytesPerRow`
+		// bytes per row of the region, and the region must lie inside the level.
+		//
+		// Only a managed or shared texture has host-visible contents to read back
+		// from, so the same precondition as replaceRegion applies. bytesPerRow and
+		// bytesPerImage must also be whole numbers of texels and of rows: Vulkan
+		// states a copy's buffer pitches in texels, so anything else has no
+		// representation and rounding it down would hand back a buffer at a
+		// stride the caller never asked for. Both throw std::runtime_error.
+		virtual void getBytes(Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) = 0;
+		virtual void getBytes(Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) = 0;
 	};
 };

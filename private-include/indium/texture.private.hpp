@@ -136,6 +136,8 @@ namespace Indium {
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) override;
 		virtual bool needsExportablePresentationSemaphore() const override;
@@ -175,5 +177,7 @@ namespace Indium {
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 };
