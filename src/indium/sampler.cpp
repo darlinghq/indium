@@ -2,6 +2,8 @@
 #include <indium/device.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
+
 Indium::SamplerState::~SamplerState() {};
 
 Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> device, const SamplerDescriptor& descriptor):
@@ -16,9 +18,17 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 	info.addressModeU = samplerAddressModeToVkSamplerAddressMode(descriptor.sAddressMode);
 	info.addressModeV = samplerAddressModeToVkSamplerAddressMode(descriptor.tAddressMode);
 	info.addressModeW = samplerAddressModeToVkSamplerAddressMode(descriptor.rAddressMode);
+	// Metal clamps the descriptor's maxAnisotropy to what the device supports,
+	// and Vulkan requires maxAnisotropy to be no greater than the device's limit
+	// whenever anisotropyEnable is set. A value past the limit is not clamped by
+	// the driver: on asahi maxAnisotropy=1024 against a limit of 16 silently
+	// falls back to isotropic filtering, which is worse than either answer.
+	auto maxAnisotropy = std::max<size_t>(1, std::min<size_t>(
+		descriptor.maxAnisotropy, _privateDevice->properties().limits.maxSamplerAnisotropy));
+
 	info.mipLodBias = 0; // not sure where to get this from
-	info.anisotropyEnable = (descriptor.maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
-	info.maxAnisotropy = descriptor.maxAnisotropy;
+	info.anisotropyEnable = (maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
+	info.maxAnisotropy = maxAnisotropy;
 	info.compareEnable = VK_FALSE;
 	info.compareOp = compareFunctionToVkCompareOp(descriptor.compareFunction);
 	info.minLod = descriptor.normalizedCoordinates ? descriptor.lodMinClamp : 0;
