@@ -36,6 +36,9 @@ namespace Indium {
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(std::shared_ptr<Function> computeFunction, PipelineOption options = PipelineOption::None, std::shared_ptr<ComputePipelineReflection> reflection = nullptr) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
+		/**
+		 * @returns `nullptr` if the library could not be translated.
+		 */
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) = 0;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) = 0;

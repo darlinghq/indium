@@ -361,6 +361,16 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 	size_t translatedSize = 0;
 	Iridium::OutputInfo outputInfo;
 	auto translatedData = Iridium::translate(data, length, translatedSize, outputInfo);
+
+	// translate() returns nullptr on failure, and a failed translation reports a
+	// zero output size, so there is no module to hand PrivateLibrary: it would
+	// call vkCreateShaderModule with a null pointer and abort() there, a crash a
+	// long way from the translation that failed. Report the failure here instead,
+	// the way newFunction reports an unknown name.
+	if (!translatedData) {
+		return nullptr;
+	}
+
 	PrivateLibrary::FunctionInfoMap funcInfoMap;
 
 	for (const auto& [name, info]: outputInfo.functionInfos) {
