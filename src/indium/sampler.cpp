@@ -19,7 +19,7 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 	info.mipLodBias = 0; // not sure where to get this from
 	info.anisotropyEnable = (descriptor.maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
 	info.maxAnisotropy = descriptor.maxAnisotropy;
-	info.compareEnable = descriptor.normalizedCoordinates ? VK_TRUE : VK_FALSE; // FIXME: this assumes that the implementation defers to whatever the shader state specifies
+	info.compareEnable = VK_FALSE;
 	info.compareOp = compareFunctionToVkCompareOp(descriptor.compareFunction);
 	info.minLod = descriptor.normalizedCoordinates ? descriptor.lodMinClamp : 0;
 	info.maxLod = descriptor.normalizedCoordinates ? descriptor.lodMaxClamp : 0;
