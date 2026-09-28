@@ -1291,7 +1291,25 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 					auto op = llvmValueToResultID(builder, ptr);
-					auto opType = *builder.reverseLookupType(builder.lookupResultType(op));
+					// A pointer operand's recorded type is what carries the storage
+					// class the re-type below copies, and it does not miss on any
+					// AIR in the corpus: every producer of a pointer calls
+					// setResultType (a parameter's setup load, a getelementptr, a
+					// "bitcast ptr to ptr"), and llvmValueToResultID's constant
+					// paths cannot produce one at all. 82 loads and 6 stores across
+					// the nine fixtures, no misses. There is also nothing to
+					// inherit if it ever did: the zeroed storage an unchecked
+					// operator* hands back reads as UniformConstant, a read-only
+					// class, which is how a store ends up with "OpStore ... storage
+					// class is read-only". Name the operand rather than guess.
+					auto maybeOpType = builder.reverseLookupType(builder.lookupResultType(op));
+					if (!maybeOpType) {
+						throw ImpossibleResultID("load's pointer operand has no recorded result type");
+					}
+					auto opType = *maybeOpType;
+					// only reachable through the miss just rejected: a pointer type
+					// always carries a pointee, and llvmTypeToSPIRVType refuses to
+					// resolve an opaque one, so targetType is a declared type.
 					auto opDerefType = *builder.reverseLookupType(opType.targetType);
 
 					if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
@@ -1342,7 +1360,15 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// pointer to it. Taken from the value's LLVM type rather
 					// than from its recorded SPIR-V result type because a
 					// constant operand never gets one recorded.
-					auto opType = *builder.reverseLookupType(builder.lookupResultType(ptr));
+					// the pointer being stored through, so the storage class has to come
+					// from the operand's recorded type. See the LLVMLoad case above for
+					// why that lookup cannot miss, and for why a miss would leave
+					// nothing to inherit: name the operand rather than guess.
+					auto maybeOpType = builder.reverseLookupType(builder.lookupResultType(ptr));
+					if (!maybeOpType) {
+						throw ImpossibleResultID("store's pointer operand has no recorded result type");
+					}
+					auto opType = *maybeOpType;
 					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval)), 8));
 
 					if (storePtrType != builder.lookupResultType(ptr)) {
