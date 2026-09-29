@@ -32,6 +32,13 @@ int main(int argc, char** argv) {
 		auto lib = device->newLibrary(compute_add, compute_add_len);
 		auto func = lib->newFunction("add_arrays");
 
+		// A name the library does not have must come back null, not as a Function
+		// built from a default-constructed FunctionInfo.
+		if (lib->newFunction("no_such_function") != nullptr) {
+			std::fprintf(stderr, "FAIL: newFunction returned a function for an unknown name\n");
+			return 1;
+		}
+
 		auto pso = device->newComputePipelineState(func);
 		auto commandQueue = device->newCommandQueue();
 
