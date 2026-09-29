@@ -223,6 +223,20 @@ void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, si
 	throw std::runtime_error("TODO: support getBytes on texture views");
 };
 
+// PrivateTexture declares these to complete its vtable; the readback that has an
+// image to copy from is ConcreteTexture's, which overrides both. Without a
+// definition here the vtable slot is unresolved, so every class deriving from
+// PrivateTexture without its own override stays abstract -- which is how
+// IndiumKit::PrivateDrawable, inheriting PrivateTexture, stopped being
+// constructible and took indium_kit and its tests with it.
+void Indium::PrivateTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	throw std::runtime_error("TODO: support getBytes on a texture that owns no image");
+};
+
+void Indium::PrivateTexture::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	throw std::runtime_error("TODO: support getBytes on a texture that owns no image");
+};
+
 void Indium::TextureView::precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) {
 	return _original->precommit(cmdbuf);
 };

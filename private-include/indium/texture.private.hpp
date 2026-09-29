@@ -88,6 +88,12 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
 		virtual bool needsExportablePresentationSemaphore() const;
+
+		// Declared here so this class has a complete vtable. The readback that has an
+		// image to copy from lives in ConcreteTexture and TextureView, which override
+		// both; without these, every other subclass of PrivateTexture stays abstract.
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 
 	class TextureView: public PrivateTexture {
