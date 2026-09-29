@@ -152,5 +152,13 @@ Indium::PrivateLibrary::~PrivateLibrary() {
 };
 
 std::shared_ptr<Indium::Function> Indium::PrivateLibrary::newFunction(const std::string& name) {
-	return std::make_shared<PrivateFunction>(shared_from_this(), name, _functionInfos[name]);
+	// Not operator[]: a missing key would default-construct a FunctionInfo and
+	// hand back a Function for a name the library does not have, so the caller
+	// could never see a null.
+	const auto info = _functionInfos.find(name);
+	if (info == _functionInfos.end()) {
+		return nullptr;
+	}
+
+	return std::make_shared<PrivateFunction>(shared_from_this(), name, info->second);
 };
