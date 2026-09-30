@@ -279,6 +279,10 @@ namespace Indium {
 	INDIUM_BITFLAG_ENUM_CLASS(TextureUsage);
 
 	enum class FunctionType: size_t {
+		// Not a stage. Exists so a reflected function whose stage the producer
+		// did not fill in can be told apart from one that asked for a vertex
+		// stage, instead of silently becoming a vertex stage.
+		Invalid = 0,
 		Vertex = 1,
 		Fragment = 2,
 		Kernel = 3,

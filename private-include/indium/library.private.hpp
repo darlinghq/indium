@@ -10,8 +10,6 @@
 
 #include <indium/types.hpp>
 
-#include <iridium/iridium.hpp>
-
 namespace Indium {
 	class PrivateLibrary;
 	class PrivateDevice;
@@ -23,8 +21,8 @@ namespace Indium {
 		// like Vulkan does whereas Metal uses per-resource-type indexing.
 		// the Metal-to-SPIR-V translator should output code that follows this indexing scheme.
 		// in this indexing scheme, all buffers are bound first, followed by stage-ins, followed by textures, followed by samplers.
-		std::vector<Iridium::BindingInfo> bindings;
-		std::vector<Iridium::EmbeddedSampler> embeddedSamplers;
+		std::vector<BindingDescriptor> bindings;
+		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
 		std::vector<ArgumentInfo> arguments;
 	};

@@ -17,8 +17,105 @@
 #include <thread>
 #include <unordered_set>
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
+
+namespace {
+	/**
+	 * One of the fields of an EmbeddedSamplerDescriptor that holds an
+	 * enumeration, with the last value that enumeration allows.
+	 */
+	struct SamplerEnum {
+		const char* field;
+		size_t value;
+		size_t maximum;
+	};
+
+	Indium::ArgumentInfo argumentInfoFromIridium(const Iridium::ArgumentInfo& argument) {
+		Indium::ArgumentInfo result;
+		switch (argument.type) {
+			case Iridium::BindingType::Texture: result.kind = Indium::ArgumentKind::Texture; break;
+			case Iridium::BindingType::Sampler: result.kind = Indium::ArgumentKind::Sampler; break;
+			default: result.kind = Indium::ArgumentKind::Buffer; break;
+		}
+		result.index = argument.index;
+		result.name = argument.name;
+		result.typeName = argument.typeName;
+		result.size = argument.size;
+		result.alignment = argument.alignment;
+		for (const auto& member: argument.members) {
+			result.members.push_back(Indium::ArgumentMemberInfo { member.offset, member.typeName, member.name });
+		}
+		return result;
+	}
+
+	/**
+	 * Iridium's reflection, in the terms every other producer's reflection
+	 * arrives in, so that the two entry points to newLibrary() agree on what a
+	 * module's functions are described with and only one of them is Iridium's.
+	 *
+	 * Not checked. Iridium is the translator indium is built against, and it has
+	 * always been trusted, so this stays a translation and gives the path that
+	 * is verified on hardware no new way to fail.
+	 */
+	Indium::PrivateLibrary::FunctionInfoMap functionInfosFromIridium(const Iridium::OutputInfo& outputInfo) {
+		Indium::PrivateLibrary::FunctionInfoMap functionInfos;
+
+		for (const auto& [name, info]: outputInfo.functionInfos) {
+			auto& functionInfo = functionInfos[name];
+
+			switch (info.type) {
+				case Iridium::FunctionType::Fragment:
+					functionInfo.functionType = Indium::FunctionType::Fragment;
+					break;
+				case Iridium::FunctionType::Vertex:
+					functionInfo.functionType = Indium::FunctionType::Vertex;
+					break;
+				case Iridium::FunctionType::Kernel:
+					functionInfo.functionType = Indium::FunctionType::Kernel;
+					break;
+			}
+
+			for (const auto& binding: info.bindings) {
+				Indium::BindingDescriptor descriptor;
+				descriptor.type = static_cast<Indium::BindingType>(binding.type);
+				descriptor.index = binding.index;
+				descriptor.internalIndex = binding.internalIndex;
+				descriptor.textureAccessType = static_cast<Indium::TextureAccessType>(binding.textureAccessType);
+				descriptor.embeddedSamplerIndex = binding.embeddedSamplerIndex;
+
+				functionInfo.bindings.push_back(descriptor);
+			}
+
+			for (const auto& embeddedSampler: info.embeddedSamplers) {
+				Indium::EmbeddedSamplerDescriptor descriptor;
+				descriptor.widthAddressMode = static_cast<Indium::EmbeddedSamplerDescriptor::AddressMode>(embeddedSampler.widthAddressMode);
+				descriptor.heightAddressMode = static_cast<Indium::EmbeddedSamplerDescriptor::AddressMode>(embeddedSampler.heightAddressMode);
+				descriptor.depthAddressMode = static_cast<Indium::EmbeddedSamplerDescriptor::AddressMode>(embeddedSampler.depthAddressMode);
+				descriptor.magnificationFilter = static_cast<Indium::EmbeddedSamplerDescriptor::Filter>(embeddedSampler.magnificationFilter);
+				descriptor.minificationFilter = static_cast<Indium::EmbeddedSamplerDescriptor::Filter>(embeddedSampler.minificationFilter);
+				descriptor.mipmapFilter = static_cast<Indium::EmbeddedSamplerDescriptor::MipFilter>(embeddedSampler.mipmapFilter);
+				descriptor.usesNormalizedCoordinates = embeddedSampler.usesNormalizedCoordinates;
+				descriptor.compareFunction = static_cast<Indium::EmbeddedSamplerDescriptor::CompareFunction>(embeddedSampler.compareFunction);
+				descriptor.anisotropyLevel = embeddedSampler.anisotropyLevel;
+				descriptor.borderColor = static_cast<Indium::EmbeddedSamplerDescriptor::BorderColor>(embeddedSampler.borderColor);
+				descriptor.lodMin = embeddedSampler.lodMin;
+				descriptor.lodMax = embeddedSampler.lodMax;
+
+				functionInfo.embeddedSamplers.push_back(descriptor);
+			}
+
+			for (const auto& argument: info.arguments) {
+				functionInfo.arguments.push_back(argumentInfoFromIridium(argument));
+			}
+		}
+
+		return functionInfos;
+	}
+}
 
 std::vector<std::shared_ptr<Indium::PrivateDevice>> Indium::globalDeviceList;
 
@@ -338,24 +435,6 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* poi
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
 };
 
-static Indium::ArgumentInfo argumentInfoFromIridium(const Iridium::ArgumentInfo& argument) {
-	Indium::ArgumentInfo result;
-	switch (argument.type) {
-		case Iridium::BindingType::Texture: result.kind = Indium::ArgumentKind::Texture; break;
-		case Iridium::BindingType::Sampler: result.kind = Indium::ArgumentKind::Sampler; break;
-		default: result.kind = Indium::ArgumentKind::Buffer; break;
-	}
-	result.index = argument.index;
-	result.name = argument.name;
-	result.typeName = argument.typeName;
-	result.size = argument.size;
-	result.alignment = argument.alignment;
-	for (const auto& member: argument.members) {
-		result.members.push_back(Indium::ArgumentMemberInfo { member.offset, member.typeName, member.name });
-	}
-	return result;
-}
-
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
 	// TODO: cache translated libraries
 	size_t translatedSize = 0;
@@ -371,33 +450,159 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 		return nullptr;
 	}
 
-	PrivateLibrary::FunctionInfoMap funcInfoMap;
+	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, functionInfosFromIridium(outputInfo));
+	free(translatedData);
+	return lib;
+};
 
-	for (const auto& [name, info]: outputInfo.functionInfos) {
-		auto& funcInfo = funcInfoMap[name];
+std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage) {
+	// TODO: cache translated libraries
+	std::string ignored;
 
-		switch (info.type) {
-			case Iridium::FunctionType::Fragment:
-				funcInfo.functionType = FunctionType::Fragment;
-				break;
-			case Iridium::FunctionType::Vertex:
-				funcInfo.functionType = FunctionType::Vertex;
-				break;
-			case Iridium::FunctionType::Kernel:
-				funcInfo.functionType = FunctionType::Kernel;
-				break;
+	if (!errorMessage) {
+		errorMessage = &ignored;
+	}
+
+	auto fail = [errorMessage](const std::string& reason) -> std::shared_ptr<Library> {
+		*errorMessage = reason;
+		return nullptr;
+	};
+
+	// PrivateLibrary abort()s if vkCreateShaderModule rejects the module, so
+	// everything that would make it do so gets rejected here instead, where the
+	// reason can still name the module. A producer that hands over something
+	// that is not a module at all is the common case; a module that is valid
+	// but incompatible is Vulkan's to report, and its message is better than
+	// one invented here.
+	if (!spirv) {
+		return fail("no SPIR-V data");
+	}
+
+	if (length < sizeof(uint32_t) * 5) {
+		return fail("SPIR-V module is " + std::to_string(length) + " bytes, shorter than the 5-word header");
+	}
+
+	if (length % sizeof(uint32_t) != 0) {
+		return fail("SPIR-V module is " + std::to_string(length) + " bytes, which is not a whole number of words");
+	}
+
+	uint32_t magic;
+	memcpy(&magic, spirv, sizeof(magic));
+
+	if (magic != 0x07230203) {
+		// 0x03022307 is this number with the bytes the other way round, which is
+		// a module this host cannot consume.
+		char magicText[16];
+		snprintf(magicText, sizeof(magicText), "0x%08x", magic);
+		return fail(std::string("SPIR-V magic number is ") + magicText + ", expected 0x07230203");
+	}
+
+	PrivateLibrary::FunctionInfoMap functionInfos;
+
+	if (reflection.functions.empty()) {
+		return fail("reflection describes no functions");
+	}
+
+	for (const auto& [name, functionReflection]: reflection.functions) {
+		if (name.empty()) {
+			return fail("reflection describes a function with no name");
 		}
 
-		funcInfo.bindings.insert(funcInfo.bindings.end(), info.bindings.begin(), info.bindings.end());
-		funcInfo.embeddedSamplers.insert(funcInfo.embeddedSamplers.end(), info.embeddedSamplers.begin(), info.embeddedSamplers.end());
-		for (const auto& argument: info.arguments) {
-			funcInfo.arguments.push_back(argumentInfoFromIridium(argument));
+		// The stage decides the descriptor set layout, the shader stage flags
+		// and whether a compute pipeline can be made at all, and a kernel
+		// described as a vertex function dispatches against a layout that does
+		// not exist. FunctionType::Invalid is what a producer that left the
+		// field alone gets, so it is the one to catch.
+		if (functionReflection.functionType != FunctionType::Vertex &&
+			functionReflection.functionType != FunctionType::Fragment &&
+			functionReflection.functionType != FunctionType::Kernel) {
+			return fail("function '" + name + "' has a stage indium cannot bind resources for");
+		}
+
+		// A name that is not in the module cannot be a pipeline's pName, and
+		// pipeline creation abort()s when Vulkan refuses it. A name in a
+		// well-formed module is a NUL-terminated literal, so looking for the
+		// bytes cannot miss one; it does not prove the name is an entry point,
+		// which is why the header still calls that the producer's job.
+		std::string nameWithTerminator = name;
+		nameWithTerminator += '\0';
+
+		auto moduleBegin = static_cast<const char*>(spirv);
+		auto moduleEnd = moduleBegin + length;
+
+		if (std::search(moduleBegin, moduleEnd, nameWithTerminator.begin(), nameWithTerminator.end()) == moduleEnd) {
+			return fail("function '" + name + "' does not occur in the module");
+		}
+
+		auto& functionInfo = functionInfos[name];
+		functionInfo.functionType = functionReflection.functionType;
+
+		// One descriptor binding number per resource in the set, so a producer
+		// that numbers two of them the same gets a set layout Vulkan rejects.
+		std::unordered_set<size_t> usedInternalIndices;
+
+		for (const auto& binding: functionReflection.bindings) {
+			if (static_cast<size_t>(binding.type) > static_cast<size_t>(BindingType::VertexInput)) {
+				return fail("function '" + name + "' has a binding of an unknown type");
+			}
+
+			if (static_cast<size_t>(binding.textureAccessType) > static_cast<size_t>(TextureAccessType::ReadWrite)) {
+				return fail("function '" + name + "' has a binding with an unknown texture access type");
+			}
+
+			if (binding.type == BindingType::Sampler && binding.index == std::numeric_limits<size_t>::max()) {
+				// The address-buffer walk indexes embeddedSamplerStates with this
+				// and nothing checks it, so an out-of-range value is a read past
+				// the end of the vector.
+				if (binding.embeddedSamplerIndex >= functionReflection.embeddedSamplers.size()) {
+					return fail("function '" + name + "' has a binding using embedded sampler " + std::to_string(binding.embeddedSamplerIndex) + ", of " + std::to_string(functionReflection.embeddedSamplers.size()));
+				}
+			}
+
+			if (binding.type == BindingType::Texture || binding.type == BindingType::Sampler) {
+				auto inserted = usedInternalIndices.insert(binding.internalIndex);
+
+				if (!inserted.second) {
+					return fail("function '" + name + "' has two bindings at descriptor binding " + std::to_string(binding.internalIndex));
+				}
+			}
+
+			functionInfo.bindings.push_back(binding);
+		}
+
+		functionInfo.embeddedSamplers = functionReflection.embeddedSamplers;
+
+		// The translation in library.cpp turns an unrecognised enum value into a
+		// sampler state that works but is not the one that was asked for, so
+		// catch out-of-range values while the entry they came from is known.
+		for (size_t i = 0; i < functionReflection.embeddedSamplers.size(); ++i) {
+			const auto& sampler = functionReflection.embeddedSamplers[i];
+
+			const SamplerEnum enums[] = {
+				{ "widthAddressMode", static_cast<size_t>(sampler.widthAddressMode), static_cast<size_t>(EmbeddedSamplerDescriptor::AddressMode::ClampToBorderColor) },
+				{ "heightAddressMode", static_cast<size_t>(sampler.heightAddressMode), static_cast<size_t>(EmbeddedSamplerDescriptor::AddressMode::ClampToBorderColor) },
+				{ "depthAddressMode", static_cast<size_t>(sampler.depthAddressMode), static_cast<size_t>(EmbeddedSamplerDescriptor::AddressMode::ClampToBorderColor) },
+				{ "magnificationFilter", static_cast<size_t>(sampler.magnificationFilter), static_cast<size_t>(EmbeddedSamplerDescriptor::Filter::Linear) },
+				{ "minificationFilter", static_cast<size_t>(sampler.minificationFilter), static_cast<size_t>(EmbeddedSamplerDescriptor::Filter::Linear) },
+				{ "mipmapFilter", static_cast<size_t>(sampler.mipmapFilter), static_cast<size_t>(EmbeddedSamplerDescriptor::MipFilter::Linear) },
+				{ "compareFunction", static_cast<size_t>(sampler.compareFunction), static_cast<size_t>(EmbeddedSamplerDescriptor::CompareFunction::Never) },
+				{ "borderColor", static_cast<size_t>(sampler.borderColor), static_cast<size_t>(EmbeddedSamplerDescriptor::BorderColor::OpaqueWhite) },
+			};
+
+			for (const auto& samplerEnum: enums) {
+				if (samplerEnum.value > samplerEnum.maximum) {
+					return fail("function '" + name + "' embedded sampler " + std::to_string(i) + " has an out-of-range " + samplerEnum.field);
+				}
+			}
 		}
 	}
 
-	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, funcInfoMap);
-	free(translatedData);
-	return lib;
+	*errorMessage = "";
+
+	// The module bytes are only needed for the vkCreateShaderModule inside
+	// this constructor, which copies them, so the caller's buffer is not ours
+	// to free and does not have to outlive the call.
+	return std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(spirv), length, functionInfos);
 };
 
 std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const TextureDescriptor& descriptor) {

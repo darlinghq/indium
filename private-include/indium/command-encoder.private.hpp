@@ -15,8 +15,6 @@
 #include <indium/library.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
-#include <iridium/iridium.hpp>
-
 namespace Indium {
 	struct FunctionResources {
 		std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
@@ -98,7 +96,7 @@ namespace Indium {
 				for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
 					auto& bindingInfo = funcInfo.bindings[j];
 
-					if (bindingInfo.type != Iridium::BindingType::Buffer) {
+					if (bindingInfo.type != BindingType::Buffer) {
 						continue;
 					}
 
@@ -135,7 +133,7 @@ namespace Indium {
 			for (size_t j = 0; j < funcInfo.bindings.size(); ++j) {
 				auto& bindingInfo = funcInfo.bindings[j];
 
-				if (bindingInfo.type == Iridium::BindingType::Texture) {
+				if (bindingInfo.type == BindingType::Texture) {
 					if (bindingInfo.index >= functionResources.textures.size()) {
 						continue;
 					}
@@ -152,10 +150,10 @@ namespace Indium {
 					descSet.dstSet = descriptorSets[i];
 					descSet.dstBinding = bindingInfo.internalIndex;
 					descSet.dstArrayElement = 0;
-					descSet.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+					descSet.descriptorType = (bindingInfo.textureAccessType == TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 					descSet.descriptorCount = 1;
 					descSet.pImageInfo = &info;
-				} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
+				} else if (bindingInfo.type == BindingType::Sampler) {
 					bool embeddedSampler = false;
 
 					if (bindingInfo.index == SIZE_MAX) {

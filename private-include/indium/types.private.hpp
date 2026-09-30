@@ -748,6 +748,8 @@ namespace Indium {
 
 	static constexpr VkShaderStageFlags functionTypeToVkShaderStageFlags(FunctionType functionType) {
 		switch (functionType) {
+			case FunctionType::Invalid:      throw BadEnumValue();
+
 			case FunctionType::Vertex:       return VK_SHADER_STAGE_VERTEX_BIT;
 			case FunctionType::Fragment:     return VK_SHADER_STAGE_FRAGMENT_BIT;
 			case FunctionType::Kernel:       return VK_SHADER_STAGE_COMPUTE_BIT;
