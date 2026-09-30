@@ -43,25 +43,25 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 		VK_KHR_SURFACE_EXTENSION_NAME,
 	};
 
-	uint32_t count;
+	if (enableValidation) {
+		uint32_t count;
+		std::vector<VkLayerProperties> layerProps;
+		DynamicVK::vkEnumerateInstanceLayerProperties(&count, nullptr);
+		layerProps.resize(count);
+		DynamicVK::vkEnumerateInstanceLayerProperties(&count, layerProps.data());
 
-	std::vector<VkLayerProperties> layerProps;
-	DynamicVK::vkEnumerateInstanceLayerProperties(&count, nullptr);
-	layerProps.resize(count);
-	DynamicVK::vkEnumerateInstanceLayerProperties(&count, layerProps.data());
-
-	bool foundValidationLayer = false;
-
-	for (const auto& prop: layerProps) {
-		if (strcmp(prop.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
-			foundValidationLayer = true;
-			break;
+		bool foundValidationLayer = false;
+		for (const auto& prop: layerProps) {
+			if (strcmp(prop.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+				foundValidationLayer = true;
+				break;
+			}
 		}
-	}
 
-	if (!foundValidationLayer) {
-		std::cerr << "Validation layer requested but not available. Ignoring..." << std::endl;
-		enableValidation = false;
+		if (!foundValidationLayer) {
+			std::cerr << "Validation layer requested but not available. Ignoring..." << std::endl;
+			enableValidation = false;
+		}
 	}
 
 	if (enableValidation) {
