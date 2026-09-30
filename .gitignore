@@ -8,5 +8,6 @@ compile_commands.*.json
 .vscode
 .gdb_history
 *.spv
+!test/basic-compute-mslc/add-mslc.spv
 *.air
 *.bak
