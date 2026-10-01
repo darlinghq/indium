@@ -928,19 +928,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 
 			// TODO: same here (find a better way...)
+			bool isArrayed = false;
 			if (textureClassName == "texture2d") {
 				dimensionality = SPIRV::Dim::e2D;
+			} else if (textureClassName == "texture2d_array") {
+				dimensionality = SPIRV::Dim::e2D;
+				isArrayed = true;
 			} else if (textureClassName == "texturecube") {
 				dimensionality = SPIRV::Dim::eCube;
+			} else if (textureClassName == "texturecube_array") {
+				dimensionality = SPIRV::Dim::eCube;
+				isArrayed = true;
+			} else if (textureClassName == "texture1d") {
+				dimensionality = SPIRV::Dim::e1D;
+			} else if (textureClassName == "texture1d_array") {
+				dimensionality = SPIRV::Dim::e1D;
+				isArrayed = true;
+			} else if (textureClassName == "texture3d") {
+				dimensionality = SPIRV::Dim::e3D;
 			} else {
-				// Any other texture class (texture3d, texture1d, the array and
-				// buffer variants) used to leave `dimensionality` uninitialised, so
-				// the emitted image type carried an arbitrary Dim.
+				// Any other texture class (the buffer variants, etc.)
 				throw std::runtime_error(std::string("TODO: support the texture class ") +
 					std::string(textureClassName));
 			}
 
-			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, false, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
+			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, isArrayed, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
 			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
 			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
@@ -1812,6 +1824,7 @@ Iridium::AIR::Library::Library(const void* data, size_t size) {
 		std::string funcName;
 		const void* bitcode = nullptr;
 		size_t bitcodeSize = 0;
+		uint64_t funcBCOffset = 0;
 
 		while (true) {
 			auto tagName = subreader.readString(4);
@@ -1831,11 +1844,25 @@ Iridium::AIR::Library::Library(const void* data, size_t size) {
 			} else if (tagName == "OFFT") {
 				auto funcPubMetaOffset = subreader.readIntegerLE<uint64_t>();
 				auto funcPrivMetaOffset = subreader.readIntegerLE<uint64_t>();
-				auto funcBCOffset = subreader.readIntegerLE<uint64_t>();
+				funcBCOffset = subreader.readIntegerLE<uint64_t>();
 
 				bitcode = static_cast<const char*>(data) + bcOffset + funcBCOffset;
 			} else {
 				subreader.skip(tagSize);
+			}
+		}
+
+		if (bitcodeSize == 0 && bitcode != nullptr) {
+			const uint8_t* bc = reinterpret_cast<const uint8_t*>(bitcode);
+			if (funcBCOffset < bcSize && (bcSize - funcBCOffset) >= 20) {
+				if (bc[0] == 0xde && bc[1] == 0xc0 && bc[2] == 0x17 && bc[3] == 0x0b) {
+					uint32_t wrappedOffset = *reinterpret_cast<const uint32_t*>(bc + 8);
+					uint32_t wrappedSize = *reinterpret_cast<const uint32_t*>(bc + 12);
+					bitcodeSize = static_cast<size_t>(wrappedOffset) + static_cast<size_t>(wrappedSize);
+				}
+			}
+			if (bitcodeSize == 0 && funcBCOffset < bcSize) {
+				bitcodeSize = bcSize - funcBCOffset;
 			}
 		}
 

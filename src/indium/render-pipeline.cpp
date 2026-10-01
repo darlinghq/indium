@@ -23,6 +23,10 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	_vertexFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.vertexFunction);
 	_fragmentFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.fragmentFunction);
 
+	if (!_vertexFunction) {
+		throw std::runtime_error("Vertex function cannot be null in render pipeline");
+	}
+
 	_descriptorSetLayouts.processFunction(_vertexFunction, 0);
 	_descriptorSetLayouts.processFunction(_fragmentFunction, 1);
 };

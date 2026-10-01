@@ -199,7 +199,9 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(std::shared_ptr<RenderPipelineState> renderPipelineState) {
 	auto buf = _privateCommandBuffer.lock();
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
-	_privatePSO->recreatePipeline(_renderPass, false);
+	if (_privatePSO) {
+		_privatePSO->recreatePipeline(_renderPass, false);
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::setFrontFacingWinding(Winding frontFaceWinding) {
@@ -324,6 +326,9 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 };
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
+	if (!_privatePSO) {
+		return;
+	}
 	auto buf = _privateCommandBuffer.lock();
 
 	// bind the pipeline with the right topology class for this primitive
@@ -471,6 +476,9 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTextures(std::vector<std::s
 };
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
+	if (!_privatePSO) {
+		return;
+	}
 	auto buf = _privateCommandBuffer.lock();
 
 	// bind the pipeline with the right topology class for this primitive
