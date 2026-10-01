@@ -319,6 +319,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		{ VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, Feature::ExternalMemoryFD },
 		{ VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, Feature::ExternalSemaphoreFD },
 		{ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, Feature::NonSemanticInfo },
+		{ VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, Feature::MemoryBudget },
 	};
 
 	for (const auto& prop: extProps) {
@@ -404,6 +405,86 @@ Indium::PrivateDevice::~PrivateDevice() {
 std::string Indium::PrivateDevice::name() const {
 	return _properties.deviceName;
 };
+
+/*
+	Metal's `recommendedMaxWorkingSetSize` is "an approximation of how much memory
+	this device can use with good performance", beyond which "the device is likely
+	to be overcommitted and incur a performance penalty". It is a soft byte
+	budget on the total of all resources, so the honest Vulkan analogue is a memory
+	budget, not a limit: `heapBudget` is defined as how much the process can
+	allocate from a heap before allocations fail or degrade, which is the same
+	quantity.
+
+	`maxMemoryAllocationCount` is deliberately not used. It counts VkDeviceMemory
+	objects, not bytes, so it cannot bound a working set: an app holding one 8 GB
+	buffer is one allocation and a single 1 MB buffer is also one, and the two
+	differ by three orders of magnitude in the only unit Metal's property is
+	measured in.
+
+	A heap budget is only reported for heaps the device actually lets the app use,
+	and it excludes what other processes already hold, which is precisely the
+	overcommitment Metal warns about. Without the extension there is no budget, so
+	the heap size is reported instead: the physical capacity of the device's own
+	memory, which is an upper bound on what can be used and the only figure the
+	device states about itself. It overstates availability where another process
+	is already resident, which is why a driver that can do better should say so.
+
+	Device-local heaps are the ones Metal resources are backed by; a non-local heap
+	is host RAM reachable over a slower path, and counting it would report a
+	working set the device cannot actually sustain at that speed. A device with no
+	device-local heap at all still has memory, so every heap counts in that case.
+*/
+uint64_t Indium::PrivateDevice::recommendedMaxWorkingSetSize() const {
+	uint64_t deviceLocal = 0;
+	uint64_t all = 0;
+	bool hasDeviceLocal = false;
+
+	for (uint32_t i = 0; i < _memoryProperties.memoryHeapCount; ++i) {
+		const auto& heap = _memoryProperties.memoryHeaps[i];
+
+		all += heap.size;
+
+		if ((heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+			hasDeviceLocal = true;
+			deviceLocal += heap.size;
+		}
+	}
+
+	if (!(_features & Feature::MemoryBudget)) {
+		return hasDeviceLocal ? deviceLocal : all;
+	}
+
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProperties {};
+	budgetProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+
+	VkPhysicalDeviceMemoryProperties2 properties2 {};
+	properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+	properties2.pNext = &budgetProperties;
+
+	DynamicVK::vkGetPhysicalDeviceMemoryProperties2(_physicalDevice, &properties2);
+
+	uint64_t budget = 0;
+
+	for (uint32_t i = 0; i < _memoryProperties.memoryHeapCount; ++i) {
+		// A budget is required to be non-zero for every heap the device reports,
+		// but a driver that leaves one at zero must not be allowed to shrink the
+		// answer, so only non-zero budgets contribute.
+		if (budgetProperties.heapBudget[i] == 0) {
+			continue;
+		}
+
+		if (hasDeviceLocal && (_memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) {
+			continue;
+		}
+
+		budget += budgetProperties.heapBudget[i];
+	}
+
+	// A driver that advertised the extension but reported no budget at all must
+	// not make the answer zero, which an application would read as "allocate
+	// nothing".
+	return (budget != 0) ? budget : (hasDeviceLocal ? deviceLocal : all);
+}
 
 std::shared_ptr<Indium::CommandQueue> Indium::PrivateDevice::newCommandQueue() {
 	return std::make_shared<PrivateCommandQueue>(shared_from_this());

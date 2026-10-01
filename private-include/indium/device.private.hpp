@@ -44,6 +44,7 @@ namespace Indium {
 			ExternalMemoryFD    = 1 << 1,
 			ExternalSemaphoreFD = 1 << 2,
 			NonSemanticInfo     = 1 << 3,
+			MemoryBudget        = 1 << 4,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -59,6 +60,7 @@ namespace Indium {
 		}
 
 		virtual std::string name() const override;
+		virtual uint64_t recommendedMaxWorkingSetSize() const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) override;

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <memory>
+#include <cstdint>
 
 #include <indium/init.hpp>
 #include <indium/base.hpp>
@@ -30,6 +31,19 @@ namespace Indium {
 		virtual ~Device() = 0;
 
 		virtual std::string name() const = 0;
+
+		/**
+		 * An approximation of how much memory this device can use with good
+		 * performance, in bytes. Keeping the total size of all resources and
+		 * heaps below this threshold avoids overcommitting the device and the
+		 * performance penalty that comes with it.
+		 *
+		 * This is a soft limit, not a hard one: exceeding it is allowed and
+		 * merely costs performance. It is also a point-in-time figure. A driver
+		 * that reports a memory budget will see it move as the rest of the
+		 * system allocates, so two calls need not agree.
+		 */
+		virtual uint64_t recommendedMaxWorkingSetSize() const = 0;
 
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
