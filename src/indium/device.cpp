@@ -1,4 +1,6 @@
 #include <indium/device.private.hpp>
+
+#include <iostream>
 #include <indium/instance.private.hpp>
 #include <indium/command-queue.private.hpp>
 #include <indium/render-pipeline.private.hpp>
@@ -123,25 +125,35 @@ void Indium::initGlobalDeviceList() {
 	std::vector<VkPhysicalDevice> physicalDevices;
 	uint32_t count = 0;
 
-	auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
-	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-		// TODO: maybe warn?
-		return;
-	}
+auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
+		if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+			std::cerr << "vkEnumeratePhysicalDevices failed with VkResult " << result << std::endl;
+			return;
+		}
 
-	physicalDevices.resize(count);
-	result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, physicalDevices.data());
-	if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
-		// TODO: maybe warn?
-		return;
-	}
+		physicalDevices.resize(count);
+		result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, physicalDevices.data());
+		if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
+			std::cerr << "vkEnumeratePhysicalDevices failed with VkResult " << result << std::endl;
+			return;
+		}
+
+		if (count == 0) {
+			std::cerr << "vkEnumeratePhysicalDevices reported no physical devices" << std::endl;
+			return;
+		}
 
 	for (auto&& device: physicalDevices) {
 		VkPhysicalDeviceProperties props;
 		DynamicVK::vkGetPhysicalDeviceProperties(device, &props);
 
 		if (VK_API_VERSION_VARIANT(props.apiVersion) != 0 || props.apiVersion < VK_API_VERSION_1_3) {
-			// unsupported device
+			std::cerr << "Skipping physical device " << props.deviceName
+			          << ": reports Vulkan "
+			          << VK_API_VERSION_VARIANT(props.apiVersion) << '.'
+			          << VK_API_VERSION_MAJOR(props.apiVersion) << '.'
+			          << VK_API_VERSION_MINOR(props.apiVersion)
+			          << ", and 1.3 is required" << std::endl;
 			continue;
 		}
 
@@ -164,7 +176,8 @@ void Indium::initGlobalDeviceList() {
 		DynamicVK::vkGetPhysicalDeviceFeatures2(device, &features);
 
 		if (!features12.timelineSemaphore) {
-			// unsupported device
+			std::cerr << "Skipping physical device " << props.deviceName
+			          << ": no timelineSemaphore" << std::endl;
 			continue;
 		}
 
