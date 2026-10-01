@@ -16,17 +16,25 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	_name(name),
 	_type(type)
 {
+	if (bitcode == nullptr || bitcodeSize < 16) {
+		throw std::runtime_error("Bitcode buffer too small");
+	}
+	const uint8_t* bc = reinterpret_cast<const uint8_t*>(bitcode);
+	bool has_bc_magic = (bc[0] == 'B' && bc[1] == 'C' && bc[2] == 0xc0 && bc[3] == 0xde);
+	bool has_wrapper_magic = (bc[0] == 0xde && bc[1] == 0xc0 && bc[2] == 0x17 && bc[3] == 0x0b);
+	if (!has_bc_magic && !has_wrapper_magic) {
+		throw std::runtime_error("Invalid bitcode magic header");
+	}
+
 	LLVMModuleRef moduleRef;
 	_bitcodeBuffer = LLVMSupport::MemoryBuffer(DynamicLLVM::LLVMCreateMemoryBufferWithMemoryRange(reinterpret_cast<const char*>(bitcode), bitcodeSize, "", false), DynamicLLVM::LLVMDisposeMemoryBuffer);
 
 	if (!_bitcodeBuffer) {
-		// TODO
-		abort();
+		throw std::runtime_error("Failed to create LLVM memory buffer");
 	}
 
 	if (DynamicLLVM::LLVMParseBitcode2(_bitcodeBuffer.get(), &moduleRef)) {
-		// TODO
-		abort();
+		throw std::runtime_error("Failed to parse LLVM bitcode");
 	}
 
 	_module = LLVMSupport::Module(moduleRef, DynamicLLVM::LLVMDisposeModule);
@@ -34,8 +42,7 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	_function = DynamicLLVM::LLVMGetNamedFunction(_module.get(), _name.c_str());
 
 	if (!_function) {
-		// TODO
-		abort();
+		throw std::runtime_error("Function not found in LLVM module: " + _name);
 	}
 };
 
@@ -1766,15 +1773,11 @@ Iridium::AIR::Library::Library(const void* data, size_t size) {
 
 	// the header has a minimum length of 88 bytes
 	if (size < 88) {
-		// TODO
-		abort();
+		throw std::runtime_error("Metal library size too small");
 	}
 
 	if (reader.readString(4) != "MTLB") {
-		// invalid file ID
-
-		// TODO
-		abort();
+		throw std::runtime_error("Invalid Metal library magic");
 	}
 
 	reader.seek(4);
