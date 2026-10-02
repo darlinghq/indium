@@ -140,8 +140,16 @@ void Indium::finit() {
 		DynamicVK::vkDestroyDebugUtilsMessengerEXT(globalInstance, debugMessenger, nullptr);
 	}
 
-	DynamicVK::vkDestroyInstance(globalInstance, nullptr);
-	globalInstance = VK_NULL_HANDLE;
+	// finit() is reached from a destructor at process exit whether or not init()
+	// ever ran, so globalInstance is still VK_NULL_HANDLE when init() bailed.
+	// Calling vkDestroyInstance on it is an invalid Vulkan call, and now that
+	// resolve() reports "not available" instead of dereferencing null, it would
+	// throw a std::runtime_error from a destructor and take the process down with
+	// std::terminate. There is nothing to destroy in that case, so say so.
+	if (globalInstance != VK_NULL_HANDLE) {
+		DynamicVK::vkDestroyInstance(globalInstance, nullptr);
+		globalInstance = VK_NULL_HANDLE;
+	}
 
 	DynamicVK::finit();
 
