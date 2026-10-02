@@ -36,7 +36,18 @@ namespace Indium {
 
 			bool resolve() {
 				std::call_once(_resolveFlag, [&]() {
-					pointer = reinterpret_cast<void*>(vkGetInstanceProcAddr(globalInstance, name));
+					// Both halves of this guard are load-bearing. `vkGetInstanceProcAddr` is NULL
+					// before `init()` runs and again after `finit()`, and `finit()` is reached from
+					// a destructor at process exit whether or not `init()` ever ran, so a function
+					// first resolved at that point called through a null pointer. `globalInstance` is
+					// the same story one step earlier: it is VK_NULL_HANDLE until vkCreateInstance
+					// succeeds, and every entry point here is instance- or device-level, for which
+					// vkGetInstanceProcAddr is only defined with a real instance (Vulkan spec,
+					// "vkGetInstanceProcAddr"). Either way the answer is "not available", which is
+					// what every caller of resolve() already handles for a missing entry point.
+					pointer = (vkGetInstanceProcAddr && globalInstance != VK_NULL_HANDLE)
+						? reinterpret_cast<void*>(vkGetInstanceProcAddr(globalInstance, name))
+						: nullptr;
 				});
 				return !!pointer;
 			};
