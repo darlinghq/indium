@@ -3,6 +3,7 @@
 #include <indium/texture.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <algorithm>
 
 Indium::BlitCommandEncoder::~BlitCommandEncoder() {};
 
@@ -41,6 +42,10 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Buffer> source, siz
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateSource = std::dynamic_pointer_cast<PrivateBuffer>(source);
 	auto privateDest = std::dynamic_pointer_cast<PrivateTexture>(destination);
+
+	if (std::find(_readWriteTextures.begin(), _readWriteTextures.end(), destination) == _readWriteTextures.end()) {
+		_readWriteTextures.push_back(destination);
+	}
 
 	if (options != BlitOption::None) {
 		throw std::runtime_error("TODO: support blit options");
@@ -100,6 +105,10 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, si
 	auto privateSource = std::dynamic_pointer_cast<PrivateTexture>(source);
 	auto privateDest = std::dynamic_pointer_cast<PrivateBuffer>(destination);
 
+	if (std::find(_readOnlyTextures.begin(), _readOnlyTextures.end(), source) == _readOnlyTextures.end()) {
+		_readOnlyTextures.push_back(source);
+	}
+
 	if (options != BlitOption::None) {
 		throw std::runtime_error("TODO: support blit options");
 	}
@@ -157,6 +166,13 @@ void Indium::PrivateBlitCommandEncoder::copy(std::shared_ptr<Texture> source, si
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateSource = std::dynamic_pointer_cast<PrivateTexture>(source);
 	auto privateDest = std::dynamic_pointer_cast<PrivateTexture>(destination);
+
+	if (std::find(_readOnlyTextures.begin(), _readOnlyTextures.end(), source) == _readOnlyTextures.end()) {
+		_readOnlyTextures.push_back(source);
+	}
+	if (std::find(_readWriteTextures.begin(), _readWriteTextures.end(), destination) == _readWriteTextures.end()) {
+		_readWriteTextures.push_back(destination);
+	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateSource->pixelFormat());
 
@@ -317,6 +333,10 @@ void Indium::PrivateBlitCommandEncoder::fillBuffer(std::shared_ptr<Buffer> buffe
 void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_ptr<Texture> texture) {
 	auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 	auto cmdbuf = _privateCommandBuffer.lock();
+
+	if (std::find(_readWriteTextures.begin(), _readWriteTextures.end(), texture) == _readWriteTextures.end()) {
+		_readWriteTextures.push_back(texture);
+	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateTexture->pixelFormat());
 

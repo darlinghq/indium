@@ -36,5 +36,8 @@ namespace Indium {
 		virtual void generateMipmapsForTexture(std::shared_ptr<Texture> texture) override;
 
 		virtual void endEncoding() override;
+
+		INDIUM_PROPERTY_OBJECT_VECTOR(Texture, r, R,eadOnlyTextures);
+		INDIUM_PROPERTY_OBJECT_VECTOR(Texture, r, R,eadWriteTextures);
 	};
 };

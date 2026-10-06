@@ -8,6 +8,7 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
 #include <condition_variable>
 
 Indium::CommandBuffer::~CommandBuffer() {};
@@ -108,6 +109,17 @@ void Indium::PrivateCommandBuffer::commit() {
 					privateTexture->precommit(shared_from_this());
 				}
 			}
+		} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
+			for (const auto& texture: blitEncoder->readOnlyTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
+			for (const auto& texture: blitEncoder->readWriteTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
 		}
 
 		// TODO: same for other encoders
@@ -132,10 +144,27 @@ void Indium::PrivateCommandBuffer::commit() {
 
 	for (const auto& encoder: _commandEncoders) {
 		if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
-			auto& readOnly = renderEncoder->readOnlyTextures();
-			auto& readWrite = renderEncoder->readWriteTextures();
-			readOnlyTextures.insert(readOnlyTextures.end(), readOnly.begin(), readOnly.end());
-			readWriteTextures.insert(readWriteTextures.end(), readWrite.begin(), readWrite.end());
+			for (const auto& tex : renderEncoder->readOnlyTextures()) {
+				if (std::find(readOnlyTextures.begin(), readOnlyTextures.end(), tex) == readOnlyTextures.end()) {
+					readOnlyTextures.push_back(tex);
+				}
+			}
+			for (const auto& tex : renderEncoder->readWriteTextures()) {
+				if (std::find(readWriteTextures.begin(), readWriteTextures.end(), tex) == readWriteTextures.end()) {
+					readWriteTextures.push_back(tex);
+				}
+			}
+		} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
+			for (const auto& tex : blitEncoder->readOnlyTextures()) {
+				if (std::find(readOnlyTextures.begin(), readOnlyTextures.end(), tex) == readOnlyTextures.end()) {
+					readOnlyTextures.push_back(tex);
+				}
+			}
+			for (const auto& tex : blitEncoder->readWriteTextures()) {
+				if (std::find(readWriteTextures.begin(), readWriteTextures.end(), tex) == readWriteTextures.end()) {
+					readWriteTextures.push_back(tex);
+				}
+			}
 		}
 
 		// TODO: implement this for other encoders (we need to synchronize those texture accesses as well)
