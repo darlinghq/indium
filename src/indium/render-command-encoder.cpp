@@ -26,6 +26,31 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	auto vkDevice = _privateDevice->device();
 	auto vkCmdBuf = buf->commandBuffer();
 
+	if (descriptor.colorAttachments.empty() || !descriptor.colorAttachments.front().texture) {
+		throw std::runtime_error("Render pass requires a color attachment");
+	}
+	auto firstTexture = descriptor.colorAttachments.front().texture;
+	auto resolvesColor = [](const auto& color) {
+		return color.storeAction == StoreAction::MultisampleResolve || color.storeAction == StoreAction::StoreAndMultisampleResolve;
+	};
+	for (const auto& color : descriptor.colorAttachments) {
+		if (!color.texture || color.texture->sampleCount() != firstTexture->sampleCount()) {
+			throw std::runtime_error("Render pass color sample counts must match");
+		}
+		if (resolvesColor(color)) {
+			if (!color.resolveTexture || color.texture->sampleCount() == 1 || color.resolveTexture->sampleCount() != 1 ||
+				color.resolveTexture->pixelFormat() != color.texture->pixelFormat() ||
+				color.resolveTexture->width() != color.texture->width() || color.resolveTexture->height() != color.texture->height()) {
+				throw std::runtime_error("Color resolve requires matching multisample source and single-sample destination");
+			}
+			if (color.level || color.slice || color.depthPlane || color.resolveLevel || color.resolveSlice || color.resolveDepthPlane) {
+				throw std::runtime_error("Color resolve subresources are not supported");
+			}
+		}
+	}
+	if (descriptor.depthAttachment && descriptor.depthAttachment->texture->sampleCount() != firstTexture->sampleCount()) {
+		throw std::runtime_error("Render pass depth and color sample counts must match");
+	}
 	VkDescriptorPoolCreateInfo poolCreateInfo {};
 	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolCreateInfo.poolSizeCount = poolSizes.size();
@@ -37,7 +62,6 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		abort();
 	}
 
-	auto firstTexture = descriptor.colorAttachments.front().texture;
 	std::vector<VkClearValue> clearValues;
 
 	for (const auto& color: descriptor.colorAttachments) {
@@ -51,6 +75,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 		// TODO: distinguish between read-only and read-write textures
 		_readWriteTextures.push_back(color.texture);
+		if (resolvesColor(color)) _readWriteTextures.push_back(color.resolveTexture);
 	}
 
 	if (descriptor.depthAttachment || descriptor.stencilAttachment) {
@@ -68,7 +93,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
-		desc.samples = VK_SAMPLE_COUNT_1_BIT; // TODO: support multisampling
+		desc.samples = sampleCountToVk(color.texture->sampleCount());
 		desc.loadOp = loadActionToVkAttachmentLoadOp(color.loadAction, true);
 		desc.storeOp = storeActionToVkAttachmentStoreOp(color.storeAction, true);
 		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -82,7 +107,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture);
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(privateTexture->pixelFormat());
-		desc.samples = VK_SAMPLE_COUNT_1_BIT;
+		desc.samples = sampleCountToVk(privateTexture->sampleCount());
 		desc.loadOp = loadActionToVkAttachmentLoadOp(descriptor.depthAttachment->loadAction, false);
 		desc.storeOp = storeActionToVkAttachmentStoreOp(descriptor.depthAttachment->storeAction, false);
 		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -114,10 +139,31 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		++index;
 	}
 
+	std::vector<VkAttachmentReference> resolveAttachments;
+	for (const auto& color : descriptor.colorAttachments) {
+		VkAttachmentReference ref { VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL };
+		if (resolvesColor(color)) {
+			auto texture = std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture);
+			ref.attachment = renderPassAttachments.size();
+			VkAttachmentDescription desc {};
+			desc.format = pixelFormatToVkFormat(texture->pixelFormat());
+			desc.samples = VK_SAMPLE_COUNT_1_BIT;
+			desc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			desc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			desc.finalLayout = texture->imageLayout();
+			renderPassAttachments.push_back(desc);
+		}
+		resolveAttachments.push_back(ref);
+	}
+
 	auto& subpassDesc = subpasses.emplace_back();
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
 	subpassDesc.pColorAttachments = colorAttachments.data();
+	subpassDesc.pResolveAttachments = resolveAttachments.data();
 	subpassDesc.pDepthStencilAttachment = (descriptor.depthAttachment || descriptor.stencilAttachment) ? &depthStencilAttachment : nullptr;
 
 	VkRenderPassCreateInfo renderPassInfo {};
@@ -142,6 +188,12 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 	if (descriptor.depthAttachment) {
 		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture)->imageView());
+	}
+
+	for (const auto& color : descriptor.colorAttachments) {
+		if (resolvesColor(color)) {
+			framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture)->imageView());
+		}
 	}
 
 	VkFramebufferCreateInfo framebufferInfo {};
