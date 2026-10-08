@@ -472,8 +472,30 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// operand 1 contains information about the function's return value,
 	// and operand 2 contains information about the function's parameters.
 	std::vector<LLVMValueRef> rootInfoOperands;
+	const char* stages[] = { "air.vertex", "air.fragment", "air.kernel" };
+	size_t selectedStage = SIZE_MAX;
+	for (size_t stage = 0; stage < 3; ++stage) {
+		auto count = DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), stages[stage]);
+		std::vector<LLVMValueRef> entries(count);
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), stages[stage], entries.data());
+		for (auto entry : entries) {
+			auto fields = DynamicLLVM::LLVMGetMDNodeNumOperands(entry);
+			if (!fields) continue;
+			std::vector<LLVMValueRef> info(fields);
+			DynamicLLVM::LLVMGetMDNodeOperands(entry, info.data());
+			if (info[0] != _function) continue;
+			if (fields < 3 || selectedStage != SIZE_MAX) {
+				throw ImpossibleResultID("entry function has malformed or duplicate stage metadata");
+			}
+			selectedStage = stage;
+			rootInfoOperands = std::move(info);
+		}
+	}
+	if (selectedStage == SIZE_MAX) {
+		throw ImpossibleResultID("entry function has no matching stage metadata");
+	}
 
-	if (auto vertexMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.vertex", sizeof("air.vertex") - 1)) {
+	if (selectedStage == 0) {
 		// this is a vertex shader
 
 		funcInfo.type = FunctionType::Vertex;
@@ -510,16 +532,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		builder.referenceGlobalVariable(vertexIndexVar);
 
-		// get the operands
-		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.vertex"));
-		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.vertex", operands.data());
-
-		// operand 0 contains the info for the vertex shader
-		auto rootInfoMD = operands[0];
-
-		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
-		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
-	} else if (auto fragmentMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.fragment", sizeof("air.fragment") - 1)) {
+	} else if (selectedStage == 1) {
 		// this is a fragment shader
 
 		funcInfo.type = FunctionType::Fragment;
@@ -539,16 +552,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		builder.referenceGlobalVariable(fragCoordVar);
 
-		// get the operands
-		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.fragment"));
-		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.fragment", operands.data());
-
-		// operand 0 contains the info for the fragment shader
-		auto rootInfoMD = operands[0];
-
-		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
-		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
-	} else if (auto kernelMD = DynamicLLVM::LLVMGetNamedMetadata(_module.get(), "air.kernel", sizeof("air.kernel") - 1)) {
+	} else if (selectedStage == 2) {
 		// this is a "kernel" (compute shader)
 
 		funcInfo.type = FunctionType::Kernel;
@@ -581,15 +585,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		builder.referenceGlobalVariable(globalInvocationIdVar);
 
-		// get the operands
-		std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.kernel"));
-		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.kernel", operands.data());
-
-		// operand 0 contains the info for the compute shader
-		auto rootInfoMD = operands[0];
-
-		rootInfoOperands = std::vector<LLVMValueRef>(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoMD));
-		DynamicLLVM::LLVMGetMDNodeOperands(rootInfoMD, rootInfoOperands.data());
 	}
 
 	// TODO: inspect the output of some more compiled shaders; the current code is only valid for
