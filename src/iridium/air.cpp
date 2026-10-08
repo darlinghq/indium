@@ -317,6 +317,8 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 	throw ImpossibleResultID("neither a Metal scalar nor a module type named \"" + std::string(name) + "\"");
 }
 
+static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef inst);
+
 static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef llvmValue) {
 	using namespace Iridium::SPIRV;
 
@@ -405,6 +407,17 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 
 		case LLVMConstantExprValueKind: {
 			switch (DynamicLLVM::LLVMGetConstOpcode(llvmValue)) {
+				case LLVMGetElementPtr: {
+					auto base = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(llvmValue, 0));
+					auto pointer = builder.reverseLookupType(builder.lookupResultType(base));
+					if (!pointer || pointer->backingType != Type::BackingType::Pointer ||
+						pointer->pointerStorageClass != StorageClass::PhysicalStorageBuffer)
+					{
+						throw ImpossibleResultID("constant getelementptr requires a known physical buffer pointer");
+					}
+					return llvmGEPToResultID(builder, llvmValue);
+				} break;
+
 				case LLVMBitCast: {
 					auto target = DynamicLLVM::LLVMGetOperand(llvmValue, 0);
 					auto targetID = llvmValueToResultID(builder, target);
@@ -436,6 +449,88 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			throw ImpossibleResultID("unsupported LLVM value kind " + std::to_string((int)kind));
 	}
 };
+
+static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef inst) {
+	using namespace Iridium;
+	auto base = DynamicLLVM::LLVMGetOperand(inst, 0);
+
+	// With opaque pointers LLVMTypeOf(inst) is just the
+	// pointer, so the result pointee is recovered from the
+	// instruction's source element type: the first index
+	// steps the pointer itself, and each later index
+	// descends one level into an aggregate.
+	auto currentType = DynamicLLVM::LLVMGetGEPSourceElementType(inst);
+	if (!currentType) {
+		throw ImpossibleResultID("getelementptr has no source element type");
+	}
+
+	std::vector<SPIRV::ResultID> indices;
+	auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
+
+	for (size_t i = 1; i < operandCount; ++i) {
+		auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
+		indices.push_back(llvmValueToResultID(builder, llindex));
+
+		if (i > 1) {
+			switch (DynamicLLVM::LLVMGetTypeKind(currentType)) {
+				case LLVMArrayTypeKind:
+				case LLVMVectorTypeKind:
+					currentType = DynamicLLVM::LLVMGetElementType(currentType);
+					break;
+
+				case LLVMStructTypeKind: {
+					auto indexValue = DynamicLLVM::LLVMIsAConstantInt(llindex)
+						? DynamicLLVM::LLVMConstIntGetZExtValue(llindex)
+						: 0;
+					auto fieldType = DynamicLLVM::LLVMStructGetTypeAtIndex(currentType, indexValue);
+					if (!fieldType) {
+						throw ImpossibleResultID("getelementptr into a struct with a non-constant index");
+					}
+					currentType = fieldType;
+				} break;
+
+				default:
+					throw ImpossibleResultID("getelementptr descends into a non-aggregate type");
+			}
+		}
+	}
+
+	auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
+	auto tmp = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, pointeeType, 8));
+	auto tmp2 = llvmValueToResultID(builder, base);
+
+	// ensure the resulting pointer storage class is the same as the input pointer storage class
+	auto type = *builder.reverseLookupType(tmp);
+	auto origTypeID = builder.lookupResultType(tmp2);
+	auto origType = *builder.reverseLookupType(origTypeID);
+	type.pointerStorageClass = origType.pointerStorageClass;
+	auto resultType = builder.declareType(type);
+	auto origTypeTarget = *builder.reverseLookupType(origType.targetType);
+
+	// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
+	// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
+	// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
+	// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
+	auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
+	auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
+	auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
+	auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
+	auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
+
+	indices.erase(indices.begin());
+
+	SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+
+	if (indices.size() > 0) {
+		resID = builder.encodeAccessChain(resultType, asPtr, indices);
+	} else {
+		resID = asPtr;
+	}
+
+	builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+	builder.setResultType(resID, resultType);
+	return resID;
+}
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
@@ -1264,101 +1359,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				//       (since i *think* that's the same addressing mode used by Metal code)
 
 				case LLVMGetElementPtr: {
-					auto base = DynamicLLVM::LLVMGetOperand(inst, 0);
-
-					// With opaque pointers LLVMTypeOf(inst) is just the
-					// pointer, so the result pointee is recovered from the
-					// instruction's source element type: the first index
-					// steps the pointer itself, and each later index
-					// descends one level into an aggregate.
-					auto currentType = DynamicLLVM::LLVMGetGEPSourceElementType(inst);
-					if (!currentType) {
-						throw ImpossibleResultID("getelementptr has no source element type");
-					}
-
-					std::vector<SPIRV::ResultID> indices;
-					auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
-
-					for (size_t i = 1; i < operandCount; ++i) {
-						auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
-						if (i == 1) {
-							auto indexType = DynamicLLVM::LLVMTypeOf(llindex);
-							if (DynamicLLVM::LLVMGetTypeKind(indexType) != LLVMIntegerTypeKind) {
-								throw ImpossibleResultID("getelementptr first index is not an integer");
-							}
-							auto width = DynamicLLVM::LLVMGetIntTypeWidth(indexType);
-							if (width != 8 && width != 16 && width != 32 && width != 64) {
-								throw ImpossibleResultID("unsupported getelementptr first index width");
-							}
-							auto index = llvmValueToResultID(builder, llindex);
-							if (width < 64) {
-								auto signed64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, true));
-								index = builder.encodeArithUnop(SPIRV::Opcode::SConvert, signed64Type, index);
-								builder.setResultType(index, signed64Type);
-							}
-							indices.push_back(index);
-						} else {
-							indices.push_back(llvmValueToResultID(builder, llindex));
-						}
-
-						if (i > 1) {
-							switch (DynamicLLVM::LLVMGetTypeKind(currentType)) {
-								case LLVMArrayTypeKind:
-								case LLVMVectorTypeKind:
-									currentType = DynamicLLVM::LLVMGetElementType(currentType);
-									break;
-
-								case LLVMStructTypeKind: {
-									auto indexValue = DynamicLLVM::LLVMIsAConstantInt(llindex)
-										? DynamicLLVM::LLVMConstIntGetZExtValue(llindex)
-										: 0;
-									auto fieldType = DynamicLLVM::LLVMStructGetTypeAtIndex(currentType, indexValue);
-									if (!fieldType) {
-										throw ImpossibleResultID("getelementptr into a struct with a non-constant index");
-									}
-									currentType = fieldType;
-								} break;
-
-								default:
-									throw ImpossibleResultID("getelementptr descends into a non-aggregate type");
-							}
-						}
-					}
-
-					auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
-					auto tmp = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, pointeeType, 8));
-					auto tmp2 = llvmValueToResultID(builder, base);
-
-					// ensure the resulting pointer storage class is the same as the input pointer storage class
-					auto type = *builder.reverseLookupType(tmp);
-					auto origTypeID = builder.lookupResultType(tmp2);
-					auto origType = *builder.reverseLookupType(origTypeID);
-					type.pointerStorageClass = origType.pointerStorageClass;
-					auto resultType = builder.declareType(type);
-					auto origTypeTarget = *builder.reverseLookupType(origType.targetType);
-
-					// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
-					// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
-					// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
-					// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
-					auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
-					auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
-					auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
-					auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
-					auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
-
-					indices.erase(indices.begin());
-
-					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
-
-					if (indices.size() > 0) {
-						resID = builder.encodeAccessChain(resultType, asPtr, indices);
-					} else {
-						resID = asPtr;
-					}
-
-					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
-					builder.setResultType(resID, resultType);
+					llvmGEPToResultID(builder, inst);
 				} break;
 
 				case LLVMLoad: {
