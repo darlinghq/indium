@@ -750,10 +750,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		if (kind == "air.vertex_id") {
 			_vertexIDInputIndex = i;
+			auto parameterType = DynamicLLVM::LLVMTypeOf(llparam);
+			if (DynamicLLVM::LLVMGetTypeKind(parameterType) != LLVMIntegerTypeKind ||
+				(DynamicLLVM::LLVMGetIntTypeWidth(parameterType) != 16 && DynamicLLVM::LLVMGetIntTypeWidth(parameterType) != 32)) {
+				throw ImpossibleResultID("vertex_id must be a 16-bit or 32-bit integer");
+			}
+			auto type = llvmTypeToSPIRVType(builder, parameterType);
 			auto load = builder.encodeLoad(intType, vertexIndexVar);
-			_parameterIDs.push_back(load);
-			builder.associateExistingResultID(load, llparamVal);
-			builder.setResultType(load, intType);
+			auto value = DynamicLLVM::LLVMGetIntTypeWidth(parameterType) == 16
+				? builder.encodeUConvert(type, load) : builder.encodeBitcast(type, load);
+			_parameterIDs.push_back(value);
+			builder.associateExistingResultID(value, llparamVal);
+			builder.setResultType(value, type);
 		} else if (kind == "air.buffer") {
 			// find the location index info
 			size_t infoIdx = 0;
