@@ -171,7 +171,8 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType));
 			auto typeInst = *builder.reverseLookupType(type);
 			auto elmCount = DynamicLLVM::LLVMGetArrayLength(llvmType);
-			return builder.declareType(Type(Type::ArrayTag {}, type, elmCount, typeInst.size * elmCount, typeInst.alignment));
+			size_t stride = (typeInst.size + typeInst.alignment - 1) & ~(typeInst.alignment - 1);
+			return builder.declareType(Type(Type::ArrayTag {}, type, elmCount, stride * elmCount, typeInst.alignment));
 		} break;
 
 		default:
