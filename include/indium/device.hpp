@@ -45,6 +45,13 @@ namespace Indium {
 		 */
 		virtual uint64_t recommendedMaxWorkingSetSize() const = 0;
 
+		/**
+		 * The largest number of bytes a single buffer can be created with.
+		 *
+		 * Unlike recommendedMaxWorkingSetSize() this is a hard limit.
+		 */
+		virtual uint64_t maxBufferLength() const = 0;
+
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) = 0;

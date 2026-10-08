@@ -61,6 +61,7 @@ namespace Indium {
 
 		virtual std::string name() const override;
 		virtual uint64_t recommendedMaxWorkingSetSize() const override;
+		virtual uint64_t maxBufferLength() const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) override;

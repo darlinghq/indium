@@ -447,6 +447,44 @@ std::string Indium::PrivateDevice::name() const {
 	working set the device cannot actually sustain at that speed. A device with no
 	device-local heap at all still has memory, so every heap counts in that case.
 */
+/*
+	A buffer is one VkBuffer backed by one VkDeviceMemory, so a request can only
+	succeed if it passes all three limits: the largest VkBuffer
+	(`maxBufferSize`, Vulkan 1.3), the largest single allocation
+	(`maxMemoryAllocationSize`, Vulkan 1.1), and the physical size of the heap the
+	allocation would come from. Drivers may advertise the first two far above what
+	the device holds (an 8 GB heap behind a 128 GB limit), so the largest
+	device-local heap bounds the result too. Without a device-local heap, every
+	heap counts, as in recommendedMaxWorkingSetSize().
+*/
+uint64_t Indium::PrivateDevice::maxBufferLength() const {
+	VkPhysicalDeviceVulkan11Properties vk11Props {};
+	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+	VkPhysicalDeviceVulkan13Properties vk13Props {};
+	vk13Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+	vk11Props.pNext = &vk13Props;
+	VkPhysicalDeviceProperties2 props {};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	props.pNext = &vk11Props;
+	DynamicVK::vkGetPhysicalDeviceProperties2(_physicalDevice, &props);
+
+	uint64_t deviceLocalHeap = 0;
+	uint64_t anyHeap = 0;
+	for (uint32_t i = 0; i < _memoryProperties.memoryHeapCount; ++i) {
+		const auto& heap = _memoryProperties.memoryHeaps[i];
+		anyHeap = std::max<uint64_t>(anyHeap, heap.size);
+		if ((heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+			deviceLocalHeap = std::max<uint64_t>(deviceLocalHeap, heap.size);
+		}
+	}
+
+	return std::min({
+		static_cast<uint64_t>(vk13Props.maxBufferSize),
+		static_cast<uint64_t>(vk11Props.maxMemoryAllocationSize),
+		deviceLocalHeap != 0 ? deviceLocalHeap : anyHeap,
+	});
+};
+
 uint64_t Indium::PrivateDevice::recommendedMaxWorkingSetSize() const {
 	uint64_t deviceLocal = 0;
 	uint64_t all = 0;
