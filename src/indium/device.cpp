@@ -128,6 +128,9 @@ void Indium::initGlobalDeviceList() {
 	std::vector<VkPhysicalDevice> physicalDevices;
 	uint32_t count = 0;
 
+	// The default device must not depend on CPU rasterizers enumerating first.
+	std::vector<std::pair<int, std::shared_ptr<PrivateDevice>>> accepted;
+
 auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, nullptr);
 		if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
 			std::cerr << "vkEnumeratePhysicalDevices failed with VkResult " << result << std::endl;
@@ -184,7 +187,23 @@ auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, null
 			continue;
 		}
 
-		globalDeviceList.push_back(std::make_shared<PrivateDevice>(std::move(device)));
+		int rank;
+		switch (props.deviceType) {
+			case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: rank = 3; break;
+			case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: rank = 2; break;
+			case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: rank = 1; break;
+			default: rank = 0; break; // CPU, or a device type we do not recognise
+		}
+
+		accepted.push_back({ rank, std::make_shared<PrivateDevice>(std::move(device)) });
+	}
+
+	// Stable, so devices of equal rank keep the loader's enumeration order.
+	std::stable_sort(accepted.begin(), accepted.end(),
+		[](const auto& a, const auto& b) { return a.first > b.first; });
+
+	for (auto&& entry: accepted) {
+		globalDeviceList.push_back(entry.second);
 	}
 };
 
