@@ -5,6 +5,7 @@
 
 #include <llvm-c/BitReader.h>
 #include <llvm/Config/llvm-config.h>
+#include <algorithm>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -620,27 +621,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	std::vector<LLVMValueRef> returnValueOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[1]));
 	DynamicLLVM::LLVMGetMDNodeOperands(rootInfoOperands[1], returnValueOperands.data());
 
+	auto isPositionOutput = [](LLVMValueRef descriptor) {
+		std::vector<LLVMValueRef> info(DynamicLLVM::LLVMGetMDNodeNumOperands(descriptor));
+		DynamicLLVM::LLVMGetMDNodeOperands(descriptor, info.data());
+		return std::any_of(info.begin(), info.end(), [](LLVMValueRef value) {
+			return DynamicLLVM::LLVMIsAMDString(value) && llvmMDStringToStringView(value) == "air.position";
+		});
+	};
+
 	if (DynamicLLVM::LLVMGetTypeKind(funcRetType) == LLVMStructTypeKind) {
 		// analyze return value and mark special values (like the position)
 		uint32_t location = 0;
 		for (size_t i = 0; i < returnValueOperands.size(); ++i) {
 			auto& returnValueOperand = returnValueOperands[i];
 
-			std::vector<LLVMValueRef> returnValueMemberInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(returnValueOperand));
-			DynamicLLVM::LLVMGetMDNodeOperands(returnValueOperand, returnValueMemberInfo.data());
-
-			bool isSpecial = false;
-
-			for (auto& memberInfo: returnValueMemberInfo) {
-				auto str = llvmMDStringToStringView(memberInfo);
-
-				if (str == "air.position") {
-					// this is the special position return value
-					_positionOutputIndex = i;
-					isSpecial = true;
-					_outputValueIDs.push_back(SPIRV::ResultIDInvalid);
-					break;
-				}
+			bool isSpecial = isPositionOutput(returnValueOperand);
+			if (isSpecial) {
+				_positionOutputIndex = i;
+				_outputValueIDs.push_back(SPIRV::ResultIDInvalid);
 			}
 
 			if (!isSpecial) {
@@ -654,14 +652,20 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 		}
 	} else if (DynamicLLVM::LLVMGetTypeKind(funcRetType) != LLVMVoidTypeKind) {
-		// TODO: handle case of returning a special variable (like air.position) with a single return value
-
 		auto type = llvmTypeToSPIRVType(builder, funcRetType);
-		auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
-		auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
-		builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { 0 } });
-		_outputValueIDs.push_back(var);
-		builder.referenceGlobalVariable(var);
+		if (!returnValueOperands.empty() && isPositionOutput(returnValueOperands[0])) {
+			if (funcInfo.type != FunctionType::Vertex || type != vec4Type) {
+				throw ImpossibleResultID("unsupported single position output type");
+			}
+			_positionOutputIndex = 0;
+			_outputValueIDs.push_back(SPIRV::ResultIDInvalid);
+		} else {
+			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
+			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { 0 } });
+			_outputValueIDs.push_back(var);
+			builder.referenceGlobalVariable(var);
+		}
 	}
 
 	std::vector<LLVMValueRef> parameterOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
@@ -1690,6 +1694,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 									builder.encodeStore(_outputValueIDs[i], elm);
 								}
 							}
+						} else if (_positionOutputIndex == 0) {
+							auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, vec4Type, 8));
+							auto ptr = builder.encodeAccessChain(ptrType, perVertexVar, { builder.declareConstantScalar<int32_t>(0) });
+							builder.encodeStore(ptr, val);
 						} else {
 							builder.encodeStore(_outputValueIDs[0], val);
 						}
