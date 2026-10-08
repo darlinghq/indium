@@ -1775,9 +1775,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// translation; the bitcast is then inert on types. A
 					// consumer that needs a different pointee re-types the
 					// pointer itself -- see LLVMLoad.
-					SPIRV::ResultID type = origType;
-					if (type == SPIRV::ResultIDInvalid) {
-						type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto destinationType = DynamicLLVM::LLVMTypeOf(inst);
+					auto origTypeInst = builder.reverseLookupType(origType);
+					SPIRV::ResultID type;
+					if (DynamicLLVM::LLVMGetTypeKind(destinationType) == LLVMPointerTypeKind
+						&& origTypeInst && origTypeInst->backingType == SPIRV::Type::BackingType::Pointer) {
+						type = origType;
+					} else {
+						type = llvmTypeToSPIRVType(builder, destinationType);
 					}
 
 					// ensure the resulting pointer storage class is the same as the input
@@ -1791,7 +1796,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// storage, in which pointerStorageClass is 0, i.e. UniformConstant, a
 					// read-only class.
 					auto typeInst = *builder.reverseLookupType(type);
-					if (auto origTypeInst = builder.reverseLookupType(origType); origTypeInst && origTypeInst->backingType == SPIRV::Type::BackingType::Pointer) {
+					if (origTypeInst && origTypeInst->backingType == SPIRV::Type::BackingType::Pointer
+						&& typeInst.backingType == SPIRV::Type::BackingType::Pointer) {
 						typeInst.pointerStorageClass = origTypeInst->pointerStorageClass;
 					}
 					auto resultType = builder.declareType(typeInst);
