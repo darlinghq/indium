@@ -525,24 +525,77 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 	auto resultType = builder.declareType(type);
 	auto origTypeTarget = *builder.reverseLookupType(origType.targetType);
 
-	// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
-	// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
-	// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
-	// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
 	auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
-	auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
-	auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
-	auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
-	auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
-
-	indices.erase(indices.begin());
 
 	SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
 
-	if (indices.size() > 0) {
-		resID = builder.encodeAccessChain(resultType, asPtr, indices);
+	if (origType.pointerStorageClass == SPIRV::StorageClass::PhysicalStorageBuffer) {
+		// A physical pointer carries no layout to index through, and the
+		// instruction's source element type need not be the pointee the
+		// pointer was declared with (a buffer of float4x4 can be addressed
+		// as floats or float4s). Compute the byte offset from the source
+		// element type's own layout and form the typed pointer directly.
+		auto sourceType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetGEPSourceElementType(inst)));
+		auto offset = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(sourceType.size));
+		auto layoutType = DynamicLLVM::LLVMGetGEPSourceElementType(inst);
+
+		for (size_t i = 2; i < operandCount; ++i) {
+			auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
+			auto layout = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, layoutType));
+			SPIRV::ResultID step = SPIRV::ResultIDInvalid;
+
+			switch (DynamicLLVM::LLVMGetTypeKind(layoutType)) {
+				case LLVMStructTypeKind: {
+					auto member = DynamicLLVM::LLVMConstIntGetZExtValue(llindex);
+					step = builder.declareConstantScalar<uint64_t>(layout.structureMembers.at(member).offset);
+					layoutType = DynamicLLVM::LLVMStructGetTypeAtIndex(layoutType, member);
+				} break;
+
+				case LLVMArrayTypeKind:
+				case LLVMVectorTypeKind: {
+					auto elementType = DynamicLLVM::LLVMGetElementType(layoutType);
+					auto element = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, elementType));
+					auto stride = DynamicLLVM::LLVMGetTypeKind(layoutType) == LLVMArrayTypeKind
+						? (element.size + element.alignment - 1) & ~(element.alignment - 1)
+						: element.size;
+					auto index = indices[i - 1];
+					auto indexWidth = DynamicLLVM::LLVMGetIntTypeWidth(DynamicLLVM::LLVMTypeOf(llindex));
+					if (indexWidth < 64) {
+						auto signed64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, true));
+						index = builder.encodeArithUnop(SPIRV::Opcode::SConvert, signed64Type, index);
+						builder.setResultType(index, signed64Type);
+					}
+					step = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, index, builder.declareConstantScalar<uint64_t>(stride));
+					layoutType = elementType;
+				} break;
+
+				default:
+					throw ImpossibleResultID("getelementptr descends into a non-aggregate type");
+			}
+
+			offset = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, offset, step);
+		}
+
+		auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
+		auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, offset);
+		resID = builder.encodeConvertUToPtr(resultType, added);
 	} else {
-		resID = asPtr;
+		// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
+		// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
+		// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
+		// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
+		auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
+		auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
+		auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
+		auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
+
+		indices.erase(indices.begin());
+
+		if (indices.size() > 0) {
+			resID = builder.encodeAccessChain(resultType, asPtr, indices);
+		} else {
+			resID = asPtr;
+		}
 	}
 
 	builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
