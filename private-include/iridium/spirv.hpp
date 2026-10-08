@@ -473,6 +473,7 @@ namespace Iridium {
 			ImageSampleImplicitLod = 87,
 			ConvertUToF = 112,
 			UConvert = 113,
+			SConvert = 114,
 			FConvert = 115,
 			QuantizeToF16 = 116,
 			ConvertPtrToU = 117,

@@ -1281,7 +1281,25 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					for (size_t i = 1; i < operandCount; ++i) {
 						auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
-						indices.push_back(llvmValueToResultID(builder, llindex));
+						if (i == 1) {
+							auto indexType = DynamicLLVM::LLVMTypeOf(llindex);
+							if (DynamicLLVM::LLVMGetTypeKind(indexType) != LLVMIntegerTypeKind) {
+								throw ImpossibleResultID("getelementptr first index is not an integer");
+							}
+							auto width = DynamicLLVM::LLVMGetIntTypeWidth(indexType);
+							if (width != 8 && width != 16 && width != 32 && width != 64) {
+								throw ImpossibleResultID("unsupported getelementptr first index width");
+							}
+							auto index = llvmValueToResultID(builder, llindex);
+							if (width < 64) {
+								auto signed64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, true));
+								index = builder.encodeArithUnop(SPIRV::Opcode::SConvert, signed64Type, index);
+								builder.setResultType(index, signed64Type);
+							}
+							indices.push_back(index);
+						} else {
+							indices.push_back(llvmValueToResultID(builder, llindex));
+						}
 
 						if (i > 1) {
 							switch (DynamicLLVM::LLVMGetTypeKind(currentType)) {
