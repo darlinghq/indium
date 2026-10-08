@@ -210,27 +210,29 @@ static LLVMValueRef findAIMDValue(LLVMValueRef mdNode, std::string_view key) {
 // Metal spells vectors by suffixing the scalar with a count ("float4", "uint2")
 // and marks the padded vector layouts with a "packed_" prefix, which does not
 // change the element type.
-static void splitMetalTypeName(std::string_view name, std::string_view& base, size_t& count) {
+static bool splitMetalTypeName(std::string_view name, std::string_view& base, size_t& count, size_t* rows = nullptr) {
 	count = 1;
-
+	if (rows) *rows = 1;
 	constexpr std::string_view packedPrefix = "packed_";
-
-	std::string_view rest = name;
-	if (rest.substr(0, packedPrefix.size()) == packedPrefix) {
-		rest.remove_prefix(packedPrefix.size());
+	bool packed = name.substr(0, packedPrefix.size()) == packedPrefix;
+	if (packed) name.remove_prefix(packedPrefix.size());
+	auto digits = name.find_first_of("0123456789");
+	if (digits == std::string_view::npos) { base = name; return true; }
+	base = name.substr(0, digits);
+	auto dimensions = name.substr(digits);
+	auto dimension = [](char c) { return c >= '2' && c <= '4'; };
+	if (dimensions.size() == 1 && dimension(dimensions[0])) {
+		count = dimensions[0] - '0';
+		return true;
 	}
-
-	auto digits = rest.find_first_of("0123456789");
-	if (digits == std::string_view::npos) {
-		base = rest;
-		return;
+	if (!packed && dimensions.size() == 3 && dimension(dimensions[0]) &&
+		dimensions[1] == 'x' && dimension(dimensions[2])) {
+		count = dimensions[0] - '0';
+		if (rows) *rows = dimensions[2] - '0';
+		return true;
 	}
-
-	base = rest.substr(0, digits);
 	count = 0;
-	for (char c: rest.substr(digits)) {
-		count = count * 10 + static_cast<size_t>(c - '0');
-	}
+	return false;
 }
 
 // Returns std::nullopt for a name that is not a Metal scalar, so callers can
@@ -270,16 +272,26 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 	using Iridium::SPIRV::Type;
 
 	std::string_view base;
-	size_t count = 0;
-	splitMetalTypeName(name, base, count);
+	size_t count = 0, rows = 1;
+	bool valid = splitMetalTypeName(name, base, count, &rows);
 
 	if (auto scalar = spirvScalarTypeForMetalBase(base)) {
+		if (!valid) throw std::runtime_error("Invalid Metal type dimensions: " + std::string(name));
+		if (rows > 1 && base != "float" && base != "half")
+			throw std::runtime_error("Unsupported Metal matrix element type: " + std::string(name));
 		auto scalarID = builder.declareType(*scalar);
 
-		if (count == 1) {
+		if (count == 1 && rows == 1) {
 			return scalarID;
 		}
 
+		if (rows > 1) {
+			size_t alignment = (rows == 3 ? 4 : rows) * scalar->alignment;
+			size_t size = rows * scalar->size;
+			auto column = builder.declareType(Type(Type::VectorTag {}, rows, scalarID, size, alignment));
+			size_t stride = (size + alignment - 1) & ~(alignment - 1);
+			return builder.declareType(Type(Type::ArrayTag {}, column, count, stride * count, alignment));
+		}
 		// Mirrors the layout the LLVMVectorTypeKind case computes: a 3- or
 		// 4-component vector is padded out to a full vec4 register.
 		auto registerScale = scalar->size / 4 > 0 ? scalar->size / 4 : 1;
