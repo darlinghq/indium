@@ -22,3 +22,24 @@ of GPU execution completion. Escaping callback exceptions explicitly terminate;
 this implementation does not silently report success after abandoning handlers.
 The pre-existing waitUntilCompleted notification-before-handler behavior is out
 of scope.
+
+Exact measured private build/run commands (after rebuilding all 19 Indium and
+37 matching Metal units into scheduling-build) from this repository root:
+
+```sh
+scheduling_root=/home/cristi/tmp-opencode/metal-resume
+flock /tmp/agent-locks/darling-heavy-build.lock python3 test/command-scheduling/build.py "$scheduling_root/build" test/command-scheduling/scheduled.cpp "$scheduling_root/scheduling-build/scheduled" "$scheduling_root/scheduling-build/libindium.dylib"
+env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DPREFIX="$scheduling_root/scheduling-health-donor-prefix" DARLING_INSTALL_PREFIX="$scheduling_root/runtime-scheduling-57e7993/image/usr/local" "$scheduling_root/runtime-scheduling-57e7993/darling" shell env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DARLING_ENABLE_METAL=1 /Volumes/SystemRoot/home/cristi/tmp-opencode/metal-resume/scheduling-build/scheduled
+env DPREFIX="$scheduling_root/scheduling-health-donor-prefix" DARLING_INSTALL_PREFIX="$scheduling_root/runtime-scheduling-57e7993/image/usr/local" "$scheduling_root/runtime-scheduling-57e7993/darling" shutdown
+```
+
+Candidate: Apple M1, all four PASS lines, exit0. Public Metal selector client
+also returned0 instead of baseline NSInvalidArgumentException1. Prefix shutdown0;
+some prior launches required shutdown/reset after dead-server cleanup. No
+long-term runtime stability claim.
+
+For fail-before, build before.cpp (uses only the pre-existing interface) with
+this helper and the unmodified library, then run in an unmodified private runtime.
+Its timeline gate produces FAIL/exit1: scheduled notification is absent before
+GPU release, completion remains blocked, both callbacks drain afterward. Never
+run scheduled.cpp's new virtual method against that old library.
