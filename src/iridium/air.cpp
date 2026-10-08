@@ -1590,17 +1590,25 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						}
 
 						auto resultType = builder.reverseLookupType(type);
-						if (!resultType || resultType->backingType != SPIRV::Type::BackingType::Structure
-							|| resultType->structureMembers.size() != 2
-							|| resultType->structureMembers[0].id != textureSampleType) {
-							throw ImpossibleResultID("unsupported texture sample result structure");
+						if (resultType && resultType->backingType == SPIRV::Type::BackingType::Vector) {
+							// the call returns the sampled vector itself rather than a {vector, status} pair
+							if (type != textureSampleType) {
+								throw ImpossibleResultID("unsupported texture sample result vector");
+							}
+							resID = sampled;
+						} else {
+							if (!resultType || resultType->backingType != SPIRV::Type::BackingType::Structure
+								|| resultType->structureMembers.size() != 2
+								|| resultType->structureMembers[0].id != textureSampleType) {
+								throw ImpossibleResultID("unsupported texture sample result structure");
+							}
+							auto statusType = builder.reverseLookupType(resultType->structureMembers[1].id);
+							if (!statusType || (statusType->backingType != SPIRV::Type::BackingType::Integer
+								&& statusType->backingType != SPIRV::Type::BackingType::Boolean)) {
+								throw ImpossibleResultID("unsupported texture sample status type");
+							}
+							resID = builder.encodeCompositeInsert(type, sampled, builder.declareNullValue(type), { 0 });
 						}
-						auto statusType = builder.reverseLookupType(resultType->structureMembers[1].id);
-						if (!statusType || (statusType->backingType != SPIRV::Type::BackingType::Integer
-							&& statusType->backingType != SPIRV::Type::BackingType::Boolean)) {
-							throw ImpossibleResultID("unsupported texture sample status type");
-						}
-						resID = builder.encodeCompositeInsert(type, sampled, builder.declareNullValue(type), { 0 });
 					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 

@@ -15,3 +15,12 @@ done
 The final two commands must reject floating-point status members and exit 1. Adjust the LLVM link library for the installed version. Baseline: only both i8 cases validate; eight boolean/other integer cases fail composite insertion type validation, and unsupported floating status is emitted invalidly. Candidate: all ten supported cases validate; both unsupported cases fail explicitly.
 
 Specification: existing sampling handler's two-member result/zero-status convention; Khronos SPIR-V `OpCompositeInsert` requires the inserted type to match the selected member, and `OpConstantNull` initializes composite members recursively according to their declared types. This fix preserves that existing zero-status behavior and does not establish new sampler-state ABI semantics.
+
+Plain vector results: the first argument `vector` makes the authored call return the sampled `float4` (or `half4` with the `half` argument) itself instead of a `{vector, status}` pair, and the fixture extracts a component from it:
+
+```sh
+/tmp/texture-sample-result vector /tmp/authored-sample-vector-float.spv && spirv-val --target-env vulkan1.2 /tmp/authored-sample-vector-float.spv
+/tmp/texture-sample-result vector /tmp/authored-sample-vector-half.spv half && spirv-val --target-env vulkan1.2 /tmp/authored-sample-vector-half.spv
+```
+
+Before the change both exit 1 with `unsupported texture sample result structure`; after, both translate and validate.
