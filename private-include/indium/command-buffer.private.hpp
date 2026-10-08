@@ -45,6 +45,7 @@ namespace Indium {
 
 		virtual std::shared_ptr<CommandQueue> commandQueue() override;
 		virtual std::shared_ptr<Device> device() override;
+		virtual void waitUntilScheduled() override;
 
 		void addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
 		void addCompletedHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
@@ -53,5 +54,9 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
 		INDIUM_PROPERTY(VkCommandBuffer, c, C,ommandBuffer) = VK_NULL_HANDLE;
+
+	private:
+		std::condition_variable _scheduledCondvar;
+		bool _scheduledHandlersFinished = false;
 	};
 };

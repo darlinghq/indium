@@ -11,6 +11,13 @@
 #include <algorithm>
 #include <condition_variable>
 
+static void invokeHandlers(const std::vector<Indium::CommandBuffer::Handler>& handlers,
+                           const std::shared_ptr<Indium::CommandBuffer>& buffer) noexcept {
+	for (const auto& handler: handlers) {
+		handler(buffer);
+	}
+}
+
 Indium::CommandBuffer::~CommandBuffer() {};
 
 std::shared_ptr<Indium::CommandQueue> Indium::PrivateCommandBuffer::commandQueue() {
@@ -245,24 +252,17 @@ void Indium::PrivateCommandBuffer::commit() {
 	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
 	// UPDATE: upon further testing, it seems that this only occurs when the view is off-screen/hidden. weird.
 	_privateDevice->waitForSemaphore(timelineSemaphore->semaphore, timelineSemaphore->count, [self, timelineSemaphore, extraWaitSemaphores, presentationSemaphores]() {
+		std::vector<Handler> handlers;
 		{
 			std::unique_lock lock(self->_mutex);
 			self->_completed = true;
+			if (self->_scheduledHandlersFinished) {
+				handlers.swap(self->_completedHandlers);
+			}
 		}
 
 		self->_completedCondvar.notify_all();
-
-		// TODO: invoke scheduled handlers when the command buffer is scheduled instead of completed
-		for (const auto& handler: self->_scheduledHandlers) {
-			handler(self);
-		}
-		for (const auto& handler: self->_completedHandlers) {
-			handler(self);
-		}
-
-		// the handlers may have captured a reference to us (from their surrounding scope), so clear out handlers so those references go away
-		self->_scheduledHandlers.clear();
-		self->_completedHandlers.clear();
+		invokeHandlers(handlers, self);
 	});
 
 	commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -293,6 +293,24 @@ void Indium::PrivateCommandBuffer::commit() {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 		privateTexture->endUpdatingPresentationSemaphore();
 	}
+
+	std::vector<Handler> scheduledHandlers;
+	{
+		std::unique_lock callbackLock(_mutex);
+		scheduledHandlers.swap(_scheduledHandlers);
+	}
+	invokeHandlers(scheduledHandlers, self);
+
+	std::vector<Handler> completedHandlers;
+	{
+		std::unique_lock callbackLock(_mutex);
+		_scheduledHandlersFinished = true;
+		if (_completed) {
+			completedHandlers.swap(_completedHandlers);
+		}
+	}
+	_scheduledCondvar.notify_all();
+	invokeHandlers(completedHandlers, self);
 
 	// we can now queue drawables for presentation and they'll be synchronized properly
 	for (const auto& drawable: _drawablesToPresent) {
@@ -340,5 +358,12 @@ void Indium::PrivateCommandBuffer::waitUntilCompleted() {
 
 	while (!_completed) {
 		_completedCondvar.wait(lock);
+	}
+};
+
+void Indium::PrivateCommandBuffer::waitUntilScheduled() {
+	std::unique_lock lock(_mutex);
+	while (!_scheduledHandlersFinished) {
+		_scheduledCondvar.wait(lock);
 	}
 };
