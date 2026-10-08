@@ -62,3 +62,4 @@ set_target_properties(indium-test-dynamic-llvm-mismatch PROPERTIES CXX_STANDARD 
 add_test(NAME dynamic-llvm-mismatch COMMAND indium-test-dynamic-llvm-mismatch)
 # the top-level LLVM discovery block, run against fake llvm-config trees
 add_test(NAME llvm-discovery COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/llvm-discovery/check.sh")
+add_subdirectory(texture-usage)

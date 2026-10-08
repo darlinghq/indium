@@ -350,27 +350,45 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
-	// we don't know ahead of time how the image is going to be used, so specify everything we support
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	if (_descriptor.sampleCount > 1) {
-		info.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+	constexpr auto knownUsage = TextureUsage::ShaderRead | TextureUsage::ShaderWrite | TextureUsage::RenderTarget;
+	if ((static_cast<uint32_t>(descriptor.usage) & ~static_cast<uint32_t>(knownUsage)) != 0) {
+		throw std::runtime_error("Unsupported texture usage flags");
 	}
-	if (isColor) {
-		info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	} else if (isDepthStencil) {
-		info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	VkFormatProperties formatProperties {};
+	DynamicVK::vkGetPhysicalDeviceFormatProperties(_device->physicalDevice(), info.format, &formatProperties);
+	auto features = info.tiling == VK_IMAGE_TILING_LINEAR ? formatProperties.linearTilingFeatures : formatProperties.optimalTilingFeatures;
+	bool unknownUsage = descriptor.usage == TextureUsage::Unknown;
+	info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if ((descriptor.usage & TextureUsage::ShaderRead) != TextureUsage::Unknown ||
+		(unknownUsage && (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))) {
+		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	}
+	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown) {
+		if (_descriptor.sampleCount > 1) {
+			throw std::runtime_error("Multisample shader-write textures are unsupported");
+		}
+		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	} else if (unknownUsage && _descriptor.sampleCount == 1 && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	}
+	if ((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) {
+		if (isColor && (!unknownUsage || (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))) {
+			info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		} else if (isDepthStencil && (!unknownUsage || (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+			info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		}
 	}
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO: check if this should be "concurrent" instead. i think we're good, though.
 	info.queueFamilyIndexCount = 0;
 	info.pQueueFamilyIndices = nullptr;
 	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	if (_descriptor.sampleCount > 1) {
+	{
 		VkImageFormatProperties properties {};
 		auto status = DynamicVK::vkGetPhysicalDeviceImageFormatProperties(_device->physicalDevice(), info.format,
 			info.imageType, info.tiling, info.usage, info.flags, &properties);
 		if (status != VK_SUCCESS || !(properties.sampleCounts & info.samples)) {
-			throw std::runtime_error("Multisample texture format, usage or sample count is unsupported by the device");
+			throw std::runtime_error("Texture format, usage or sample count is unsupported by the device");
 		}
 	}
 
