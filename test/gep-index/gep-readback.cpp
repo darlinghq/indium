@@ -16,8 +16,10 @@ struct Buffer {
     VkDeviceAddress address;
 };
 int main(int argc, char **argv) try {
-    if (argc != 3)
+    if (argc != 3 && argc != 4)
         return 2;
+    bool vectorArray = argc == 4;
+    if (vectorArray && std::strcmp(argv[3], "vector-array") != 0) return 2;
     float expected = std::strtof(argv[2], nullptr);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
     if (!input)
@@ -119,14 +121,17 @@ int main(int argc, char **argv) try {
             throw std::runtime_error("buffer address unavailable");
         return b;
     };
-    auto source = makeBuffer(12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    auto source = makeBuffer(vectorArray ? 32 : 12, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     auto output = makeBuffer(4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    auto pointers = makeBuffer(16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    size_t pointerBytes = vectorArray ? 24 : 16;
+    auto pointers = makeBuffer(pointerBytes, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     float values[] = {11, 22, 33};
-    std::memcpy(source.mapped, values, sizeof(values));
+    float vectors[] = {11, 22, 33, 99, 44, 55, 66, 99};
+    std::memcpy(source.mapped, vectorArray ? vectors : values, vectorArray ? sizeof(vectors) : sizeof(values));
     *static_cast<float *>(output.mapped) = -999;
-    uint64_t addresses[] = {source.address + sizeof(float), output.address};
-    std::memcpy(pointers.mapped, addresses, sizeof(addresses));
+    uint64_t addresses[] = {vectorArray ? source.address : source.address + sizeof(float),
+                            vectorArray ? source.address : output.address, output.address};
+    std::memcpy(pointers.mapped, addresses, pointerBytes);
     VkDescriptorSetLayoutBinding binding{};
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -155,7 +160,7 @@ int main(int argc, char **argv) try {
     setInfo.pSetLayouts = &layout;
     VkDescriptorSet set;
     check(vkAllocateDescriptorSets(device, &setInfo, &set));
-    VkDescriptorBufferInfo bufferInfo{pointers.buffer, 0, 16};
+    VkDescriptorBufferInfo bufferInfo{pointers.buffer, 0, pointerBytes};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     write.dstSet = set;
     write.dstBinding = 0;

@@ -296,10 +296,11 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 			size_t stride = (size + alignment - 1) & ~(alignment - 1);
 			return builder.declareType(Type(Type::ArrayTag {}, column, count, stride * count, alignment));
 		}
-		// Mirrors the layout the LLVMVectorTypeKind case computes: a 3- or
-		// 4-component vector is padded out to a full vec4 register.
-		auto registerScale = scalar->size / 4 > 0 ? scalar->size / 4 : 1;
-		size_t vectorAlignment = ((count == 3 || count == 4) ? 4 : 2) * registerScale;
+		// Ordinary vectors mirror the LLVMVectorTypeKind layout; preserve
+		// the existing packed-name calculation pending separate layout support.
+		size_t componentAlignment = name.substr(0, 7) == "packed_"
+			? std::max(scalar->size / 4, size_t(1)) : scalar->alignment;
+		size_t vectorAlignment = ((count == 3 || count == 4) ? 4 : 2) * componentAlignment;
 
 		return builder.declareType(Type(Type::VectorTag {}, count, scalarID, scalar->size * count, vectorAlignment));
 	}
