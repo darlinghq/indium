@@ -1496,10 +1496,21 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
 							auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType, 8, 8));
 							sampled = builder.encodeFConvert(convertedType, sampled);
+							textureSampleType = convertedType;
 						}
 
-						auto partialResult = builder.encodeCompositeInsert(type, sampled, builder.declareUndefinedValue(type), { 0 });
-						resID = builder.encodeCompositeInsert(type, builder.declareConstantScalar<int8_t>(0), partialResult, { 1 });
+						auto resultType = builder.reverseLookupType(type);
+						if (!resultType || resultType->backingType != SPIRV::Type::BackingType::Structure
+							|| resultType->structureMembers.size() != 2
+							|| resultType->structureMembers[0].id != textureSampleType) {
+							throw ImpossibleResultID("unsupported texture sample result structure");
+						}
+						auto statusType = builder.reverseLookupType(resultType->structureMembers[1].id);
+						if (!statusType || (statusType->backingType != SPIRV::Type::BackingType::Integer
+							&& statusType->backingType != SPIRV::Type::BackingType::Boolean)) {
+							throw ImpossibleResultID("unsupported texture sample status type");
+						}
+						resID = builder.encodeCompositeInsert(type, sampled, builder.declareNullValue(type), { 0 });
 					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
