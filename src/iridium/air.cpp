@@ -96,6 +96,9 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			return builder.declareType(Type(Type::FloatTag {}, 128));
 
 		case LLVMIntegerTypeKind:
+			if (DynamicLLVM::LLVMGetIntTypeWidth(llvmType) == 1) {
+				return builder.declareType(Type(Type::BooleanTag {}));
+			}
 			return builder.declareType(Type(Type::IntegerTag {}, DynamicLLVM::LLVMGetIntTypeWidth(llvmType), /* TODO: how to determine this? */ true));
 
 		case LLVMFunctionTypeKind: {
@@ -328,10 +331,19 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 
 	switch (kind) {
 		case LLVMConstantIntValueKind: {
-			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(llvmValue);
-			auto width = DynamicLLVM::LLVMGetIntTypeWidth(type );
-			// TODO: how to determine if it's signed or not?
-			return (width <= 32) ? builder.declareConstantScalar<int32_t>(val) : builder.declareConstantScalar<int64_t>(val);
+			auto width = DynamicLLVM::LLVMGetIntTypeWidth(type);
+			if (width != 1 && width != 8 && width != 16 && width != 32 && width != 64) {
+				throw ImpossibleResultID("unsupported integer constant width " + std::to_string(width));
+			}
+			auto val = DynamicLLVM::LLVMConstIntGetSExtValue(llvmValue);
+			switch (width) {
+				case 1: return builder.declareConstantScalar<bool>(val != 0);
+				case 8: return builder.declareConstantScalar<int8_t>(val);
+				case 16: return builder.declareConstantScalar<int16_t>(val);
+				case 32: return builder.declareConstantScalar<int32_t>(val);
+				case 64: return builder.declareConstantScalar<int64_t>(val);
+			}
+			throw ImpossibleResultID("unreachable integer constant width");
 		} break;
 
 		case LLVMConstantFPValueKind: {

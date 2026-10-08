@@ -301,12 +301,21 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 		_constantScalars.emplace(key, id);
 	}
 
-	auto tmp = beginInstruction((specializationID != SpecializationIDInvalid) ? Opcode::SpecConstant : Opcode::Constant, _constants);
+	bool boolean = reverseLookupType(typeID)->backingType == Type::BackingType::Boolean;
+	auto opcode = specializationID != SpecializationIDInvalid ? Opcode::SpecConstant : Opcode::Constant;
+	if (boolean) {
+		opcode = specializationID != SpecializationIDInvalid
+			? (value ? Opcode::SpecConstantTrue : Opcode::SpecConstantFalse)
+			: (value ? Opcode::ConstantTrue : Opcode::ConstantFalse);
+	}
+	auto tmp = beginInstruction(opcode, _constants);
 	_constants.writeIntegerLE<uint32_t>(typeID);
 	_constants.writeIntegerLE<uint32_t>(id);
-	_constants.writeIntegerLE<uint32_t>(value & 0xffffffff);
-	if (usesTwoWords) {
-		_constants.writeIntegerLE<uint32_t>(value >> 32);
+	if (!boolean) {
+		_constants.writeIntegerLE<uint32_t>(value & 0xffffffff);
+		if (usesTwoWords) {
+			_constants.writeIntegerLE<uint32_t>(value >> 32);
+		}
 	}
 	endInstruction(std::move(tmp));
 
@@ -315,6 +324,10 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 	}
 
 	return id;
+};
+
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<bool>(bool value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(value, declareType(Type(Type::BooleanTag {})), false, specializationID);
 };
 
 template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint8_t>(uint8_t value, SpecializationID specializationID) {

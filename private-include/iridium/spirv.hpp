@@ -451,6 +451,8 @@ namespace Iridium {
 			ConstantComposite = 44,
 			ConstantSampler = 45,
 			ConstantNull = 46,
+			SpecConstantTrue = 48,
+			SpecConstantFalse = 49,
 			SpecConstant = 50,
 			Function = 54,
 			FunctionParameter = 55,
@@ -727,6 +729,7 @@ namespace Iridium {
 			void* finalize(size_t& outputSize);
 		};
 
+		template<> ResultID Builder::declareConstantScalar<bool>(bool value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<uint8_t>(uint8_t value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<int8_t>(int8_t value, SpecializationID specializationID);
 		template<> ResultID Builder::declareConstantScalar<uint16_t>(uint16_t value, SpecializationID specializationID);
