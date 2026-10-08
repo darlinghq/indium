@@ -23,14 +23,15 @@ this implementation does not silently report success after abandoning handlers.
 The pre-existing waitUntilCompleted notification-before-handler behavior is out
 of scope.
 
-Exact measured private build/run commands (after rebuilding all 19 Indium and
-37 matching Metal units into scheduling-build) from this repository root:
+Build and run commands, from this repository root. `$BUILD` is a Darling CMake/Ninja
+build tree, `$OUT` a scratch directory, `$RUNTIME` a private (non-installed) runtime
+built from the same tree after rebuilding all 19 Indium and 37 Metal units, and
+`$PREFIX` a private Darling prefix:
 
 ```sh
-scheduling_root=/home/cristi/tmp-opencode/metal-resume
-flock /tmp/agent-locks/darling-heavy-build.lock python3 test/command-scheduling/build.py "$scheduling_root/build" test/command-scheduling/scheduled.cpp "$scheduling_root/scheduling-build/scheduled" "$scheduling_root/scheduling-build/libindium.dylib"
-env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DPREFIX="$scheduling_root/scheduling-health-donor-prefix" DARLING_INSTALL_PREFIX="$scheduling_root/runtime-scheduling-57e7993/image/usr/local" "$scheduling_root/runtime-scheduling-57e7993/darling" shell env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DARLING_ENABLE_METAL=1 /Volumes/SystemRoot/home/cristi/tmp-opencode/metal-resume/scheduling-build/scheduled
-env DPREFIX="$scheduling_root/scheduling-health-donor-prefix" DARLING_INSTALL_PREFIX="$scheduling_root/runtime-scheduling-57e7993/image/usr/local" "$scheduling_root/runtime-scheduling-57e7993/darling" shutdown
+python3 test/command-scheduling/build.py "$BUILD" test/command-scheduling/scheduled.cpp "$OUT/scheduled" "$OUT/libindium.dylib"
+env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DPREFIX="$PREFIX" DARLING_INSTALL_PREFIX="$RUNTIME/image/usr/local" "$RUNTIME/darling" shell env VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json DARLING_ENABLE_METAL=1 "/Volumes/SystemRoot$OUT/scheduled"
+env DPREFIX="$PREFIX" DARLING_INSTALL_PREFIX="$RUNTIME/image/usr/local" "$RUNTIME/darling" shutdown
 ```
 
 Candidate: Apple M1, all four PASS lines, exit0. Public Metal selector client
