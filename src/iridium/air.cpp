@@ -1,3 +1,5 @@
+#include <optional>
+#include <unordered_map>
 #include <iridium/air.hpp>
 #include <iridium/bits.hpp>
 #include <iridium/spirv.hpp>
@@ -266,6 +268,46 @@ static std::optional<Iridium::SPIRV::Type> spirvScalarTypeForMetalBase(std::stri
 	if (base == "uchar") { return Type(Type::IntegerTag {}, 8, true); }
 
 	return std::nullopt;
+}
+
+// air.convert.f.<to>.f.<from> converts between floating-point types of different widths,
+// where each type is a scalar (f16, f32, f64) or a vector of them (v4f16, ...)
+static bool isFloatWidthConversion(std::string_view name) {
+	constexpr std::string_view prefix = "air.convert.";
+	if (name.substr(0, prefix.size()) != prefix) {
+		return false;
+	}
+
+	std::string_view parts[4];
+	size_t count = 0;
+	std::string_view rest = name.substr(prefix.size());
+	while (count < 4) {
+		auto dot = rest.find('.');
+		parts[count++] = rest.substr(0, dot);
+		if (dot == std::string_view::npos) {
+			break;
+		}
+		rest.remove_prefix(dot + 1);
+	}
+
+	auto element = [](std::string_view type, std::string_view& scalar, std::string_view& vector) {
+		vector = {};
+		if (!type.empty() && type[0] == 'v') {
+			size_t digits = 1;
+			while (digits < type.size() && type[digits] >= '0' && type[digits] <= '9') {
+				++digits;
+			}
+			vector = type.substr(0, digits);
+			type.remove_prefix(digits);
+		}
+		scalar = type;
+		return scalar == "f16" || scalar == "f32" || scalar == "f64";
+	};
+
+	std::string_view toScalar, toVector, fromScalar, fromVector;
+	return count == 4 && parts[0] == "f" && parts[2] == "f"
+		&& element(parts[1], toScalar, toVector) && element(parts[3], fromScalar, fromVector)
+		&& toVector == fromVector && toScalar != fromScalar;
 }
 
 // A buffer argument's air.arg_type_name is a scalar, a vector, or the name of a
@@ -1222,6 +1264,88 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		}
 	}
 
+	// declares the Vulkan-side sampler for one embedded (constant) sampler state and returns its variable; when `key` is set, it is the
+	// LLVM value the shader refers to it by
+	auto declareEmbeddedSampler = [&](uint64_t val, std::optional<uintptr_t> key) {
+		// bit positions of each state component (excluding the end point):
+		//   S address mode = [0, 3]
+		//   T address mode = [3, 6]
+		//   R address mode = [6, 9]
+		//   magnification filter = [9, 11]
+		//   minification filter = [11, 13]
+		//   mipmap filter = [13, 15]
+		//   uses normalized coords = [15, 16]
+		//   compare function = [16, 20]
+		//   anisotropy level = [20, 24]
+		//   LOD minimum = [24, 40]
+		//   LOD maximum = [40, 56]
+		//   border color = [56, 58]
+
+		uint8_t sAddrMode = val & 0x07;
+		uint8_t tAddrMode = (val >> 3) & 0x07;
+		uint8_t rAddrMode = (val >> 6) & 0x07;
+		uint8_t magFilter = (val >> 9) & 0x03;
+		uint8_t minFilter = (val >> 11) & 0x03;
+		uint8_t mipmapFilter = (val >> 13) & 0x03;
+		bool usesNormalizedCoords = (val & (1ull << 15)) == 0; // if bit 15 is 0, normalized coords are used; if it's 1, unnormalized coords are used
+		uint8_t compareFunction = (val >> 16) & 0x0f;
+		uint8_t anisotropyLevel = ((val >> 20) & 0x0f) + 1;
+		uint8_t borderColor = (val >> 56) & 0x03;
+
+		// the LOD values are actually floats that have been truncated to half-floats and then bitcast to uint16s,
+		// so we need to do a little conversion to get them back as a floats
+		uint16_t lodMinU16 = (val >> 24) & 0xffff;
+		uint16_t lodMaxU16 = (val >> 40) & 0xffff;
+
+		Float16 lodMinHalf;
+		Float16 lodMaxHalf;
+
+		// technically UB, but it's fine
+		memcpy(&lodMinHalf, &lodMinU16, sizeof(lodMinHalf));
+		memcpy(&lodMaxHalf, &lodMaxU16, sizeof(lodMaxHalf));
+
+		float lodMin = lodMinHalf;
+		float lodMax = lodMaxHalf;
+
+		auto embeddedSamplerIndex = funcInfo.embeddedSamplers.size();
+		funcInfo.embeddedSamplers.push_back(EmbeddedSampler {
+			static_cast<EmbeddedSampler::AddressMode>(sAddrMode),
+			static_cast<EmbeddedSampler::AddressMode>(tAddrMode),
+			static_cast<EmbeddedSampler::AddressMode>(rAddrMode),
+			static_cast<EmbeddedSampler::Filter>(magFilter),
+			static_cast<EmbeddedSampler::Filter>(minFilter),
+			static_cast<EmbeddedSampler::MipFilter>(mipmapFilter),
+			usesNormalizedCoords,
+			static_cast<EmbeddedSampler::CompareFunction>(compareFunction),
+			anisotropyLevel,
+			static_cast<EmbeddedSampler::BorderColor>(borderColor),
+			lodMin,
+			lodMax,
+		});
+
+		funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, SIZE_MAX, internalBindingIndex, /* ignored: */ TextureAccessType::Read, embeddedSamplerIndex });
+
+		auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
+		auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
+		auto var = builder.addGlobalVariable(samplerPtrType, SPIRV::StorageClass::UniformConstant);
+		//auto load = builder.encodeLoad(samplerType, var);
+
+		builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
+		builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
+
+		builder.referenceGlobalVariable(var);
+
+		_parameterIDs.push_back(var);
+
+		if (key) {
+			builder.associateExistingResultID(var, *key);
+		}
+		builder.setResultType(var, samplerPtrType);
+
+		++internalBindingIndex;
+		return var;
+	};
+
 	// find global sampler variables
 	//
 	// unlike Vulkan/SPIR-V, Metal allows you to declare/define samplers within the shader itself. fortunately for us, any such samplers
@@ -1240,80 +1364,32 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			auto init = DynamicLLVM::LLVMGetInitializer(suboperands[1]);
 			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(init);
 
-			// bit positions of each state component (excluding the end point):
-			//   S address mode = [0, 3]
-			//   T address mode = [3, 6]
-			//   R address mode = [6, 9]
-			//   magnification filter = [9, 11]
-			//   minification filter = [11, 13]
-			//   mipmap filter = [13, 15]
-			//   uses normalized coords = [15, 16]
-			//   compare function = [16, 20]
-			//   anisotropy level = [20, 24]
-			//   LOD minimum = [24, 40]
-			//   LOD maximum = [40, 56]
-			//   border color = [56, 58]
+			declareEmbeddedSampler(val, reinterpret_cast<uintptr_t>(suboperands[1]));
+		}
+	}
 
-			uint8_t sAddrMode = val & 0x07;
-			uint8_t tAddrMode = (val >> 3) & 0x07;
-			uint8_t rAddrMode = (val >> 6) & 0x07;
-			uint8_t magFilter = (val >> 9) & 0x03;
-			uint8_t minFilter = (val >> 11) & 0x03;
-			uint8_t mipmapFilter = (val >> 13) & 0x03;
-			bool usesNormalizedCoords = (val & (1ull << 15)) == 0; // if bit 15 is 0, normalized coords are used; if it's 1, unnormalized coords are used
-			uint8_t compareFunction = (val >> 16) & 0x0f;
-			uint8_t anisotropyLevel = ((val >> 20) & 0x0f) + 1;
-			uint8_t borderColor = (val >> 56) & 0x03;
-
-			// the LOD values are actually floats that have been truncated to half-floats and then bitcast to uint16s,
-			// so we need to do a little conversion to get them back as a floats
-			uint16_t lodMinU16 = (val >> 24) & 0xffff;
-			uint16_t lodMaxU16 = (val >> 40) & 0xffff;
-
-			Float16 lodMinHalf;
-			Float16 lodMaxHalf;
-
-			// technically UB, but it's fine
-			memcpy(&lodMinHalf, &lodMinU16, sizeof(lodMinHalf));
-			memcpy(&lodMaxHalf, &lodMaxU16, sizeof(lodMaxHalf));
-
-			float lodMin = lodMinHalf;
-			float lodMax = lodMaxHalf;
-
-			auto embeddedSamplerIndex = funcInfo.embeddedSamplers.size();
-			funcInfo.embeddedSamplers.push_back(EmbeddedSampler {
-				static_cast<EmbeddedSampler::AddressMode>(sAddrMode),
-				static_cast<EmbeddedSampler::AddressMode>(tAddrMode),
-				static_cast<EmbeddedSampler::AddressMode>(rAddrMode),
-				static_cast<EmbeddedSampler::Filter>(magFilter),
-				static_cast<EmbeddedSampler::Filter>(minFilter),
-				static_cast<EmbeddedSampler::MipFilter>(mipmapFilter),
-				usesNormalizedCoords,
-				static_cast<EmbeddedSampler::CompareFunction>(compareFunction),
-				anisotropyLevel,
-				static_cast<EmbeddedSampler::BorderColor>(borderColor),
-				lodMin,
-				lodMax,
-			});
-
-			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, SIZE_MAX, internalBindingIndex, /* ignored: */ TextureAccessType::Read, embeddedSamplerIndex });
-
-			auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
-			auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
-			auto var = builder.addGlobalVariable(samplerPtrType, SPIRV::StorageClass::UniformConstant);
-			//auto load = builder.encodeLoad(samplerType, var);
-
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Binding, { static_cast<uint32_t>(internalBindingIndex) } });
-
-			builder.referenceGlobalVariable(var);
-
-			_parameterIDs.push_back(var);
-
-			builder.associateExistingResultID(var, reinterpret_cast<uintptr_t>(suboperands[1]));
-			builder.setResultType(var, samplerPtrType);
-
-			++internalBindingIndex;
+	// a constant sampler can also be referenced directly as an integer-to-pointer constant expression holding the same
+	// packed state, rather than through a global variable. declare one sampler per distinct expression before the body is translated.
+	// the expression is shared by every function in the library, so each function keeps its own variables.
+	std::unordered_map<LLVMValueRef, SPIRV::ResultID> constantSamplers;
+	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
+		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+			auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
+			for (int i = 0; i < operandCount; ++i) {
+				auto operand = DynamicLLVM::LLVMGetOperand(inst, i);
+				if (DynamicLLVM::LLVMGetValueKind(operand) != LLVMConstantExprValueKind
+					|| DynamicLLVM::LLVMGetConstOpcode(operand) != LLVMIntToPtr
+					|| DynamicLLVM::LLVMGetPointerAddressSpace(DynamicLLVM::LLVMTypeOf(operand)) != 2
+					|| constantSamplers.count(operand))
+				{
+					continue;
+				}
+				auto packed = DynamicLLVM::LLVMGetOperand(operand, 0);
+				if (!DynamicLLVM::LLVMIsAConstantInt(packed) || DynamicLLVM::LLVMGetIntTypeWidth(DynamicLLVM::LLVMTypeOf(packed)) != 64) {
+					throw ImpossibleResultID("constant sampler expression does not hold a 64-bit constant");
+				}
+				constantSamplers[operand] = declareEmbeddedSampler(DynamicLLVM::LLVMConstIntGetZExtValue(packed), std::nullopt);
+			}
 		}
 	}
 
@@ -1559,7 +1635,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto someI32ArgTODO = DynamicLLVM::LLVMGetOperand(inst, 7);
 
 						auto textureArgID = llvmValueToResultID(builder, textureArg);
-						auto samplerArgID = llvmValueToResultID(builder, samplerArg);
+						auto constantSampler = constantSamplers.find(samplerArg);
+						auto samplerArgID = constantSampler != constantSamplers.end() ? constantSampler->second : llvmValueToResultID(builder, samplerArg);
 
 						auto texturePtrType = builder.lookupResultType(textureArgID);
 						auto textureType = builder.reverseLookupType(texturePtrType)->targetType;
@@ -1609,7 +1686,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							}
 							resID = builder.encodeCompositeInsert(type, sampled, builder.declareNullValue(type), { 0 });
 						}
-					} else if (name == "air.convert.f.v4f32.f.v4f16" || name == "air.convert.f.v4f16.f.v4f32") {
+					} else if (isFloatWidthConversion(name)) {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeFConvert(type, llvmValueToResultID(builder, arg));
