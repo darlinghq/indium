@@ -285,6 +285,7 @@ static bool isFloatWidthConversion(std::string_view name) {
 		auto dot = rest.find('.');
 		parts[count++] = rest.substr(0, dot);
 		if (dot == std::string_view::npos) {
+			rest = {};
 			break;
 		}
 		rest.remove_prefix(dot + 1);
@@ -305,7 +306,7 @@ static bool isFloatWidthConversion(std::string_view name) {
 	};
 
 	std::string_view toScalar, toVector, fromScalar, fromVector;
-	return count == 4 && parts[0] == "f" && parts[2] == "f"
+	return count == 4 && rest.empty() && parts[0] == "f" && parts[2] == "f"
 		&& element(parts[1], toScalar, toVector) && element(parts[3], fromScalar, fromVector)
 		&& toVector == fromVector && toScalar != fromScalar;
 }
@@ -588,6 +589,9 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 
 			switch (DynamicLLVM::LLVMGetTypeKind(layoutType)) {
 				case LLVMStructTypeKind: {
+					if (!DynamicLLVM::LLVMIsAConstantInt(llindex)) {
+						throw ImpossibleResultID("getelementptr into a struct with a non-constant index");
+					}
 					auto member = DynamicLLVM::LLVMConstIntGetZExtValue(llindex);
 					step = builder.declareConstantScalar<uint64_t>(layout.structureMembers.at(member).offset);
 					layoutType = DynamicLLVM::LLVMStructGetTypeAtIndex(layoutType, member);
