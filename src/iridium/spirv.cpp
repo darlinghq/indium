@@ -297,7 +297,9 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 
 	auto id = reserveResultID();
 
-	_constantScalars.emplace(key, id);
+	if (specializationID == SpecializationIDInvalid) {
+		_constantScalars.emplace(key, id);
+	}
 
 	auto tmp = beginInstruction((specializationID != SpecializationIDInvalid) ? Opcode::SpecConstant : Opcode::Constant, _constants);
 	_constants.writeIntegerLE<uint32_t>(typeID);
