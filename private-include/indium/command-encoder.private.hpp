@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <vector>
 #include <memory>
 #include <optional>
@@ -89,7 +90,9 @@ namespace Indium {
 			const FunctionResources& functionResources = funcResources[i];
 			const FunctionInfo& funcInfo = functionInfos[i];
 
-			if (functionResources.buffers.size() > 0) {
+			if (functionResources.buffers.size() > 0 && std::any_of(funcInfo.bindings.begin(), funcInfo.bindings.end(), [](const BindingDescriptor& binding) {
+				return binding.type == BindingType::Buffer;
+			})) {
 				std::vector<uint64_t> addresses;
 
 				// find the right buffer for each binding (using the binding index)
@@ -109,7 +112,7 @@ namespace Indium {
 					addresses.push_back(privateBuf->gpuAddress() + functionResources.buffers[bindingInfo.index].second);
 				}
 
-				auto addressBuffer = privateDevice->newBuffer(addresses.data(), functionResources.buffers.size() * 8, ResourceOptions::StorageModeShared);
+				auto addressBuffer = privateDevice->newBuffer(addresses.data(), addresses.size() * sizeof(uint64_t), ResourceOptions::StorageModeShared);
 				auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
 
 				// we need to keep this buffer alive until the operation is completed
