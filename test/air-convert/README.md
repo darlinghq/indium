@@ -11,7 +11,16 @@ for pair in "f16 f32" "f32 f16" "f32 f64" "v4f16 v4f32" "v4f32 v4f16"; do
   "$OUT/air-convert" $1 $2 "$OUT/convert.spv" && spirv-val --target-env vulkan1.3 "$OUT/convert.spv" || echo "FAIL $pair"
 done
 "$OUT/air-convert" f32 f32 "$OUT/same.spv"   # same width: still rejected, exit 1
+for pair in "f32 f16." "f32 f16.extra" "vf32 vf16" "v0f32 v0f16"; do
+  set -- $pair
+  "$OUT/air-convert" $1 $2 "$OUT/malformed.spv"; [ $? = 1 ] || echo "FAIL accepted $pair"
+done
 ```
+
+The last loop names conversions with a trailing component (`air.convert.f.f32.f.f16.extra`), a
+trailing dot, or a vector prefix without a lane count or with a zero one. Each must be rejected
+(exit 1) rather than lowered as a plain conversion that drops the unknown part. The harness builds
+a placeholder LLVM type for such names; only the name matters here.
 
 Before the change the scalar pairs fail with `TODO: support actual function calls`
 (only the two four-component pairs were recognised by name). After, every pair

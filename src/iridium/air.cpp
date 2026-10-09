@@ -281,11 +281,13 @@ static bool isFloatWidthConversion(std::string_view name) {
 	std::string_view parts[4];
 	size_t count = 0;
 	std::string_view rest = name.substr(prefix.size());
-	while (count < 4) {
+	while (true) {
+		if (count == 4) {
+			return false;
+		}
 		auto dot = rest.find('.');
 		parts[count++] = rest.substr(0, dot);
 		if (dot == std::string_view::npos) {
-			rest = {};
 			break;
 		}
 		rest.remove_prefix(dot + 1);
@@ -298,6 +300,9 @@ static bool isFloatWidthConversion(std::string_view name) {
 			while (digits < type.size() && type[digits] >= '0' && type[digits] <= '9') {
 				++digits;
 			}
+			if (digits == 1 || type[1] == '0') {
+				return false;
+			}
 			vector = type.substr(0, digits);
 			type.remove_prefix(digits);
 		}
@@ -306,7 +311,7 @@ static bool isFloatWidthConversion(std::string_view name) {
 	};
 
 	std::string_view toScalar, toVector, fromScalar, fromVector;
-	return count == 4 && rest.empty() && parts[0] == "f" && parts[2] == "f"
+	return count == 4 && parts[0] == "f" && parts[2] == "f"
 		&& element(parts[1], toScalar, toVector) && element(parts[3], fromScalar, fromVector)
 		&& toVector == fromVector && toScalar != fromScalar;
 }
