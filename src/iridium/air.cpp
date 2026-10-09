@@ -293,18 +293,15 @@ static bool isFloatWidthConversion(std::string_view name) {
 		rest.remove_prefix(dot + 1);
 	}
 
+	// Metal vector types have 2, 3 or 4 components (MSL specification, vector data types).
 	auto element = [](std::string_view type, std::string_view& scalar, std::string_view& vector) {
 		vector = {};
 		if (!type.empty() && type[0] == 'v') {
-			size_t digits = 1;
-			while (digits < type.size() && type[digits] >= '0' && type[digits] <= '9') {
-				++digits;
-			}
-			if (digits == 1 || type[1] == '0') {
+			if (type.size() < 2 || type[1] < '2' || type[1] > '4') {
 				return false;
 			}
-			vector = type.substr(0, digits);
-			type.remove_prefix(digits);
+			vector = type.substr(0, 2);
+			type.remove_prefix(2);
 		}
 		scalar = type;
 		return scalar == "f16" || scalar == "f32" || scalar == "f64";
