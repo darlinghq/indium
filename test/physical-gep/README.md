@@ -19,6 +19,19 @@ VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/sca
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/array.spv" 4 5 6 7
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/array32.spv" 4 5 6 7
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/vec3.spv" 4 5 6
+# struct member offsets: shape, then the member offsets added after the first index
+for case in "struct-vec3 16" "nested-vec3 16 16" "struct-half3 8" "struct-int3 16" \
+            "struct-lead 16" "struct-vec4 16" "struct-vec2 8"; do
+  set -- $case; shape=$1; shift
+  "$OUT/physical-gep" $shape "$OUT/$shape.spv" >/dev/null || { echo "FAIL $shape translate"; continue; }
+  got=$(spirv-dis "$OUT/$shape.spv" | grep -o 'OpIAdd %ulong %[a-z0-9_]* %ulong_[0-9]*' | grep -o '[0-9]*$' | paste -sd' ')
+  [ "$got" = "$*" ] && echo "PASS $shape $got" || echo "FAIL $shape got '$got' want '$*'"
+done
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec3.spv" 4
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/nested-vec3.spv" 8
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-lead.spv" 4 5 6
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec4.spv" 4
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec2.spv" 2
 ```
 
 Before the change `vector` and `scalar` translate but `spirv-val` rejects them
@@ -33,3 +46,9 @@ unrounded size the multiply is by 12: `spirv-val` still accepts the module, the 
 match, and the readback returns 3 4 5 instead of 4 5 6. `readback` also requires every output
 element past the expected values to keep its -999 fill, so `vec3` also shows the store wrote
 12 bytes and `scalar` 4.
+
+The `struct-*` shapes check struct member offsets, which follow the same rule: a member starts
+after the previous member's allocation size, as in LLVM's struct layout and Metal's (a `float3`
+member occupies 16 bytes). With the unrounded size, `struct-vec3` and `struct-int3` put the second
+member at 12, `struct-half3` at 6 and `nested-vec3` at 16 + 12 = 28, again without any `spirv-val`
+error. `struct-lead`, `struct-vec4` and `struct-vec2` are controls whose offsets do not change.
