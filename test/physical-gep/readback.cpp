@@ -16,11 +16,12 @@ struct Buffer {
     VkDeviceAddress address;
 };
 int main(int argc, char **argv) try {
-    if (argc < 3)
+    if (argc < 3 || argc > 6)
         return 2;
     int expectedCount = argc - 2;
-    float expected[4] = {};
-    for (int i = 0; i < expectedCount && i < 4; ++i)
+    // Elements past the expected values must keep the -999 fill: the store wrote nothing there.
+    float expected[4] = {-999, -999, -999, -999};
+    for (int i = 0; i < expectedCount; ++i)
         expected[i] = std::strtof(argv[2 + i], nullptr);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
     if (!input)
@@ -213,7 +214,7 @@ int main(int argc, char **argv) try {
     check(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
     check(vkQueueWaitIdle(queue));
     bool pass = true;
-    for (int i = 0; i < expectedCount; ++i) {
+    for (int i = 0; i < 4; ++i) {
         float actual = static_cast<float *>(output.mapped)[i];
         pass = pass && actual == expected[i];
         std::printf("element %d actual %.0f expected %.0f\n", i, actual, expected[i]);

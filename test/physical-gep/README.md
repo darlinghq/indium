@@ -30,4 +30,6 @@ the expected values (the input buffer holds 0..15).
 objects, i.e. by the source type's allocation size (its size rounded up to its alignment), and a
 Metal `float3` is 12 bytes of data in a 16-byte, 16-aligned slot, so index 1 is byte 16. With the
 unrounded size the multiply is by 12: `spirv-val` still accepts the module, the `grep` finds no
-match, and the readback returns 3 4 5 instead of 4 5 6.
+match, and the readback returns 3 4 5 instead of 4 5 6. `readback` also requires every output
+element past the expected values to keep its -999 fill, so `vec3` also shows the store wrote
+12 bytes and `scalar` 4.
