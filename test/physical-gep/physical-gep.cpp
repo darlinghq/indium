@@ -10,6 +10,7 @@
 //   array:  [4 x <4 x float>] source, i64 indices 0 and 1 (control, the declared layout)
 //   array32: the same with i32 indices
 //   vec3:   <3 x float> source, index 1 (12-byte objects 16 bytes apart)
+//   neg32:  float source, i32 index -1 applied to element 5 (sign-extended, element 4)
 //   struct-*: a struct source, indices 0 then member 1 (nested-vec3: 0, 1, 1); the member
 //   after a 3-element vector starts at the vector's allocation size, not its data size:
 //     struct-vec3  {float3, float}           member at 16
@@ -55,10 +56,10 @@ int main(int argc, char **argv) try {
     };
     auto structShape = structShapes.find(shape);
     bool isStruct = structShape != structShapes.end();
-    if (!isStruct && shape != "vector" && shape != "scalar" && shape != "array" && shape != "array32" && shape != "vec3")
+    if (!isStruct && shape != "vector" && shape != "scalar" && shape != "array" && shape != "array32" && shape != "vec3" && shape != "neg32")
         return 3;
-    auto loaded = isStruct ? structShape->second.loaded : shape == "scalar" ? f32 : shape == "vec3" ? vec3 : vec4;
-    const char *loadedName = isStruct ? structShape->second.loadedName : shape == "scalar" ? "float" : shape == "vec3" ? "float3" : "float4";
+    auto loaded = isStruct ? structShape->second.loaded : shape == "scalar" || shape == "neg32" ? f32 : shape == "vec3" ? vec3 : vec4;
+    const char *loadedName = isStruct ? structShape->second.loadedName : shape == "scalar" || shape == "neg32" ? "float" : shape == "vec3" ? "float3" : "float4";
     unsigned alignment = loaded == f16 ? 2 : loaded == f32 || loaded == i32 ? 4 : 16;
     LLVMTypeRef params[] = {ptr, ptr};
     auto function = LLVMAddFunction(m, "authoredKernel", LLVMFunctionType(LLVMVoidTypeInContext(c), params, 2, 0));
@@ -74,6 +75,11 @@ int main(int argc, char **argv) try {
     } else if (shape == "vec3") {
         LLVMValueRef index[] = {LLVMConstInt(i64, 1, 1)};
         address = LLVMBuildGEP2(writer, vec3, LLVMGetParam(function, 0), index, 1, "object");
+    } else if (shape == "neg32") {
+        LLVMValueRef five[] = {LLVMConstInt(i64, 5, 1)};
+        auto element = LLVMBuildGEP2(writer, f32, LLVMGetParam(function, 0), five, 1, "element");
+        LLVMValueRef back[] = {LLVMConstInt(i32, (unsigned long long)-1, 1)};
+        address = LLVMBuildGEP2(writer, f32, element, back, 1, "previous");
     } else if (isStruct) {
         LLVMValueRef index[] = {LLVMConstInt(i64, 0, 1), LLVMConstInt(i32, 1, 0), LLVMConstInt(i32, 1, 0)};
         address = LLVMBuildGEP2(writer, structShape->second.source, LLVMGetParam(function, 0), index, 1 + structShape->second.depth, "member");

@@ -14,6 +14,9 @@ for shape in vector scalar array array32 vec3; do
   "$OUT/physical-gep" $shape "$OUT/$shape.spv" && spirv-val --target-env vulkan1.3 --relax-block-layout --scalar-block-layout "$OUT/$shape.spv"
 done
 spirv-dis "$OUT/vec3.spv" | grep 'OpIMul %ulong %long_1 %ulong_16'
+"$OUT/physical-gep" neg32 "$OUT/neg32.spv" && spirv-val --target-env vulkan1.3 --relax-block-layout --scalar-block-layout "$OUT/neg32.spv"
+spirv-dis "$OUT/neg32.spv" | grep 'OpSConvert %long %int_n1'
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/neg32.spv" 4
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/vector.spv" 4 5 6 7
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/scalar.spv" 5
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/array.spv" 4 5 6 7
@@ -52,3 +55,7 @@ after the previous member's allocation size, as in LLVM's struct layout and Meta
 member occupies 16 bytes). With the unrounded size, `struct-vec3` and `struct-int3` put the second
 member at 12, `struct-half3` at 6 and `nested-vec3` at 16 + 12 = 28, again without any `spirv-val`
 error. `struct-lead`, `struct-vec4` and `struct-vec2` are controls whose offsets do not change.
+
+`neg32` steps back one float from element 5 with an i32 index of -1. The index must be
+sign-extended to 64 bits before the byte multiply (`OpSConvert`); zero-extension would add
+almost 2^34 bytes instead of subtracting 4. The readback returns element 4.
