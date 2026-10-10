@@ -277,7 +277,8 @@ static std::optional<Iridium::SPIRV::Type> spirvScalarTypeForMetalBase(std::stri
 }
 
 // air.convert.f.<to>.f.<from> converts between floating-point types of different widths,
-// where each type is a scalar (f16, f32, f64) or a vector of them (v4f16, ...)
+// where each type is a scalar (f16, f32) or a vector of them (v4f16, ...). MSL has no double
+// type, so f64 names are rejected rather than lowered to Float64 code.
 static bool isFloatWidthConversion(std::string_view name) {
 	constexpr std::string_view prefix = "air.convert.";
 	if (name.substr(0, prefix.size()) != prefix) {
@@ -310,7 +311,7 @@ static bool isFloatWidthConversion(std::string_view name) {
 			type.remove_prefix(2);
 		}
 		scalar = type;
-		return scalar == "f16" || scalar == "f32" || scalar == "f64";
+		return scalar == "f16" || scalar == "f32";
 	};
 
 	std::string_view toScalar, toVector, fromScalar, fromVector;
