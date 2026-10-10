@@ -575,7 +575,6 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 	auto origType = *builder.reverseLookupType(origTypeID);
 	type.pointerStorageClass = origType.pointerStorageClass;
 	auto resultType = builder.declareType(type);
-	auto origTypeTarget = *builder.reverseLookupType(origType.targetType);
 
 	auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
 
@@ -635,22 +634,10 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 		auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, offset);
 		resID = builder.encodeConvertUToPtr(resultType, added);
 	} else {
-		// strangely enough, SPIR-V provides no instruction that can do an initial pointer offset like LLVM's GEP does.
-		// there's OpPtrAccessChain, which is tantalizingly named, but unfortunately that instruction doesn't work as expected
-		// either. i've tried using the raw index (i.e. in element units) and the multiplied index (i.e. in bytes), but no dice.
-		// so, let's do it ourselves. a little pointer arithmetic never hurt anybody, right? (it most certainly has).
-		auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
-		auto mul = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(origTypeTarget.size));
-		auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, mul);
-		auto asPtr = builder.encodeConvertUToPtr(origTypeID, added);
-
-		indices.erase(indices.begin());
-
-		if (indices.size() > 0) {
-			resID = builder.encodeAccessChain(resultType, asPtr, indices);
-		} else {
-			resID = asPtr;
-		}
+		// Every buffer argument is a physical pointer; the other storage classes
+		// (images, samplers, stage I/O) have no byte address to offset.
+		throw ImpossibleResultID("getelementptr on a non-physical pointer (storage class "
+			+ std::to_string(static_cast<uint32_t>(origType.pointerStorageClass)) + ") is unsupported");
 	}
 
 	builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
