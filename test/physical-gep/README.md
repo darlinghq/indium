@@ -37,7 +37,19 @@ rb "$OUT/nested-vec3.spv" 8
 rb "$OUT/struct-lead.spv" 4 5 6
 rb "$OUT/struct-vec4.spv" 4
 rb "$OUT/struct-vec2.spv" 2
+rb "$OUT/mixed-vec3.spv" 4 5 6
+rb "$OUT/packed2-member.spv" 2 3
+rb "$OUT/packed2-member-int.spv" 2 3
+rb "$OUT/packed3-array.spv" 4 5 6
+rb "$OUT/array-member.spv" 2
+rb "$OUT/array-pair.spv" 5
+rb "$OUT/packed-struct-vec4.spv" 5
+rb "$OUT/guard-packed3-scalar.spv" 4
+rb "$OUT/guard-packed3-zero.spv" 1
 ```
+
+Negative controls: `check.sh` requires the comparison to reject the 12-byte stride for `vec3`
+and `mixed-vec3`, and `rb "$OUT/mixed-vec3.spv" 3 4 5` must report a mismatch.
 
 Before the change `vector` and `scalar` translate but `spirv-val` rejects them
 (`OpAccessChain` result type does not match the type indexed from the base); `array` and `array32`
@@ -61,3 +73,29 @@ error. `struct-lead`, `struct-vec4` and `struct-vec2` are controls whose offsets
 `neg32` steps back one float from element 5 with an i32 index of -1. The index must be
 sign-extended to 64 bits before the byte multiply (`OpSConvert`); zero-extension would add
 almost 2^34 bytes instead of subtracting 4. The readback returns element 4.
+
+Vector layout does not depend on the Metal name. The `mixed-*`, `packed2-*` and
+`packed3-array` shapes declare a `packed_T` output argument, whose type is declared before
+any instruction is translated, and then address argument 0 through the plain LLVM vector
+(`<3 x float>` at index 1, `{float, <2 x float>}`, `{half, <3 x half>}`, `{i16, <2 x i16>}`,
+`[2 x <3 x float>]`). When the packed name supplied the cached vector layout, these used
+strides of 12 instead of 16 and member offsets of 4, 4 and 2 instead of 8, 8 and 4, with no
+`spirv-val` error. `wide-member` and `wide-member-i8` check that 8- and 16-lane vectors are
+aligned to their size (member at 32 and 16, not 8 and 2); like the half, short and char rows
+they are constant-only, because Iridium declares no 8/16-bit storage or `Vector16`
+capability. `mixed-uchar3` is a regression guard (`<3 x i8>` keeps its 4-byte stride).
+`array-member`, `array-pair` and `packed-struct-vec4` are controls on LLVM array and
+packed-struct layout and say nothing about how a compiler encodes Metal packed types.
+
+`guard-packed3` declares argument 0 `packed_float3` and indexes it through `<3 x float>` with
+a non-zero first index. Metal declares 12-byte elements, the vector steps 16, and nothing in
+the tree says which an AIR producer means (a cast of `packed_float3*` to `float3*` legitimately
+produces the 16-byte form), so translation fails naming the argument. `guard-packed3-dynamic`
+(first index loaded at run time), `guard-packed-half3` (`<3 x half>` over `packed_half3`),
+`guard-packed3-array` (`[2 x <3 x float>]`) and `guard-packed3-struct` (`{float, <3 x float>}`)
+must be refused the same way, and `guard-packed3-no-index` (a getelementptr without indices)
+must fail with its own error. The guard does not see a packed argument reached through another
+getelementptr, a `phi` or a `select`, nor packed members inside structs, whose names the AIR
+metadata does not carry. `guard-packed3-scalar`
+(float steps) and `guard-packed3-zero` (first index 0) are the accesses the guard must let
+through.

@@ -44,6 +44,17 @@ check() {
 	echo "PASS $shape $got"
 }
 
+# refused <shape> <text>: translation must exit 1 with the text on stderr
+refused() {
+	"$gep" "$1" "$out/$1.spv" >/dev/null 2>"$out/$1.err"
+	status=$?
+	if [ "$status" -eq 1 ] && grep -qF "$2" "$out/$1.err"; then
+		echo "PASS $1 refused"
+	else
+		fail "$1 exit $status: $(cat "$out/$1.err")"
+	fi
+}
+
 # differs <shape> <constants>: negative control, the comparison must reject a wrong value
 differs() {
 	got=$(constants "$out/$1.spv")
@@ -67,7 +78,28 @@ check C struct-int3
 check R struct-lead
 check R struct-vec4
 check R struct-vec2
+check R mixed-vec3
+check C mixed-half3-member
+check C mixed-short2-member
+check R packed2-member
+check R packed2-member-int
+check R packed3-array 'OpDecorate %_arr_v3float_[A-Za-z0-9_]+ ArrayStride 16'
+check C mixed-uchar3
+check R array-member
+check R array-pair
+check R packed-struct-vec4
+check C wide-member
+check C wide-member-i8
+check R guard-packed3-scalar
+check R guard-packed3-zero
+refused guard-packed3 'argument 0 declared packed_float3 (12-byte elements) is indexed through a 3-lane vector (16-byte stride)'
+refused guard-packed3-dynamic 'argument 0 declared packed_float3 (12-byte elements) is indexed through a 3-lane vector (16-byte stride)'
+refused guard-packed-half3 'argument 0 declared packed_half3 (6-byte elements) is indexed through a 3-lane vector (8-byte stride)'
+refused guard-packed3-array 'argument 0 declared packed_float3 (12-byte elements) is indexed through a 3-lane vector (16-byte stride)'
+refused guard-packed3-struct 'argument 0 declared packed_float3 (12-byte elements) is indexed through a 3-lane vector (16-byte stride)'
+refused guard-packed3-no-index 'getelementptr without indices'
 differs vec3 12
+differs mixed-vec3 12
 
 echo "$failures failures"
 [ "$failures" -eq 0 ]
