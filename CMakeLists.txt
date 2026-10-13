@@ -191,6 +191,7 @@ else()
 	option(ENABLE_TESTS "Whether or not to enable tests" OFF)
 
 	if (ENABLE_TESTS)
+		enable_testing()
 		add_subdirectory(test)
 	endif ()
 endif()

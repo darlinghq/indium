@@ -5,36 +5,38 @@ source, index 1), `scalar` (`float` source, index 5) and `array` (`[4 x <4 x flo
 source, i64 indices 0 and 1, the declared layout, as a control), `array32` (the same with i32 indices)
 and `vec3` (`<3 x float>` source, index 1). Nothing here comes from third-party compiler output.
 
-From the repository root (`$OUT` is a scratch directory):
+Each shape lists its source type, indices, loaded type and argument names in
+`physical-gep.cpp`. The fixture sets the AIR datalayout on the module and prints the byte
+constants the GEP must use, computed by LLVM-C (`LLVMABISizeOfType`, `LLVMOffsetOfElement`
+under that datalayout); `check.sh` compares them with the `OpIMul`/`OpIAdd` constants in the
+disassembly, runs `spirv-val` on the 32-bit rows and fails on any mismatch. Load alignment is
+the loaded type's ABI alignment capped by the largest power of two dividing the byte offset.
+With `-DENABLE_TESTS=ON` (which then requires `spirv-dis` and `spirv-val` from SPIRV-Tools
+at configure time), build `indium-test-physical-gep` and run `ctest -R physical-gep` from the
+build directory. By hand, from the
+repository root (`$OUT` is a scratch directory):
 
 ```sh
 c++ -std=c++17 -ffunction-sections -fdata-sections '-DHOST_LLVM_LIBNAME="libLLVM.so"' -Iinclude -Iprivate-include test/physical-gep/physical-gep.cpp src/iridium/spirv.cpp src/iridium/dynamic-llvm.cpp -Wl,--gc-sections -lLLVM -ldl -o "$OUT/physical-gep"
+test/physical-gep/check.sh "$OUT/physical-gep" "$OUT"
+```
+
+Readback needs the Apple M1 Vulkan device and stays manual (the input buffer holds 0..15):
+
+```sh
 c++ -std=c++17 test/physical-gep/readback.cpp -lvulkan -o "$OUT/readback"
-for shape in vector scalar array array32 vec3; do
-  "$OUT/physical-gep" $shape "$OUT/$shape.spv" && spirv-val --target-env vulkan1.3 --relax-block-layout --scalar-block-layout "$OUT/$shape.spv"
-done
-spirv-dis "$OUT/vec3.spv" | grep 'OpIMul %ulong %long_1 %ulong_16'
-"$OUT/physical-gep" neg32 "$OUT/neg32.spv" && spirv-val --target-env vulkan1.3 --relax-block-layout --scalar-block-layout "$OUT/neg32.spv"
-spirv-dis "$OUT/neg32.spv" | grep 'OpSConvert %long %int_n1'
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/neg32.spv" 4
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/vector.spv" 4 5 6 7
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/scalar.spv" 5
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/array.spv" 4 5 6 7
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/array32.spv" 4 5 6 7
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/vec3.spv" 4 5 6
-# struct member offsets: shape, then the member offsets added after the first index
-for case in "struct-vec3 16" "nested-vec3 16 16" "struct-half3 8" "struct-int3 16" \
-            "struct-lead 16" "struct-vec4 16" "struct-vec2 8"; do
-  set -- $case; shape=$1; shift
-  "$OUT/physical-gep" $shape "$OUT/$shape.spv" >/dev/null || { echo "FAIL $shape translate"; continue; }
-  got=$(spirv-dis "$OUT/$shape.spv" | grep -o 'OpIAdd %ulong %[a-z0-9_]* %ulong_[0-9]*' | grep -o '[0-9]*$' | paste -sd' ')
-  [ "$got" = "$*" ] && echo "PASS $shape $got" || echo "FAIL $shape got '$got' want '$*'"
-done
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec3.spv" 4
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/nested-vec3.spv" 8
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-lead.spv" 4 5 6
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec4.spv" 4
-VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$OUT/struct-vec2.spv" 2
+rb() { VK_DRIVER_FILES=/usr/share/vulkan/icd.d/asahi_icd.json "$OUT/readback" "$@"; }
+rb "$OUT/neg32.spv" 4
+rb "$OUT/vector.spv" 4 5 6 7
+rb "$OUT/scalar.spv" 5
+rb "$OUT/array.spv" 4 5 6 7
+rb "$OUT/array32.spv" 4 5 6 7
+rb "$OUT/vec3.spv" 4 5 6
+rb "$OUT/struct-vec3.spv" 4
+rb "$OUT/nested-vec3.spv" 8
+rb "$OUT/struct-lead.spv" 4 5 6
+rb "$OUT/struct-vec4.spv" 4
+rb "$OUT/struct-vec2.spv" 2
 ```
 
 Before the change `vector` and `scalar` translate but `spirv-val` rejects them
