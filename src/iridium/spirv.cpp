@@ -1,6 +1,15 @@
 #include <iridium/spirv.hpp>
 #include <optional>
 #include <functional>
+#include <stdexcept>
+
+static size_t powerOf2Ceil(size_t value) {
+	size_t result = 1;
+	while (result < value) {
+		result <<= 1;
+	}
+	return result;
+}
 
 bool Iridium::SPIRV::Decoration::operator==(const Decoration& other) const {
 	if (type != other.type || arguments.size() != other.arguments.size()) {
@@ -109,6 +118,17 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareType(const Type& type) 
 	if (typeCopy.backingType == Type::BackingType::Array) {
 		declareType(Type(Type::IntegerTag {}, 32, false));
 		typeCopy.arrayLengthID = reserveResultID();
+	}
+
+	// One layout per vector, whoever declares it first: LLVM's natural vector
+	// layout, which the AIR datalayout specifies for every vector width.
+	if (typeCopy.backingType == Type::BackingType::Vector) {
+		auto element = _reverseTypeIDs.find(typeCopy.targetType);
+		if (element == _reverseTypeIDs.end()) {
+			throw std::logic_error("vector of an undeclared element type");
+		}
+		typeCopy.size = typeCopy.entryCount * element->second->size;
+		typeCopy.alignment = powerOf2Ceil(typeCopy.size);
 	}
 
 	ResultID id = _currentResultID;

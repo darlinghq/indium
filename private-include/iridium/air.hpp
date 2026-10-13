@@ -36,6 +36,8 @@ namespace Iridium {
 			LLVMSupport::Module _module { nullptr, DynamicLLVM::LLVMDisposeModule };
 			LLVMSupport::MemoryBuffer _bitcodeBuffer { nullptr, DynamicLLVM::LLVMDisposeMemoryBuffer };
 			LLVMValueRef _function;
+			// buffer parameters declared packed_<scalar>3, with a description for errors
+			std::unordered_map<LLVMValueRef, std::string> _packed3Buffers;
 			std::string _name;
 			Type _type;
 			size_t _positionOutputIndex = SIZE_MAX;

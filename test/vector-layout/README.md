@@ -8,8 +8,15 @@ loads the first component of the second padded float3 in a two-element array
 Before the fix, ordinary vector type checks fail 15/18. Declaring float3 metadata
 before the array emits stride12 and fails Vulkan validation; declaring a scalar
 first validates and reads44. After the fix, both orders validate and read44 on
-Apple M1. Packed names retain their previous layout, checked separately; this
-change does not establish correct packed-vector support.
+Apple M1.
+
+`vector-types.cpp` declares `packed_T<N>`, then `T<N>`, then the LLVM vector `<N x T>` in one
+builder (T in float/half/int/long/short/char, N 2..4) and requires one SPIR-V id whose size,
+alignment and allocation size equal LLVM-C's `LLVMStoreSizeOfType`, `LLVMABIAlignmentOfType`
+and `LLVMABISizeOfType` under the AIR datalayout; `<8 x float>` and `<16 x i8>` check the
+power-of-two alignment of wide vectors. A packed name does not select a different vector
+layout: the bytes a kernel addresses follow the LLVM types of its accesses. With
+`-DENABLE_TESTS=ON` it runs as `ctest -R vector-types`.
 
 From this checkout, compile each producer serially under the shared lock:
 

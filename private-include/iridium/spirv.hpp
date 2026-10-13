@@ -284,12 +284,11 @@ namespace Iridium {
 				size(totalSize),
 				alignment(structAlignment)
 				{};
-			explicit Type(const VectorTag&, size_t componentCount, ResultID componentType, size_t totalSize, size_t vectorAlignment):
+			// Builder::declareType derives the layout from the declared component type.
+			explicit Type(const VectorTag&, size_t componentCount, ResultID componentType):
 				backingType(BackingType::Vector),
 				entryCount(componentCount),
-				targetType(componentType),
-				size(totalSize),
-				alignment(vectorAlignment)
+				targetType(componentType)
 				{};
 			explicit Type(const MatrixTag&, size_t columnCount, ResultID entryType, size_t totalSize, size_t matrixAlignment):
 				backingType(BackingType::Matrix),

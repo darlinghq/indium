@@ -14,7 +14,7 @@ int main(int argc,char **argv) {
    auto value=LLVMConstInt(LLVMIntTypeInContext(context,width),values[index],0);
    auto translated=llvmValueToResultID(builder,value);
    auto expected=llvmTypeToSPIRVType(builder,LLVMIntTypeInContext(context,width));
-   auto vector=builder.declareType(Iridium::SPIRV::Type(Iridium::SPIRV::Type::VectorTag{},2,expected,width==1?2:width/4,width==1?2:width/4));
+   auto vector=builder.declareType(Iridium::SPIRV::Type(Iridium::SPIRV::Type::VectorTag{},2,expected));
    builder.declareConstantComposite(vector,{translated,translated});
    auto voidType=builder.declareType(Iridium::SPIRV::Type(Iridium::SPIRV::Type::VoidTag{}));
    auto functionType=builder.declareType(Iridium::SPIRV::Type(Iridium::SPIRV::Type::FunctionTag{},voidType,{},8));
