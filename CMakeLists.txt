@@ -159,9 +159,10 @@ if (NOT DARLING)
 endif()
 
 execute_process(
-	COMMAND llvm-config --link-shared --libnames
+	COMMAND "${LLVM_TOOLS_BINARY_DIR}/llvm-config" --link-shared --libnames
 	OUTPUT_VARIABLE HOST_LLVM_LIBNAME
 	OUTPUT_STRIP_TRAILING_WHITESPACE
+	COMMAND_ERROR_IS_FATAL ANY
 )
 
 target_compile_definitions(iridium PRIVATE

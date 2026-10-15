@@ -1,4 +1,7 @@
 #include <iridium/dynamic-llvm.hpp>
+#include <llvm/Config/llvm-config.h>
+#include <stdexcept>
+#include <string>
 
 #ifdef DARLING
 	#include <elfcalls.h>
@@ -19,7 +22,20 @@ bool Iridium::DynamicLLVM::init() {
 	libraryHandle = dlopen(HOST_LLVM_LIBNAME, RTLD_LAZY);
 #endif
 
-	return !!libraryHandle;
+	if (!libraryHandle) return false;
+	// LLVM's C API enum values changed in LLVM 23. A different runtime major
+	// misclassifies constants and branch instructions even when symbols resolve.
+	using GetVersion = void (*)(unsigned*, unsigned*, unsigned*);
+	auto getVersion = reinterpret_cast<GetVersion>(resolveSymbol("LLVMGetVersion"));
+	unsigned major = 0, minor = 0, patch = 0;
+	if (getVersion) getVersion(&major, &minor, &patch);
+	if (major != LLVM_VERSION_MAJOR) {
+		finit();
+		throw std::runtime_error("Iridium LLVM version mismatch: built with LLVM " +
+			std::to_string(LLVM_VERSION_MAJOR) + ", loaded LLVM " + std::to_string(major) +
+			" from " HOST_LLVM_LIBNAME "; rebuild and reinstall the runtime with matching LLVM headers and library");
+	}
+	return true;
 };
 
 void Iridium::DynamicLLVM::finit() {
