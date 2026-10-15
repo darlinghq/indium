@@ -377,6 +377,27 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 		}
 	}
 
+	// LLVM 23 represents a floating-point vector splat (e.g. `<3 x float> zeroinitializer`) as a vector-typed
+	// ConstantFP rather than ConstantAggregateZero/ConstantDataVector. Declare the scalar and splat it into a composite.
+	if (kind == LLVMConstantFPValueKind && typeKind == LLVMVectorTypeKind) {
+		auto elementKind = DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMGetElementType(type));
+		LLVMBool losesInfo = false;
+		auto val = DynamicLLVM::LLVMConstRealGetDouble(llvmValue, &losesInfo);
+		ResultID element = ResultIDInvalid;
+		switch (elementKind) {
+			case LLVMFloatTypeKind: element = builder.declareConstantScalar<float>(val); break;
+			case LLVMDoubleTypeKind: element = builder.declareConstantScalar<double>(val); break;
+			case LLVMHalfTypeKind: {
+				Iridium::Float16 tmp = val;
+				element = builder.declareConstantScalar<const Iridium::Float16*>(&tmp);
+			} break;
+			default:
+				throw ImpossibleResultID("unsupported float vector constant element type kind " + std::to_string((int)elementKind));
+		}
+		std::vector<ResultID> vals(DynamicLLVM::LLVMGetVectorSize(type), element);
+		return builder.declareConstantComposite(llvmTypeToSPIRVType(builder, type), vals);
+	}
+
 	switch (kind) {
 		case LLVMConstantIntValueKind: {
 			auto width = DynamicLLVM::LLVMGetIntTypeWidth(type);
