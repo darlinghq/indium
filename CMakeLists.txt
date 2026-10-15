@@ -158,12 +158,35 @@ if (NOT DARLING)
 	)
 endif()
 
-execute_process(
-	COMMAND "${LLVM_TOOLS_BINARY_DIR}/llvm-config" --link-shared --libnames
-	OUTPUT_VARIABLE HOST_LLVM_LIBNAME
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-	COMMAND_ERROR_IS_FATAL ANY
-)
+# Use an llvm-config of the same major as the headers found above. A stale cached LLVM_DIR can point at
+# a removed LLVM whose llvm-config exists but whose library is gone, so fall back to the one on PATH.
+set(HOST_LLVM_LIBNAME "")
+foreach(candidate IN ITEMS "${LLVM_TOOLS_BINARY_DIR}/llvm-config" llvm-config)
+	execute_process(
+		COMMAND "${candidate}" --version
+		OUTPUT_VARIABLE candidate_version
+		RESULT_VARIABLE candidate_status
+		ERROR_QUIET
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+	)
+	if (candidate_status EQUAL 0 AND candidate_version MATCHES "^${LLVM_VERSION_MAJOR}\\.")
+		execute_process(
+			COMMAND "${candidate}" --link-shared --libnames
+			OUTPUT_VARIABLE HOST_LLVM_LIBNAME
+			RESULT_VARIABLE candidate_status
+			ERROR_QUIET
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+		)
+		if (candidate_status EQUAL 0 AND HOST_LLVM_LIBNAME)
+			break()
+		endif()
+		set(HOST_LLVM_LIBNAME "")
+	endif()
+endforeach()
+if (NOT HOST_LLVM_LIBNAME)
+	message(FATAL_ERROR "No working llvm-config for LLVM ${LLVM_VERSION} (LLVM_DIR=${LLVM_DIR}). "
+		"Remove LLVM_DIR from the CMake cache or install the matching LLVM.")
+endif()
 
 target_compile_definitions(iridium PRIVATE
 	"HOST_LLVM_LIBNAME=\"${HOST_LLVM_LIBNAME}\""
