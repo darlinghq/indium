@@ -1,7 +1,6 @@
 #include <iridium/dynamic-llvm.hpp>
 #include <llvm/Config/llvm-config.h>
-#include <stdexcept>
-#include <string>
+#include <cstdio>
 
 #ifdef DARLING
 	#include <elfcalls.h>
@@ -31,9 +30,14 @@ bool Iridium::DynamicLLVM::init() {
 	if (getVersion) getVersion(&major, &minor, &patch);
 	if (major != LLVM_VERSION_MAJOR) {
 		finit();
-		throw std::runtime_error("Iridium LLVM version mismatch: built with LLVM " +
-			std::to_string(LLVM_VERSION_MAJOR) + ", loaded LLVM " + std::to_string(major) +
-			" from " HOST_LLVM_LIBNAME "; rebuild and reinstall the runtime with matching LLVM headers and library");
+		// init() runs from Metal's library constructor, where an escaping exception would terminate every
+		// process that loads Metal, so report the mismatch and fail like any other load failure.
+		char loaded[64];
+		if (getVersion) snprintf(loaded, sizeof loaded, "LLVM %u", major);
+		else snprintf(loaded, sizeof loaded, "an LLVM without LLVMGetVersion (older than 16)");
+		fprintf(stderr, "Iridium LLVM version mismatch: built with LLVM %d, loaded %s from " HOST_LLVM_LIBNAME
+			"; rebuild and reinstall the runtime with matching LLVM headers and library\n", LLVM_VERSION_MAJOR, loaded);
+		return false;
 	}
 	return true;
 };

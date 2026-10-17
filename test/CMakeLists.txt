@@ -43,3 +43,16 @@ add_test(NAME vector-types COMMAND indium-test-vector-types)
 add_iridium_check(indium-test-numeric-constants numeric-constants/numeric-constants.cpp)
 add_iridium_check(indium-test-vector-splat vector-splat/vector-splat.cpp)
 add_test(NAME vector-splat COMMAND indium-test-vector-splat)
+
+# init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
+# from a library constructor); the library the test loads claims to be LLVM 1.
+add_library(indium-test-fake-llvm MODULE dynamic-llvm-mismatch/fake-llvm.cpp)
+add_executable(indium-test-dynamic-llvm-mismatch dynamic-llvm-mismatch/dynamic-llvm-mismatch.cpp "${INDIUM_ROOT}/src/iridium/dynamic-llvm.cpp")
+add_dependencies(indium-test-dynamic-llvm-mismatch indium-test-fake-llvm)
+target_include_directories(indium-test-dynamic-llvm-mismatch PRIVATE "${INDIUM_ROOT}/include" "${INDIUM_ROOT}/private-include" ${LLVM_INCLUDE_DIRS})
+target_compile_definitions(indium-test-dynamic-llvm-mismatch PRIVATE "HOST_LLVM_LIBNAME=\"$<TARGET_FILE:indium-test-fake-llvm>\"")
+target_link_libraries(indium-test-dynamic-llvm-mismatch PRIVATE dl)
+set_target_properties(indium-test-dynamic-llvm-mismatch PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME dynamic-llvm-mismatch COMMAND indium-test-dynamic-llvm-mismatch)
+# the top-level LLVM discovery block, run against fake llvm-config trees
+add_test(NAME llvm-discovery COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/llvm-discovery/check.sh")
