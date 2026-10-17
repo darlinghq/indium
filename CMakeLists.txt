@@ -18,8 +18,10 @@ endfunction()
 
 set(indium_llvm_usable FALSE)
 if (LLVM_DIR)
-	# <prefix>/lib/cmake/llvm or <prefix>/lib64/cmake/llvm
-	get_filename_component(indium_llvm_prefix "${LLVM_DIR}/../../.." ABSOLUTE)
+	# <prefix>/lib/cmake/llvm or <prefix>/lib64/cmake/llvm. Resolve symlinks first: a distro cmake dir is often a
+	# symlink into <prefix>/lib/llvm-N, and CMake collapses ".." lexically before it follows a link.
+	get_filename_component(indium_llvm_real_dir "${LLVM_DIR}" REALPATH)
+	get_filename_component(indium_llvm_prefix "${indium_llvm_real_dir}/../../.." ABSOLUTE)
 	indium_llvm_config_works("${indium_llvm_prefix}/bin/llvm-config" indium_llvm_usable)
 endif()
 if (NOT indium_llvm_usable)
