@@ -4,6 +4,7 @@
 #include <iridium/dynamic-llvm.hpp>
 
 #include <llvm-c/BitReader.h>
+#include <llvm/Config/llvm-config.h>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -40,6 +41,12 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 
 // TEST
 #include <iostream>
+
+#if LLVM_VERSION_MAJOR >= 23
+	#define IRIDIUM_IS_BR(opcode) ((opcode) == LLVMUncondBr || (opcode) == LLVMCondBr)
+#else
+	#define IRIDIUM_IS_BR(opcode) ((opcode) == LLVMBr)
+#endif
 
 class ImpossibleResultID: public std::exception {};
 
@@ -974,7 +981,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		CFGInfo cfgInfo {};
 
-		if (lastInstOpcode == LLVMBr && DynamicLLVM::LLVMIsConditional(lastInst)) {
+		if (IRIDIUM_IS_BR(lastInstOpcode) && DynamicLLVM::LLVMIsConditional(lastInst)) {
 			// check if this is a basic conditional/selection (i.e. an `if`)
 			auto firstBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 0);
 			auto secondBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 1);
@@ -987,7 +994,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			SPIRV::ResultID mergeBlock = SPIRV::ResultIDInvalid;
 
 			// check if the first block is the special block
-			if (lastInstOpcodeFirstBlock == LLVMBr && !DynamicLLVM::LLVMIsConditional(lastInstFirstBlock)) {
+			if (IRIDIUM_IS_BR(lastInstOpcodeFirstBlock) && !DynamicLLVM::LLVMIsConditional(lastInstFirstBlock)) {
 				// make sure the target block is the same
 				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstFirstBlock, 0);
 
@@ -995,7 +1002,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// perfect, the second block is the merge block then
 					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(secondBlock));
 				}
-			} else if (lastInstOpcodeSecondBlock == LLVMBr && !DynamicLLVM::LLVMIsConditional(lastInstSecondBlock)) {
+			} else if (IRIDIUM_IS_BR(lastInstOpcodeSecondBlock) && !DynamicLLVM::LLVMIsConditional(lastInstSecondBlock)) {
 				// make sure the target block is the same
 				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstSecondBlock, 0);
 
@@ -1386,7 +1393,12 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+#if LLVM_VERSION_MAJOR >= 23
+				case LLVMUncondBr:
+				case LLVMCondBr: {
+#else
 				case LLVMBr: {
+#endif
 					if (DynamicLLVM::LLVMIsConditional(inst)) {
 						auto condition = DynamicLLVM::LLVMGetCondition(inst);
 						auto trueLabel = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetSuccessor(inst, 0));
