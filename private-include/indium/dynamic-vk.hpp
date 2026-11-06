@@ -5,6 +5,7 @@
 
 #include <indium/instance.private.hpp>
 
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -26,7 +27,11 @@ namespace Indium {
 		bool eagerlyResolveRequired();
 
 		struct DynamicFunctionBase {
-			void* pointer;
+			// Written once, inside the call_once below. Calls read it without taking the once_flag
+			// after the first resolution, so it is atomic: a thread that sees the pointer set also
+			// sees the resolution that produced it.
+			std::atomic<void*> pointer { nullptr };
+			std::atomic<bool> _resolved { false };
 			std::once_flag _resolveFlag;
 			const char* name;
 
@@ -35,6 +40,9 @@ namespace Indium {
 				{};
 
 			bool resolve() {
+				if (_resolved.load(std::memory_order_acquire)) {
+					return pointer.load(std::memory_order_relaxed) != nullptr;
+				}
 				std::call_once(_resolveFlag, [&]() {
 					// Both halves of this guard are load-bearing. `vkGetInstanceProcAddr` is NULL
 					// before `init()` runs and again after `finit()`, and `finit()` is reached from
@@ -45,11 +53,12 @@ namespace Indium {
 					// vkGetInstanceProcAddr is only defined with a real instance (Vulkan spec,
 					// "vkGetInstanceProcAddr"). Either way the answer is "not available", which is
 					// what every caller of resolve() already handles for a missing entry point.
-					pointer = (vkGetInstanceProcAddr && globalInstance != VK_NULL_HANDLE)
+					pointer.store((vkGetInstanceProcAddr && globalInstance != VK_NULL_HANDLE)
 						? reinterpret_cast<void*>(vkGetInstanceProcAddr(globalInstance, name))
-						: nullptr;
+						: nullptr, std::memory_order_relaxed);
+					_resolved.store(true, std::memory_order_release);
 				});
-				return !!pointer;
+				return pointer.load(std::memory_order_acquire) != nullptr;
 			};
 
 			bool isAvailable() {
@@ -74,7 +83,7 @@ namespace Indium {
 				if (!resolve()) {
 					throw std::runtime_error(std::string("Failed to resolve ") + name);
 				}
-				Ret (*func)(Arg...) = reinterpret_cast<decltype(func)>(pointer);
+				Ret (*func)(Arg...) = reinterpret_cast<decltype(func)>(pointer.load(std::memory_order_relaxed));
 				return func(std::forward<Arg>(arg)...);
 			};
 		};
