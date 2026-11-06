@@ -9,6 +9,7 @@ add_subdirectory(cubemap)
 add_subdirectory(basic-compute)
 add_subdirectory(store-reference)
 add_subdirectory(const-bitcast-operand)
+add_subdirectory(air-ops)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header

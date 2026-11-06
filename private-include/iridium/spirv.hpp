@@ -50,6 +50,7 @@ namespace Iridium {
 			CullDistance = 4,
 			VertexID = 5,
 			FragCoord = 15,
+			FrontFacing = 17,
 			PointCoord = 16,
 			NumWorkgroups = 24,
 			WorkgroupId = 26,
@@ -61,6 +62,7 @@ namespace Iridium {
 			SubgroupId = 40,
 			SubgroupLocalInvocationId = 41,
 			VertexIndex = 42,
+			InstanceIndex = 43,
 		};
 
 		enum class StorageClass: uint32_t {
@@ -68,6 +70,7 @@ namespace Iridium {
 			Input = 1,
 			Uniform = 2,
 			Output = 3,
+			Private = 6,
 			Function = 7,
 			StorageBuffer = 12,
 			PhysicalStorageBuffer = 5349,
@@ -82,6 +85,7 @@ namespace Iridium {
 			Int64 = 11,
 			Int16 = 22,
 			Int8 = 39,
+			ImageQuery = 50,
 			PhysicalStorageBufferAddresses = 5347,
 		};
 
@@ -255,6 +259,10 @@ namespace Iridium {
 			ImageFormat imageFormat = ImageFormat::Unknown;
 			ResultID imageRealSampleTypeID = ResultIDInvalid;
 
+			// Structures and arrays in Private or Function memory must not carry the explicit layout (Offset and
+			// ArrayStride decorations) that buffer memory needs, so those are distinct types.
+			bool layoutFree = false;
+
 			// this does NOT need to be considered for equality
 			ResultID arrayLengthID = ResultIDInvalid;
 
@@ -371,6 +379,7 @@ struct std::hash<Iridium::SPIRV::Type> {
 		result = ((result << 1) ^ std::hash<size_t>()(type.scalarWidth)) >> 1;
 		result = ((result << 1) ^ std::hash<bool>()(type.integerIsSigned)) >> 1;
 		result = ((result << 1) ^ std::hash<size_t>()(type.entryCount)) >> 1;
+		result = ((result << 1) ^ std::hash<bool>()(type.layoutFree)) >> 1;
 		for (const auto& member: type.structureMembers) {
 			result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(member.id)) >> 1;
 			for (const auto& decoration: member.decorations) {
@@ -411,6 +420,7 @@ namespace Iridium {
 		struct GlobalVariable {
 			StorageClass storageClass;
 			ResultID typeID;
+			ResultID initializer = ResultIDInvalid;
 		};
 
 		struct FunctionVariable {
@@ -466,10 +476,22 @@ namespace Iridium {
 			VectorExtractDynamic = 77,
 			VectorInsertDynamic = 78,
 			VectorShuffle = 79,
+			CompositeConstruct = 80,
 			CompositeExtract = 81,
 			CompositeInsert = 82,
 			SampledImage = 86,
 			ImageSampleImplicitLod = 87,
+			ImageSampleExplicitLod = 88,
+			ImageSampleDrefImplicitLod = 89,
+			ImageSampleDrefExplicitLod = 90,
+			ImageFetch = 95,
+			ImageRead = 98,
+			ImageWrite = 99,
+			ImageQuerySizeLod = 103,
+			ImageQuerySize = 104,
+			ConvertFToU = 109,
+			ConvertFToS = 110,
+			ConvertSToF = 111,
 			ConvertUToF = 112,
 			UConvert = 113,
 			SConvert = 114,
@@ -487,7 +509,7 @@ namespace Iridium {
 			IMul = 132,
 			FMul = 133,
 			UDiv = 134,
-			SDiv = 133,
+			SDiv = 135,
 			FDiv = 136,
 			UMod = 137,
 			SRem = 138,
@@ -495,13 +517,54 @@ namespace Iridium {
 			FRem = 140,
 			FMod = 141,
 			Dot = 148,
+			Any = 154,
+			All = 155,
+			Ordered = 162,
+			Unordered = 163,
+			LogicalEqual = 164,
+			LogicalNotEqual = 165,
+			LogicalOr = 166,
+			LogicalAnd = 167,
+			LogicalNot = 168,
+			Select = 169,
+			IEqual = 170,
+			INotEqual = 171,
+			UGreaterThan = 172,
+			SGreaterThan = 173,
+			UGreaterThanEqual = 174,
+			SGreaterThanEqual = 175,
+			ULessThan = 176,
+			SLessThan = 177,
+			ULessThanEqual = 178,
+			SLessThanEqual = 179,
+			FOrdEqual = 180,
+			FUnordEqual = 181,
+			FOrdNotEqual = 182,
+			FUnordNotEqual = 183,
 			FOrdLessThan = 184,
+			FUnordLessThan = 185,
 			FOrdGreaterThan = 186,
+			FUnordGreaterThan = 187,
+			FOrdLessThanEqual = 188,
+			FUnordLessThanEqual = 189,
+			FOrdGreaterThanEqual = 190,
+			FUnordGreaterThanEqual = 191,
+			ShiftRightLogical = 194,
+			ShiftRightArithmetic = 195,
+			ShiftLeftLogical = 196,
+			BitwiseOr = 197,
+			BitwiseXor = 198,
+			BitwiseAnd = 199,
+			Not = 200,
+			DPdx = 207,
+			DPdy = 208,
+			Fwidth = 209,
 			Phi = 245,
 			SelectionMerge = 247,
 			Label = 248,
 			Branch = 249,
 			BranchConditional = 250,
+			Kill = 252,
 			Return = 253,
 			ReturnValue = 254,
 			ExecutionModeId = 331,
@@ -675,7 +738,9 @@ namespace Iridium {
 			ResultID lookupResultID(uintptr_t association) const;
 
 			void addEntryPoint(const EntryPoint& entryPoint);
-			ResultID addGlobalVariable(ResultID typeID, StorageClass storageClass);
+			ResultID addGlobalVariable(ResultID typeID, StorageClass storageClass, ResultID initializer = ResultIDInvalid);
+			// declares a variable in the current function; `typeID` is its pointer type
+			ResultID addFunctionVariable(ResultID typeID);
 			void addDecoration(ResultID resultID, const Decoration& decoration);
 			FunctionInfo declareFunction(ResultID functionType);
 
@@ -723,6 +788,10 @@ namespace Iridium {
 			void encodeSelectionMerge(ResultID mergeBlock);
 			ResultID encodeSqrt(ResultID resultTypeID, ResultID target);
 			ResultID encodeTrunc(ResultID resultTypeID, ResultID operand);
+			// Emitters for instructions without a dedicated helper; every operand is a result ID or literal word.
+			ResultID encodeOp(Opcode opcode, ResultID resultTypeID, const std::vector<uint32_t>& operands);
+			void encodeOpWithoutResult(Opcode opcode, const std::vector<uint32_t>& operands);
+			ResultID encodeGLSLOp(GLSLOpcode opcode, ResultID resultTypeID, const std::vector<ResultID>& operands);
 
 			void encodeDebugPrint(std::string format, std::vector<ResultID> arguments);
 

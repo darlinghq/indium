@@ -79,7 +79,9 @@ namespace Iridium {
 			_macro(LLVMGetElementAsConstant) \
 			_macro(LLVMGetElementType) \
 			_macro(LLVMGetFCmpPredicate) \
+			_macro(LLVMGetAllocatedType) \
 			_macro(LLVMGetGEPSourceElementType) \
+			_macro(LLVMGetICmpPredicate) \
 			_macro(LLVMGetFirstBasicBlock) \
 			_macro(LLVMGetFirstInstruction) \
 			_macro(LLVMGetFirstNamedMetadata) \
@@ -119,6 +121,8 @@ namespace Iridium {
 			_macro(LLVMGlobalGetValueType) \
 			_macro(LLVMIsAConstantInt) \
 			_macro(LLVMIsAMDString) \
+			_macro(LLVMIsConstant) \
+			_macro(LLVMIsNull) \
 			_macro(LLVMIsConditional) \
 			_macro(LLVMIsPackedStruct) \
 			_macro(LLVMParseBitcode2) \

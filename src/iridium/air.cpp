@@ -74,6 +74,19 @@ public:
 	const char* what() const noexcept override { return _message.c_str(); }
 };
 
+// While set, structure and array types are declared without explicit layout, as Private and Function
+// memory requires.
+static thread_local bool g_layoutFreeTypes = false;
+
+class LayoutFreeScope {
+public:
+	explicit LayoutFreeScope(bool enabled): _previous(g_layoutFreeTypes) { g_layoutFreeTypes = enabled; }
+	~LayoutFreeScope() { g_layoutFreeTypes = _previous; }
+
+private:
+	bool _previous;
+};
+
 // The distance between consecutive objects of a type: its size rounded up to its
 // alignment (12-byte float3 objects sit 16 bytes apart).
 static size_t allocationSize(const Iridium::SPIRV::Type& type) {
@@ -157,7 +170,9 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			}
 			// align the final offset to determine the structure size
 			offset = (offset + (structAlignment - 1)) & ~(structAlignment - 1);
-			return builder.declareType(Type(Type::StructureTag {}, members, offset, structAlignment));
+			Type structType(Type::StructureTag {}, members, offset, structAlignment);
+			structType.layoutFree = g_layoutFreeTypes;
+			return builder.declareType(structType);
 		} break;
 
 		case LLVMPointerTypeKind: {
@@ -182,7 +197,9 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			auto typeInst = *builder.reverseLookupType(type);
 			auto elmCount = DynamicLLVM::LLVMGetArrayLength(llvmType);
 			size_t stride = (typeInst.size + typeInst.alignment - 1) & ~(typeInst.alignment - 1);
-			return builder.declareType(Type(Type::ArrayTag {}, type, elmCount, stride * elmCount, typeInst.alignment));
+			Type arrayType(Type::ArrayTag {}, type, elmCount, stride * elmCount, typeInst.alignment);
+			arrayType.layoutFree = g_layoutFreeTypes;
+			return builder.declareType(arrayType);
 		} break;
 
 		default:
@@ -373,6 +390,10 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 	{
 		ResultID maybe = builder.lookupResultID(reinterpret_cast<uintptr_t>(llvmValue));
 		if (maybe != ResultIDInvalid) {
+			if (kind == LLVMGlobalVariableValueKind) {
+				// every function using a global variable lists it in its entry point interface
+				builder.referenceGlobalVariable(maybe);
+			}
 			return maybe;
 		}
 	}
@@ -399,6 +420,23 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 	}
 
 	switch (kind) {
+		case LLVMGlobalVariableValueKind: {
+			// a constant the function keeps in memory, such as a lookup table
+			auto initializer = DynamicLLVM::LLVMGetInitializer(llvmValue);
+			if (!initializer) {
+				throw ImpossibleResultID("global variable without an initializer");
+			}
+			LayoutFreeScope layoutFree(true);
+			auto valueType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGlobalGetValueType(llvmValue));
+			auto pointerType = builder.declareType(Type(Type::PointerTag {}, StorageClass::Private, valueType, 8));
+			auto initialValue = llvmValueToResultID(builder, initializer);
+			auto result = builder.addGlobalVariable(pointerType, StorageClass::Private, initialValue);
+			builder.setResultType(result, pointerType);
+			builder.associateExistingResultID(result, reinterpret_cast<uintptr_t>(llvmValue));
+			builder.referenceGlobalVariable(result);
+			return result;
+		} break;
+
 		case LLVMConstantIntValueKind: {
 			auto width = DynamicLLVM::LLVMGetIntTypeWidth(type);
 			if (width != 1 && width != 8 && width != 16 && width != 32 && width != 64) {
@@ -436,9 +474,12 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			}
 		} break;
 
+		case LLVMConstantStructValueKind:
+		case LLVMConstantArrayValueKind:
 		case LLVMConstantVectorValueKind: {
 			std::vector<ResultID> vals;
-			auto count = DynamicLLVM::LLVMGetVectorSize(type);
+			auto count = typeKind == LLVMStructTypeKind ? DynamicLLVM::LLVMCountStructElementTypes(type)
+				: (typeKind == LLVMArrayTypeKind ? DynamicLLVM::LLVMGetArrayLength(type) : DynamicLLVM::LLVMGetVectorSize(type));
 
 			for (size_t i = 0; i < count; ++i) {
 				auto constant = DynamicLLVM::LLVMGetOperand(llvmValue, i);
@@ -448,10 +489,11 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			return builder.declareConstantComposite(llvmTypeToSPIRVType(builder, type), vals);
 		} break;
 
+		case LLVMConstantDataArrayValueKind:
 		case LLVMConstantDataVectorValueKind: {
 			std::vector<ResultID> vals;
 
-			auto count = DynamicLLVM::LLVMGetVectorSize(type);
+			auto count = typeKind == LLVMArrayTypeKind ? DynamicLLVM::LLVMGetArrayLength(type) : DynamicLLVM::LLVMGetVectorSize(type);
 
 			for (size_t i = 0; i < count; ++i) {
 				auto constant = DynamicLLVM::LLVMGetElementAsConstant(llvmValue, i);
@@ -461,6 +503,7 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			return builder.declareConstantComposite(llvmTypeToSPIRVType(builder, type), vals);
 		} break;
 
+		case LLVMPoisonValueValueKind:
 		case LLVMUndefValueValueKind: {
 			return builder.declareUndefinedValue(llvmTypeToSPIRVType(builder, type));
 		} break;
@@ -476,9 +519,9 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 					auto base = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(llvmValue, 0));
 					auto pointer = builder.reverseLookupType(builder.lookupResultType(base));
 					if (!pointer || pointer->backingType != Type::BackingType::Pointer ||
-						pointer->pointerStorageClass != StorageClass::PhysicalStorageBuffer)
+						(pointer->pointerStorageClass != StorageClass::PhysicalStorageBuffer && pointer->pointerStorageClass != StorageClass::Private))
 					{
-						throw ImpossibleResultID("constant getelementptr requires a known physical buffer pointer");
+						throw ImpossibleResultID("constant getelementptr requires a known physical buffer pointer or a global variable");
 					}
 					return llvmGEPToResultID(builder, llvmValue);
 				} break;
@@ -605,16 +648,20 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 		}
 	}
 
-	auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
-	auto tmp = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, pointeeType, 8));
 	auto tmp2 = llvmValueToResultID(builder, base);
+	auto origTypeID = builder.lookupResultType(tmp2);
+	auto maybeOrigType = builder.reverseLookupType(origTypeID);
+	if (!maybeOrigType || maybeOrigType->backingType != SPIRV::Type::BackingType::Pointer) {
+		throw ImpossibleResultID("getelementptr base has no recorded pointer type");
+	}
+	auto origType = *maybeOrigType;
+	bool logical = origType.pointerStorageClass == SPIRV::StorageClass::Function || origType.pointerStorageClass == SPIRV::StorageClass::Private;
+	LayoutFreeScope layoutFree(logical);
+
+	auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
 
 	// ensure the resulting pointer storage class is the same as the input pointer storage class
-	auto type = *builder.reverseLookupType(tmp);
-	auto origTypeID = builder.lookupResultType(tmp2);
-	auto origType = *builder.reverseLookupType(origTypeID);
-	type.pointerStorageClass = origType.pointerStorageClass;
-	auto resultType = builder.declareType(type);
+	auto resultType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, origType.pointerStorageClass, pointeeType, 8));
 
 	auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
 
@@ -673,6 +720,19 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 		auto asInteger = builder.encodeConvertPtrToU(uint64Type, tmp2);
 		auto added = builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, asInteger, offset);
 		resID = builder.encodeConvertUToPtr(resultType, added);
+	} else if (logical) {
+		// A local variable or global constant has no address to offset, but it is a single object of
+		// the source element type, so a getelementptr into it always starts with a zero index and
+		// becomes an access chain through the remaining ones.
+		auto first = DynamicLLVM::LLVMGetOperand(inst, 1);
+		if (!DynamicLLVM::LLVMIsAConstantInt(first) || DynamicLLVM::LLVMConstIntGetZExtValue(first) != 0) {
+			throw ImpossibleResultID("getelementptr steps past a local or constant object");
+		}
+		if (llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetGEPSourceElementType(inst)) != origType.targetType) {
+			throw ImpossibleResultID("getelementptr reinterprets a local or constant object");
+		}
+		indices.erase(indices.begin());
+		resID = indices.empty() ? tmp2 : builder.encodeAccessChain(resultType, tmp2, indices);
 	} else {
 		// Every buffer argument is a physical pointer; the other storage classes
 		// (images, samplers, stage I/O) have no byte address to offset.
@@ -683,6 +743,389 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 	builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 	builder.setResultType(resID, resultType);
 	return resID;
+}
+
+// The same integer type, scalar or vector, with the given signedness. LLVM integers have no sign, while
+// some SPIR-V instructions require their operands or result to be unsigned.
+static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned) {
+	using namespace Iridium::SPIRV;
+	auto type = *builder.reverseLookupType(typeID);
+	if (type.backingType == Type::BackingType::Vector) {
+		return builder.declareType(Type(Type::VectorTag {}, type.entryCount, integerTypeWithSign(builder, type.targetType, isSigned)));
+	}
+	if (type.backingType != Type::BackingType::Integer) {
+		throw ImpossibleResultID("expected an integer type");
+	}
+	return builder.declareType(Type(Type::IntegerTag {}, type.scalarWidth, isSigned));
+}
+
+// An integer constant of the given scalar or vector integer type (every lane holds `value`).
+static Iridium::SPIRV::ResultID integerConstantOfType(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, int64_t value) {
+	using namespace Iridium::SPIRV;
+	auto type = *builder.reverseLookupType(typeID);
+	if (type.backingType == Type::BackingType::Vector) {
+		std::vector<ResultID> lanes(type.entryCount, integerConstantOfType(builder, type.targetType, value));
+		return builder.declareConstantComposite(typeID, lanes);
+	}
+	switch (type.scalarWidth) {
+		case 8: return builder.declareConstantScalar<int8_t>(value);
+		case 16: return builder.declareConstantScalar<int16_t>(value);
+		case 32: return builder.declareConstantScalar<int32_t>(value);
+		case 64: return builder.declareConstantScalar<int64_t>(value);
+		default: throw ImpossibleResultID("unsupported integer width " + std::to_string(type.scalarWidth));
+	}
+}
+
+// A floating-point constant of the given scalar or vector float type.
+static Iridium::SPIRV::ResultID floatConstantOfType(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, double value) {
+	using namespace Iridium::SPIRV;
+	auto type = *builder.reverseLookupType(typeID);
+	if (type.backingType == Type::BackingType::Vector) {
+		std::vector<ResultID> lanes(type.entryCount, floatConstantOfType(builder, type.targetType, value));
+		return builder.declareConstantComposite(typeID, lanes);
+	}
+	switch (type.scalarWidth) {
+		case 16: {
+			Iridium::Float16 half = value;
+			return builder.declareConstantScalar<const Iridium::Float16*>(&half);
+		}
+		case 32: return builder.declareConstantScalar<float>(value);
+		case 64: return builder.declareConstantScalar<double>(value);
+		default: throw ImpossibleResultID("unsupported float width " + std::to_string(type.scalarWidth));
+	}
+}
+
+// Emits `opcode` with an unsigned result type, as SPIR-V requires for UConvert, UDiv, UMod and
+// ConvertFToU, and reinterprets the result as `typeID`.
+static Iridium::SPIRV::ResultID encodeUnsignedResultOp(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::Opcode opcode, Iridium::SPIRV::ResultID typeID, const std::vector<uint32_t>& operands) {
+	auto unsignedType = integerTypeWithSign(builder, typeID, false);
+	auto result = builder.encodeOp(opcode, unsignedType, operands);
+	return unsignedType == typeID ? result : builder.encodeBitcast(typeID, result);
+}
+
+static std::vector<std::string_view> splitAirName(std::string_view name) {
+	std::vector<std::string_view> parts;
+	while (true) {
+		auto dot = name.find('.');
+		parts.push_back(name.substr(0, dot));
+		if (dot == std::string_view::npos) {
+			break;
+		}
+		name.remove_prefix(dot + 1);
+	}
+	return parts;
+}
+
+// "f32", "f16", "v3f32", ...
+static bool airTypeTokenIsFloat(std::string_view token) {
+	if (!token.empty() && token[0] == 'v') {
+		token.remove_prefix(1);
+		while (!token.empty() && token[0] >= '0' && token[0] <= '9') {
+			token.remove_prefix(1);
+		}
+	}
+	return !token.empty() && token[0] == 'f';
+}
+
+// Translates the AIR math, relational, conversion and derivative intrinsics that map directly onto a
+// SPIR-V or GLSL.std.450 instruction. Returns false when `name` is not one of them.
+static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+
+	auto operand = [&](unsigned index) {
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, index));
+	};
+
+	auto parts = splitAirName(name);
+	if (parts.size() < 3 || parts[0] != "air") {
+		return false;
+	}
+
+	std::string_view fn = parts[1];
+	if (fn.substr(0, 5) == "fast_") {
+		fn.remove_prefix(5);
+	} else if (fn.substr(0, 8) == "precise_") {
+		fn.remove_prefix(8);
+	}
+
+	// floating-point functions: air.<fn>.<type>
+	if (parts.size() == 3 && airTypeTokenIsFloat(parts[2])) {
+		struct MathOp {
+			std::string_view name;
+			GLSLOpcode opcode;
+			unsigned arity;
+		};
+		static const MathOp mathOps[] = {
+			{ "sqrt", GLSLOpcode::Sqrt, 1 }, { "rsqrt", GLSLOpcode::InverseSqrt, 1 }, { "pow", GLSLOpcode::Pow, 2 },
+			{ "powr", GLSLOpcode::Pow, 2 }, { "exp", GLSLOpcode::Exp, 1 }, { "exp2", GLSLOpcode::Exp2, 1 },
+			{ "log", GLSLOpcode::Log, 1 }, { "log2", GLSLOpcode::Log2, 1 }, { "sin", GLSLOpcode::Sin, 1 },
+			{ "cos", GLSLOpcode::Cos, 1 }, { "tan", GLSLOpcode::Tan, 1 }, { "asin", GLSLOpcode::Asin, 1 },
+			{ "acos", GLSLOpcode::Acos, 1 }, { "atan", GLSLOpcode::Atan, 1 }, { "atan2", GLSLOpcode::Atan2, 2 },
+			{ "sinh", GLSLOpcode::Sinh, 1 }, { "cosh", GLSLOpcode::Cosh, 1 }, { "tanh", GLSLOpcode::Tanh, 1 },
+			{ "fabs", GLSLOpcode::FAbs, 1 }, { "floor", GLSLOpcode::Floor, 1 }, { "ceil", GLSLOpcode::Ceil, 1 },
+			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 }, { "round", GLSLOpcode::Round, 1 },
+			{ "trunc", GLSLOpcode::Trunc, 1 }, { "sign", GLSLOpcode::FSign, 1 }, { "fmin", GLSLOpcode::FMin, 2 },
+			{ "fmax", GLSLOpcode::FMax, 2 }, { "fma", GLSLOpcode::Fma, 3 }, { "mix", GLSLOpcode::FMix, 3 },
+			{ "clamp", GLSLOpcode::FClamp, 3 }, { "step", GLSLOpcode::Step, 2 }, { "smoothstep", GLSLOpcode::SmoothStep, 3 },
+			{ "normalize", GLSLOpcode::Normalize, 1 }, { "length", GLSLOpcode::Length, 1 }, { "distance", GLSLOpcode::Distance, 2 },
+			{ "cross", GLSLOpcode::Cross, 2 }, { "reflect", GLSLOpcode::Reflect, 2 },
+		};
+
+		for (auto& op: mathOps) {
+			if (op.name == fn) {
+				std::vector<ResultID> arguments;
+				for (unsigned i = 0; i < op.arity; ++i) {
+					arguments.push_back(operand(i));
+				}
+				resID = builder.encodeGLSLOp(op.opcode, type, arguments);
+				return true;
+			}
+		}
+
+		if (fn == "saturate") {
+			resID = builder.encodeGLSLOp(GLSLOpcode::FClamp, type, { operand(0), floatConstantOfType(builder, type, 0), floatConstantOfType(builder, type, 1) });
+			return true;
+		}
+		if (fn == "fmod") {
+			// MSL's fmod is C's: the result has the sign of x, as OpFRem's does
+			resID = builder.encodeOp(Opcode::FRem, type, { operand(0), operand(1) });
+			return true;
+		}
+		if (fn == "dot") {
+			resID = builder.encodeArithBinop(Opcode::Dot, type, operand(0), operand(1));
+			return true;
+		}
+		if (fn == "dfdx" || fn == "dfdy" || fn == "fwidth") {
+			resID = builder.encodeOp(fn == "dfdx" ? Opcode::DPdx : (fn == "dfdy" ? Opcode::DPdy : Opcode::Fwidth), type, { operand(0) });
+			return true;
+		}
+		return false;
+	}
+
+	// boolean vector reductions: air.all.v2i1, air.any.v4i1
+	if (parts.size() == 3 && (fn == "all" || fn == "any")) {
+		resID = builder.encodeOp(fn == "all" ? Opcode::All : Opcode::Any, type, { operand(0) });
+		return true;
+	}
+
+	// integer functions: air.<fn>.<s|u>.<type>
+	if (parts.size() == 4 && (parts[2] == "s" || parts[2] == "u")) {
+		bool isSigned = parts[2] == "s";
+
+		if (fn == "min" || fn == "max") {
+			auto opcode = fn == "min" ? (isSigned ? GLSLOpcode::SMin : GLSLOpcode::UMin) : (isSigned ? GLSLOpcode::SMax : GLSLOpcode::UMax);
+			resID = builder.encodeGLSLOp(opcode, type, { operand(0), operand(1) });
+			return true;
+		}
+		if (fn == "clamp") {
+			resID = builder.encodeGLSLOp(isSigned ? GLSLOpcode::SClamp : GLSLOpcode::UClamp, type, { operand(0), operand(1), operand(2) });
+			return true;
+		}
+		if (fn == "abs") {
+			// the absolute value of an unsigned number is the number itself
+			resID = isSigned ? builder.encodeGLSLOp(GLSLOpcode::SAbs, type, { operand(0) }) : operand(0);
+			return true;
+		}
+		return false;
+	}
+
+	// conversions: air.convert.<destination kind>.<destination type>.<source kind>.<source type>
+	if (parts.size() == 6 && fn == "convert") {
+		auto dstKind = parts[2];
+		auto dstType = parts[3];
+		auto srcKind = parts[4];
+		auto srcType = parts[5];
+		auto argument = operand(0);
+		auto argumentType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(DynamicLLVM::LLVMGetOperand(inst, 0)));
+
+		if (srcType == "i1" || (srcType.size() > 2 && srcType[0] == 'v' && srcType.substr(srcType.size() - 2) == "i1")) {
+			// a boolean becomes 1 or 0
+			auto one = dstKind == "f" ? floatConstantOfType(builder, type, 1) : integerConstantOfType(builder, type, 1);
+			auto zero = dstKind == "f" ? floatConstantOfType(builder, type, 0) : integerConstantOfType(builder, type, 0);
+			resID = builder.encodeOp(Opcode::Select, type, { argument, one, zero });
+			return true;
+		}
+
+		if (dstKind == "f" && srcKind == "s") {
+			resID = builder.encodeOp(Opcode::ConvertSToF, type, { argument });
+		} else if (dstKind == "f" && srcKind == "u") {
+			resID = builder.encodeOp(Opcode::ConvertUToF, type, { builder.encodeBitcast(integerTypeWithSign(builder, argumentType, false), argument) });
+		} else if (dstKind == "s" && srcKind == "f") {
+			resID = builder.encodeOp(Opcode::ConvertFToS, type, { argument });
+		} else if (dstKind == "u" && srcKind == "f") {
+			resID = encodeUnsignedResultOp(builder, Opcode::ConvertFToU, type, { argument });
+		} else if (dstKind == "f" && srcKind == "f") {
+			resID = (dstType == srcType) ? argument : builder.encodeFConvert(type, argument);
+		} else if ((dstKind == "s" || dstKind == "u") && (srcKind == "s" || srcKind == "u")) {
+			if (dstType == srcType) {
+				resID = argument;
+			} else if (srcKind == "s") {
+				resID = builder.encodeOp(Opcode::SConvert, type, { argument });
+			} else {
+				resID = encodeUnsignedResultOp(builder, Opcode::UConvert, type, { argument });
+			}
+		} else {
+			return false;
+		}
+		return true;
+	}
+
+	return false;
+}
+
+// Converts a texel from the type an image is accessed with to the type the shader uses: half textures
+// are accessed as float ones (see the texture argument declarations), and the sign of integer texels can
+// differ.
+static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID value, Iridium::SPIRV::ResultID fromType, Iridium::SPIRV::ResultID toType) {
+	using namespace Iridium::SPIRV;
+	if (fromType == toType) {
+		return value;
+	}
+	auto target = *builder.reverseLookupType(toType);
+	auto component = *builder.reverseLookupType(target.backingType == Type::BackingType::Vector ? target.targetType : toType);
+	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
+}
+
+// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), reads and size
+// queries. Returns false when `name` is not one of them. `samplerFor` resolves a sampler operand (a constant sampler has no value of its own).
+template<typename SamplerFor>
+static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::FunctionType stage, SamplerFor&& samplerFor, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+
+	bool compare = name.substr(0, 25) == "air.sample_compare_depth_";
+	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
+	bool read = name.substr(0, 17) == "air.read_texture_";
+	bool write = name.substr(0, 18) == "air.write_texture_";
+	if (write) {
+		// every texture argument is declared (and bound by Indium) as a sampled image
+		throw ImpossibleResultID("texture writes are unsupported");
+	}
+	bool width = name == "air.get_width_texture_2d";
+	bool height = name == "air.get_height_texture_2d";
+	if (!sample && !read && !write && !width && !height) {
+		return false;
+	}
+
+	auto operand = [&](unsigned i) {
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, i));
+	};
+
+	auto texturePointer = operand(0);
+	auto pointerType = builder.reverseLookupType(builder.lookupResultType(texturePointer));
+	if (!pointerType || pointerType->backingType != Type::BackingType::Pointer) {
+		throw ImpossibleResultID("texture operand is not a texture argument");
+	}
+	auto imageTypeID = pointerType->targetType;
+	auto imageType = *builder.reverseLookupType(imageTypeID);
+	auto image = builder.encodeLoad(imageTypeID, texturePointer);
+	unsigned dims = imageType.imageDimensionality == Dim::e1D ? 1 : (imageType.imageDimensionality == Dim::e2D ? 2 : 3);
+	bool arrayed = imageType.imageIsArrayed;
+	bool storage = imageType.imageIsSampledIndication == 2;
+	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+
+	if (width || height) {
+		builder.requireCapability(Capability::ImageQuery);
+		auto sizeType = builder.declareType(Type(Type::VectorTag {}, dims + (arrayed ? 1 : 0), int32Type));
+		// a storage image has no levels to choose from
+		auto sizes = storage
+			? builder.encodeOp(Opcode::ImageQuerySize, sizeType, { image })
+			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, operand(1) });
+		resID = builder.encodeCompositeExtract(resultType, sizes, { height ? 1u : 0u });
+		return true;
+	}
+
+	// The texel comes back on its own or as the first member of a { texel, status } pair. A status of
+	// zero means the access succeeded.
+	auto resultTypeInst = builder.reverseLookupType(resultType);
+	bool wrapped = resultTypeInst && resultTypeInst->backingType == Type::BackingType::Structure;
+	auto valueTypeID = wrapped ? resultTypeInst->structureMembers.at(0).id : resultType;
+	auto finish = [&](ResultID value) {
+		resID = wrapped ? builder.encodeCompositeInsert(resultType, value, builder.declareNullValue(resultType), { 0 }) : value;
+	};
+
+	if (compare && arrayed) {
+		throw ImpossibleResultID("depth comparison on an array texture is unsupported");
+	}
+
+	// an array texture takes the layer as another coordinate (a float one when sampling)
+	auto coordinates = operand(compare ? 3 : (sample ? 2 : 1));
+	if (arrayed) {
+		auto coordinateType = *builder.reverseLookupType(builder.lookupResultType(coordinates));
+		auto componentType = coordinateType.backingType == Type::BackingType::Vector ? coordinateType.targetType : builder.lookupResultType(coordinates);
+		std::vector<uint32_t> components;
+		for (unsigned i = 0; i < dims; ++i) {
+			components.push_back(dims == 1 ? coordinates : builder.encodeCompositeExtract(componentType, coordinates, { i }));
+		}
+		auto layer = operand(sample ? 3 : 2);
+		if (sample) {
+			layer = builder.encodeOp(Opcode::ConvertSToF, componentType, { layer });
+		}
+		components.push_back(layer);
+		auto compositeType = builder.declareType(Type(Type::VectorTag {}, dims + 1, componentType));
+		coordinates = builder.encodeOp(Opcode::CompositeConstruct, compositeType, components);
+	}
+	unsigned layerOperands = arrayed ? 1 : 0;
+
+	auto texelType = builder.declareType(Type(Type::VectorTag {}, 4, imageType.targetType));
+	ResultID value;
+
+	if (sample) {
+		auto samplerPointer = samplerFor(DynamicLLVM::LLVMGetOperand(inst, 1));
+		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
+		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
+		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
+		auto sampled = builder.encodeSampledImage(sampledType, image, sampler);
+
+		// The operands that follow the coordinates (and the layer, or the depth reference) are an offset
+		// (not for cube textures), a flag that selects an explicit LOD, and that LOD.
+		bool cube = imageType.imageDimensionality == Dim::eCube;
+		unsigned lodFlagIndex = compare ? (cube ? 5 : 7) : (cube ? 3 : 5) + layerOperands;
+		auto offset = cube ? nullptr : DynamicLLVM::LLVMGetOperand(inst, lodFlagIndex - 1);
+		auto lodFlag = DynamicLLVM::LLVMGetOperand(inst, lodFlagIndex);
+		if (!DynamicLLVM::LLVMIsAConstantInt(lodFlag)) {
+			throw ImpossibleResultID("texture sample with a non-constant LOD mode");
+		}
+		// implicit LODs exist only in fragment functions
+		bool explicitLod = DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0 || stage != Iridium::FunctionType::Fragment;
+		bool hasOffset = offset && !DynamicLLVM::LLVMIsNull(offset);
+		if (hasOffset && !DynamicLLVM::LLVMIsConstant(offset)) {
+			throw ImpossibleResultID("texture sample with a non-constant offset");
+		}
+
+		std::vector<uint32_t> arguments { sampled, coordinates };
+		if (compare) {
+			arguments.push_back(operand(3 + layerOperands));
+		}
+		// image operands: Lod = 0x2, ConstOffset = 0x8
+		uint32_t imageOperands = (explicitLod ? 0x2 : 0) | (hasOffset ? 0x8 : 0);
+		if (imageOperands) {
+			arguments.push_back(imageOperands);
+			if (explicitLod) {
+				arguments.push_back(DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0 ? operand(lodFlagIndex + 1) : builder.declareConstantScalar<float>(0));
+			}
+			if (hasOffset) {
+				arguments.push_back(llvmValueToResultID(builder, offset));
+			}
+		}
+
+		if (compare) {
+			auto opcode = explicitLod ? Opcode::ImageSampleDrefExplicitLod : Opcode::ImageSampleDrefImplicitLod;
+			finish(builder.encodeOp(opcode, valueTypeID, arguments));
+			return true;
+		}
+		value = builder.encodeOp(explicitLod ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
+	} else {
+		std::vector<uint32_t> arguments { image, coordinates };
+		if (!storage) {
+			// a sampled image is read with OpImageFetch, which takes the level
+			arguments.push_back(0x2);
+			arguments.push_back(operand(2 + layerOperands));
+		}
+		value = builder.encodeOp(storage ? Opcode::ImageRead : Opcode::ImageFetch, texelType, arguments);
+	}
+
+	finish(convertTexel(builder, value, texelType, valueTypeID));
+	return true;
 }
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
@@ -772,6 +1215,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		builder.addDecoration(perVertexStructType, SPIRV::Decoration { SPIRV::DecorationType::Block });
 
 		builder.referenceGlobalVariable(perVertexVar);
+
+		// Indium can draw points with any vertex function, and Vulkan then requires the point size to be
+		// written. Metal's default point size is 1.
+		auto pointSizePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, floatType, 8));
+		auto pointSizeVar = builder.addGlobalVariable(pointSizePtrType, SPIRV::StorageClass::Output);
+		builder.addDecoration(pointSizeVar, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::PointSize) } });
+		builder.referenceGlobalVariable(pointSizeVar);
+		builder.encodeStore(pointSizeVar, builder.declareConstantScalar<float>(1.0f));
 
 		// declare the GLSL VertexIndex input variable
 		vertexIndexVar = builder.addGlobalVariable(ptrIntType, SPIRV::StorageClass::Input);
@@ -1065,6 +1516,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.setResultType(load, ptrType);
 
 			++bufferIndex;
+		} else if (kind == "air.instance_id") {
+			auto var = builder.addGlobalVariable(ptrIntType, SPIRV::StorageClass::Input);
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::InstanceIndex) } });
+			builder.referenceGlobalVariable(var);
+			auto load = builder.encodeLoad(intType, var);
+			_parameterIDs.push_back(load);
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, intType);
+		} else if (kind == "air.front_facing") {
+			auto boolType = builder.declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
+			auto boolPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, boolType, 8));
+			auto var = builder.addGlobalVariable(boolPtrType, SPIRV::StorageClass::Input);
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(SPIRV::BuiltinID::FrontFacing) } });
+			builder.referenceGlobalVariable(var);
+			auto load = builder.encodeLoad(boolType, var);
+			_parameterIDs.push_back(load);
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, boolType);
 		} else if (kind == "air.position") {
 			auto load = builder.encodeLoad(vec4Type, fragCoordVar);
 			_parameterIDs.push_back(load);
@@ -1087,9 +1556,21 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.setResultType(load, type);
 		} else if (kind == "air.vertex_input") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, type, 8));
+			// Vulkan matches an input's numeric type against the vertex attribute format, so an unsigned
+			// attribute needs an unsigned input. LLVM integers have no sign; the AIR type name keeps it.
+			auto inputType = type;
+			if (auto typeNameNode = findAIMDValue(parameterOperand, "air.arg_type_name")) {
+				auto typeName = llvmMDStringToStringView(typeNameNode);
+				if (typeName.substr(0, 4) == "uint" || typeName.substr(0, 6) == "ushort" || typeName.substr(0, 5) == "uchar" || typeName.substr(0, 5) == "ulong") {
+					inputType = integerTypeWithSign(builder, type, false);
+				}
+			}
+			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, inputType, 8));
 			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Input);
-			auto load = builder.encodeLoad(type, var);
+			auto load = builder.encodeLoad(inputType, var);
+			if (inputType != type) {
+				load = builder.encodeBitcast(type, load);
+			}
 
 			// find the location index info
 			size_t infoIdx = 0;
@@ -1215,26 +1696,38 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			} else if (sampleTypeName == "float") {
 				fakeSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
 				realSampleType = fakeSampleType;
+			} else if (sampleTypeName == "int" || sampleTypeName == "uint") {
+				fakeSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 32, sampleTypeName == "int"));
+				realSampleType = fakeSampleType;
+			} else {
+				throw ImpossibleResultID("unsupported texture sample type " + std::string(sampleTypeName));
+			}
+
+			// depth textures declare the same dimensions as the color ones
+			bool isDepth = textureClassName.substr(0, 5) == "depth";
+			std::string colorClassName(textureClassName);
+			if (isDepth) {
+				colorClassName.replace(0, 5, "texture");
 			}
 
 			// TODO: same here (find a better way...)
 			bool isArrayed = false;
-			if (textureClassName == "texture2d") {
+			if (colorClassName == "texture2d") {
 				dimensionality = SPIRV::Dim::e2D;
-			} else if (textureClassName == "texture2d_array") {
+			} else if (colorClassName == "texture2d_array") {
 				dimensionality = SPIRV::Dim::e2D;
 				isArrayed = true;
-			} else if (textureClassName == "texturecube") {
+			} else if (colorClassName == "texturecube") {
 				dimensionality = SPIRV::Dim::eCube;
-			} else if (textureClassName == "texturecube_array") {
+			} else if (colorClassName == "texturecube_array") {
 				dimensionality = SPIRV::Dim::eCube;
 				isArrayed = true;
-			} else if (textureClassName == "texture1d") {
+			} else if (colorClassName == "texture1d") {
 				dimensionality = SPIRV::Dim::e1D;
-			} else if (textureClassName == "texture1d_array") {
+			} else if (colorClassName == "texture1d_array") {
 				dimensionality = SPIRV::Dim::e1D;
 				isArrayed = true;
-			} else if (textureClassName == "texture3d") {
+			} else if (colorClassName == "texture3d") {
 				dimensionality = SPIRV::Dim::e3D;
 			} else {
 				// Any other texture class (the buffer variants, etc.)
@@ -1242,7 +1735,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					std::string(textureClassName));
 			}
 
-			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, 2, isArrayed, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
+			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, isDepth ? 1 : 2, isArrayed, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
 			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
 			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
@@ -1536,7 +2029,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.insertLabel(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
 		}
 
-		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+		// set once an instruction ends the SPIR-V block (OpKill); the rest of the AIR block is dead
+		bool blockTerminated = false;
+
+		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr && !blockTerminated; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
 			auto opcode = DynamicLLVM::LLVMGetInstructionOpcode(inst);
 
 			switch (opcode) {
@@ -1544,11 +2040,60 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto source = DynamicLLVM::LLVMGetOperand(inst, 0);
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
+					auto argument = llvmValueToResultID(builder, source);
+					auto sourceTypeInst = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source)));
+					auto sourceComponent = sourceTypeInst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(sourceTypeInst.targetType) : sourceTypeInst;
 
-					auto resID = builder.encodeUConvert(type, llvmValueToResultID(builder, source));
+					// AIR's i1 is a SPIR-V boolean, which OpUConvert does not take
+					auto resID = sourceComponent.backingType == SPIRV::Type::BackingType::Boolean
+						? builder.encodeOp(SPIRV::Opcode::Select, type, { argument, integerConstantOfType(builder, type, 1), integerConstantOfType(builder, type, 0) })
+						: encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument });
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMSExt:
+				case LLVMTrunc:
+				case LLVMFPExt:
+				case LLVMFPToSI:
+				case LLVMFPToUI:
+				case LLVMSIToFP:
+				case LLVMUIToFP: {
+					auto source = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto argument = llvmValueToResultID(builder, source);
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+
+					switch (opcode) {
+						case LLVMSExt: resID = builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument }); break;
+						case LLVMTrunc: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument }); break;
+						case LLVMFPExt: resID = builder.encodeFConvert(type, argument); break;
+						case LLVMFPToSI: resID = builder.encodeOp(SPIRV::Opcode::ConvertFToS, type, { argument }); break;
+						case LLVMFPToUI: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::ConvertFToU, type, { argument }); break;
+						case LLVMSIToFP: resID = builder.encodeOp(SPIRV::Opcode::ConvertSToF, type, { argument }); break;
+						case LLVMUIToFP: {
+							auto unsignedType = integerTypeWithSign(builder, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source)), false);
+							resID = builder.encodeOp(SPIRV::Opcode::ConvertUToF, type, { builder.encodeBitcast(unsignedType, argument) });
+						} break;
+						default: break;
+					}
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMAlloca: {
+					// a local variable that the passes run on the module could not turn into SSA values
+					auto count = DynamicLLVM::LLVMGetOperand(inst, 0);
+					if (!DynamicLLVM::LLVMIsAConstantInt(count) || DynamicLLVM::LLVMConstIntGetZExtValue(count) != 1) {
+						throw ImpossibleResultID("alloca of a dynamic or multiple-element size");
+					}
+					LayoutFreeScope layoutFree(true);
+					auto valueType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetAllocatedType(inst));
+					auto pointerType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Function, valueType, 8));
+					auto resID = builder.addFunctionVariable(pointerType);
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 				} break;
 
 				// TODO: look into using physical addressing instead of logical addressing, which should simplify the translation process
@@ -1601,8 +2146,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// always carries a pointee, and llvmTypeToSPIRVType refuses to
 					// resolve an opaque one, so targetType is a declared type.
 					auto opDerefType = *builder.reverseLookupType(opType.targetType);
+					bool logical = opType.pointerStorageClass == SPIRV::StorageClass::Function || opType.pointerStorageClass == SPIRV::StorageClass::Private;
 
-					if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
+					if (logical) {
+						// A local variable or global constant cannot be re-typed: its pointer has no address
+						// to reinterpret, so the load has to read the type the object was declared with.
+						LayoutFreeScope layoutFree(true);
+						type = llvmTypeToSPIRVType(builder, targetType);
+						if (type != opType.targetType) {
+							throw ImpossibleResultID("load reinterprets a local or constant object");
+						}
+						alignment = 0;
+					} else if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
 						// requires an additional index
 						auto accessType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, type, 8));
 						auto access = builder.encodeAccessChain(accessType, op, { builder.declareConstantScalar<int32_t>(0) });
@@ -1659,9 +2214,17 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						throw ImpossibleResultID("store's pointer operand has no recorded result type");
 					}
 					auto opType = *maybeOpType;
+					bool logical = opType.pointerStorageClass == SPIRV::StorageClass::Function || opType.pointerStorageClass == SPIRV::StorageClass::Private;
+					LayoutFreeScope layoutFree(logical);
 					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval)), 8));
 
-					if (storePtrType != builder.lookupResultType(ptr)) {
+					if (logical) {
+						// see the LLVMLoad case
+						if (storePtrType != builder.lookupResultType(ptr)) {
+							throw ImpossibleResultID("store reinterprets a local object");
+						}
+						alignment = 0;
+					} else if (storePtrType != builder.lookupResultType(ptr)) {
 						auto casted = builder.encodeBitcast(storePtrType, ptr);
 						builder.setResultType(casted, storePtrType);
 						ptr = casted;
@@ -1689,69 +2252,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
-					} else if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_2d.v4f32" || name == "air.sample_texture_cube.v4f16") {
-						auto textureArg = DynamicLLVM::LLVMGetOperand(inst, 0);
-						auto samplerArg = DynamicLLVM::LLVMGetOperand(inst, 1);
-						auto textureCoordArg = DynamicLLVM::LLVMGetOperand(inst, 2);
-						auto someBooleanArgTODO = DynamicLLVM::LLVMGetOperand(inst, 3);
-						auto offsetArg = DynamicLLVM::LLVMGetOperand(inst, 4);
-						auto someOtherBooleanArgTODO = DynamicLLVM::LLVMGetOperand(inst, 5);
-						auto someFloatArgTODO = DynamicLLVM::LLVMGetOperand(inst, 6);
-						auto someOtherFloatArgTODO = DynamicLLVM::LLVMGetOperand(inst, 6);
-						auto someI32ArgTODO = DynamicLLVM::LLVMGetOperand(inst, 7);
-
-						auto textureArgID = llvmValueToResultID(builder, textureArg);
-						auto constantSampler = constantSamplers.find(samplerArg);
-						auto samplerArgID = constantSampler != constantSamplers.end() ? constantSampler->second : llvmValueToResultID(builder, samplerArg);
-
-						auto texturePtrType = builder.lookupResultType(textureArgID);
-						auto textureType = builder.reverseLookupType(texturePtrType)->targetType;
-						auto textureLoad = builder.encodeLoad(textureType, textureArgID);
-
-						auto samplerType = builder.declareType(SPIRV::Type(SPIRV::Type::SamplerTag {}));
-						auto samplerPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, samplerType, 8));
-#if 1
-						auto samplerLoad = builder.encodeLoad(samplerType, samplerArgID);
-#else
-						auto samplerArgCast = builder.encodeBitcast(samplerPtrType, samplerArgID);
-						auto samplerLoad = builder.encodeLoad(samplerType, samplerArgCast);
-#endif
-
-						auto sampledImageType = builder.declareType(SPIRV::Type(SPIRV::Type::SampledImageTag {}, textureType));
-						auto sampledImage = builder.encodeSampledImage(sampledImageType, textureLoad, samplerLoad);
-
-						// WORKAROUND: as explained before, we use 32-bit floats in place of 16-bit floats for image sampling.
-						auto textureSampleComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 32));
-						auto textureSampleType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, textureSampleComponentType));
-						auto sampled = builder.encodeImageSampleImplicitLod(textureSampleType, sampledImage, llvmValueToResultID(builder, textureCoordArg));
-
-						if (name == "air.sample_texture_2d.v4f16" || name == "air.sample_texture_cube.v4f16") {
-							auto convertedComponentType = builder.declareType(SPIRV::Type(SPIRV::Type::FloatTag {}, 16));
-							auto convertedType = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 4, convertedComponentType));
-							sampled = builder.encodeFConvert(convertedType, sampled);
-							textureSampleType = convertedType;
-						}
-
-						auto resultType = builder.reverseLookupType(type);
-						if (resultType && resultType->backingType == SPIRV::Type::BackingType::Vector) {
-							// the call returns the sampled vector itself rather than a {vector, status} pair
-							if (type != textureSampleType) {
-								throw ImpossibleResultID("unsupported texture sample result vector");
-							}
-							resID = sampled;
-						} else {
-							if (!resultType || resultType->backingType != SPIRV::Type::BackingType::Structure
-								|| resultType->structureMembers.size() != 2
-								|| resultType->structureMembers[0].id != textureSampleType) {
-								throw ImpossibleResultID("unsupported texture sample result structure");
-							}
-							auto statusType = builder.reverseLookupType(resultType->structureMembers[1].id);
-							if (!statusType || (statusType->backingType != SPIRV::Type::BackingType::Integer
-								&& statusType->backingType != SPIRV::Type::BackingType::Boolean)) {
-								throw ImpossibleResultID("unsupported texture sample status type");
-							}
-							resID = builder.encodeCompositeInsert(type, sampled, builder.declareNullValue(type), { 0 });
-						}
+					} else if (name == "air.discard_fragment") {
+						builder.encodeOpWithoutResult(SPIRV::Opcode::Kill, {});
+						blockTerminated = true;
+					} else if (translateAirTexture(builder, inst, name, type, funcInfo.type, [&](LLVMValueRef sampler) {
+						auto constantSampler = constantSamplers.find(sampler);
+						return constantSampler != constantSamplers.end() ? constantSampler->second : llvmValueToResultID(builder, sampler);
+					}, resID)) {
+						// handled
 					} else if (isFloatWidthConversion(name)) {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
@@ -1783,9 +2291,131 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto operand2 = DynamicLLVM::LLVMGetOperand(inst, 1);
 
 						resID = builder.encodeFMax(type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
+					} else if (translateAirIntrinsic(builder, inst, name, type, resID)) {
+						// handled
 					} else {
-						throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + name.data() + ")");
+						throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + std::string(name) + ")");
 					}
+
+					if (resID != SPIRV::ResultIDInvalid) {
+						builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+						builder.setResultType(resID, type);
+					}
+				} break;
+
+				case LLVMAdd:
+				case LLVMSub:
+				case LLVMMul:
+				case LLVMUDiv:
+				case LLVMSDiv:
+				case LLVMURem:
+				case LLVMSRem:
+				case LLVMShl:
+				case LLVMLShr:
+				case LLVMAShr:
+				case LLVMAnd:
+				case LLVMOr:
+				case LLVMXor: {
+					auto lhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0));
+					auto rhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1));
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto typeInst = *builder.reverseLookupType(type);
+					auto component = typeInst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(typeInst.targetType) : typeInst;
+					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+
+					if (component.backingType == SPIRV::Type::BackingType::Boolean) {
+						// bitwise operations on i1 are logical ones on SPIR-V booleans
+						SPIRV::Opcode logical;
+						switch (opcode) {
+							case LLVMAnd: logical = SPIRV::Opcode::LogicalAnd; break;
+							case LLVMOr: logical = SPIRV::Opcode::LogicalOr; break;
+							case LLVMXor: logical = SPIRV::Opcode::LogicalNotEqual; break;
+							default: throw ImpossibleResultID("arithmetic on booleans");
+						}
+						resID = builder.encodeOp(logical, type, { lhs, rhs });
+					} else {
+						switch (opcode) {
+							case LLVMAdd: resID = builder.encodeOp(SPIRV::Opcode::IAdd, type, { lhs, rhs }); break;
+							case LLVMSub: resID = builder.encodeOp(SPIRV::Opcode::ISub, type, { lhs, rhs }); break;
+							case LLVMMul: resID = builder.encodeOp(SPIRV::Opcode::IMul, type, { lhs, rhs }); break;
+							case LLVMSDiv: resID = builder.encodeOp(SPIRV::Opcode::SDiv, type, { lhs, rhs }); break;
+							case LLVMSRem: resID = builder.encodeOp(SPIRV::Opcode::SRem, type, { lhs, rhs }); break;
+							case LLVMShl: resID = builder.encodeOp(SPIRV::Opcode::ShiftLeftLogical, type, { lhs, rhs }); break;
+							case LLVMLShr: resID = builder.encodeOp(SPIRV::Opcode::ShiftRightLogical, type, { lhs, rhs }); break;
+							case LLVMAShr: resID = builder.encodeOp(SPIRV::Opcode::ShiftRightArithmetic, type, { lhs, rhs }); break;
+							case LLVMAnd: resID = builder.encodeOp(SPIRV::Opcode::BitwiseAnd, type, { lhs, rhs }); break;
+							case LLVMOr: resID = builder.encodeOp(SPIRV::Opcode::BitwiseOr, type, { lhs, rhs }); break;
+							case LLVMXor: resID = builder.encodeOp(SPIRV::Opcode::BitwiseXor, type, { lhs, rhs }); break;
+							case LLVMUDiv:
+							case LLVMURem: {
+								// OpUDiv and OpUMod take and produce unsigned integers
+								auto unsignedType = integerTypeWithSign(builder, type, false);
+								resID = encodeUnsignedResultOp(builder, opcode == LLVMUDiv ? SPIRV::Opcode::UDiv : SPIRV::Opcode::UMod, type, {
+									builder.encodeBitcast(unsignedType, lhs),
+									builder.encodeBitcast(unsignedType, rhs),
+								});
+							} break;
+							default: break;
+						}
+					}
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMFNeg: {
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto resID = builder.encodeOp(SPIRV::Opcode::FNegate, type, { llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0)) });
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMICmp: {
+					auto op1 = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto op2 = DynamicLLVM::LLVMGetOperand(inst, 1);
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					SPIRV::Opcode comparison;
+
+					switch (DynamicLLVM::LLVMGetICmpPredicate(inst)) {
+						case LLVMIntEQ: comparison = SPIRV::Opcode::IEqual; break;
+						case LLVMIntNE: comparison = SPIRV::Opcode::INotEqual; break;
+						case LLVMIntUGT: comparison = SPIRV::Opcode::UGreaterThan; break;
+						case LLVMIntUGE: comparison = SPIRV::Opcode::UGreaterThanEqual; break;
+						case LLVMIntULT: comparison = SPIRV::Opcode::ULessThan; break;
+						case LLVMIntULE: comparison = SPIRV::Opcode::ULessThanEqual; break;
+						case LLVMIntSGT: comparison = SPIRV::Opcode::SGreaterThan; break;
+						case LLVMIntSGE: comparison = SPIRV::Opcode::SGreaterThanEqual; break;
+						case LLVMIntSLT: comparison = SPIRV::Opcode::SLessThan; break;
+						case LLVMIntSLE: comparison = SPIRV::Opcode::SLessThanEqual; break;
+						default:
+							throw std::runtime_error("TODO: handle icmp predicate: " + std::to_string(DynamicLLVM::LLVMGetICmpPredicate(inst)));
+					}
+
+					auto lhs = llvmValueToResultID(builder, op1);
+					auto rhs = llvmValueToResultID(builder, op2);
+					auto operandType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(op1)));
+					auto operandComponent = operandType.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(operandType.targetType) : operandType;
+					if (operandComponent.backingType == SPIRV::Type::BackingType::Boolean) {
+						// only equality is defined on SPIR-V booleans
+						if (comparison != SPIRV::Opcode::IEqual && comparison != SPIRV::Opcode::INotEqual) {
+							throw ImpossibleResultID("ordered comparison of booleans");
+						}
+						comparison = comparison == SPIRV::Opcode::IEqual ? SPIRV::Opcode::LogicalEqual : SPIRV::Opcode::LogicalNotEqual;
+					}
+
+					auto resID = builder.encodeOp(comparison, type, { lhs, rhs });
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMSelect: {
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto resID = builder.encodeOp(SPIRV::Opcode::Select, type, {
+						llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0)),
+						llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1)),
+						llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 2)),
+					});
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
@@ -1794,7 +2424,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				case LLVMFMul:
 				case LLVMFDiv:
 				case LLVMFAdd:
-				case LLVMFSub: {
+				case LLVMFSub:
+				case LLVMFRem: {
 					auto op1 = DynamicLLVM::LLVMGetOperand(inst, 0);
 					auto op2 = DynamicLLVM::LLVMGetOperand(inst, 1);
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
@@ -1806,6 +2437,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						case LLVMFDiv: binop = SPIRV::Opcode::FDiv; break;
 						case LLVMFAdd: binop = SPIRV::Opcode::FAdd; break;
 						case LLVMFSub: binop = SPIRV::Opcode::FSub; break;
+						// frem takes the sign of the dividend, as OpFRem does
+						case LLVMFRem: binop = SPIRV::Opcode::FRem; break;
 						default:
 							break;
 					}
@@ -1930,21 +2563,30 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto op2 = DynamicLLVM::LLVMGetOperand(inst, 1);
 					auto predicate = DynamicLLVM::LLVMGetFCmpPredicate(inst);
 
-					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
-					auto type = builder.declareType(SPIRV::Type(SPIRV::Type::BooleanTag {}));
+					// a vector comparison produces a vector of booleans
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					SPIRV::Opcode comparison;
 
 					switch (predicate) {
-						case LLVMRealOGT: {
-							resID = builder.encodeFOrdGreaterThan(llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
-						} break;
-
-						case LLVMRealOLT: {
-							resID = builder.encodeFOrdLessThan(llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2));
-						} break;
-
+						case LLVMRealOEQ: comparison = SPIRV::Opcode::FOrdEqual; break;
+						case LLVMRealOGT: comparison = SPIRV::Opcode::FOrdGreaterThan; break;
+						case LLVMRealOGE: comparison = SPIRV::Opcode::FOrdGreaterThanEqual; break;
+						case LLVMRealOLT: comparison = SPIRV::Opcode::FOrdLessThan; break;
+						case LLVMRealOLE: comparison = SPIRV::Opcode::FOrdLessThanEqual; break;
+						case LLVMRealONE: comparison = SPIRV::Opcode::FOrdNotEqual; break;
+						case LLVMRealORD: comparison = SPIRV::Opcode::Ordered; break;
+						case LLVMRealUNO: comparison = SPIRV::Opcode::Unordered; break;
+						case LLVMRealUEQ: comparison = SPIRV::Opcode::FUnordEqual; break;
+						case LLVMRealUGT: comparison = SPIRV::Opcode::FUnordGreaterThan; break;
+						case LLVMRealUGE: comparison = SPIRV::Opcode::FUnordGreaterThanEqual; break;
+						case LLVMRealULT: comparison = SPIRV::Opcode::FUnordLessThan; break;
+						case LLVMRealULE: comparison = SPIRV::Opcode::FUnordLessThanEqual; break;
+						case LLVMRealUNE: comparison = SPIRV::Opcode::FUnordNotEqual; break;
 						default:
 							throw std::runtime_error("TODO: handle fcmp predicate: " + std::to_string(predicate));
 					}
+
+					auto resID = builder.encodeOp(comparison, type, { llvmValueToResultID(builder, op1), llvmValueToResultID(builder, op2) });
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
