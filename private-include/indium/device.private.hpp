@@ -35,6 +35,9 @@ namespace Indium {
 		std::vector<uint64_t> _eventLoopWaitValues;
 		std::vector<std::function<void()>> _eventLoopCallbacks;
 
+		// Vulkan requires submissions and presentation on one queue to be externally synchronized
+		std::mutex _graphicsQueueMutex;
+
 		std::mutex _fallbackMutex;
 		std::shared_ptr<Buffer> _fallbackBuffer;
 		std::shared_ptr<SamplerState> _fallbackSampler;
@@ -118,6 +121,11 @@ namespace Indium {
 		 * image view or vertex buffer that reads as zero.
 		 */
 		bool nullDescriptorEnabled() const { return _nullDescriptor; }
+
+		/**
+		 * Held around every submission to and presentation on `graphicsQueue()`.
+		 */
+		std::mutex& graphicsQueueMutex() { return _graphicsQueueMutex; }
 
 		/**
 		 * The memory type a resource with the given storage mode is allocated from, among those

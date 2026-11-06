@@ -4,6 +4,7 @@
 #include <indium/buffer.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <stdexcept>
 #include <cstring>
 
 Indium::Texture::~Texture() {};
@@ -68,6 +69,24 @@ size_t Indium::PrivateTexture::vulkanArrayLength() const {
 	return arrayLength();
 };
 
+namespace {
+	// A view that names both the depth and stencil aspects is fine as an attachment, but a
+	// descriptor may only name one aspect. Metal samples the depth of such a texture, so create
+	// a depth-only view for descriptors. Returns VK_NULL_HANDLE when `info` needs no such view.
+	VkImageView createSampledImageView(VkDevice device, VkImageViewCreateInfo info) {
+		constexpr VkImageAspectFlags depthStencil = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		if ((info.subresourceRange.aspectMask & depthStencil) != depthStencil) {
+			return VK_NULL_HANDLE;
+		}
+		info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		VkImageView view = VK_NULL_HANDLE;
+		if (Indium::DynamicVK::vkCreateImageView(device, &info, nullptr, &view) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create a depth view of a depth/stencil texture");
+		}
+		return view;
+	}
+};
+
 Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers):
 	PrivateTexture(std::dynamic_pointer_cast<PrivateDevice>(original->device())),
 	_original(original),
@@ -78,12 +97,18 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	_layers(layers),
 	_swizzle(swizzle)
 {
-	auto parentLevelStart = _original->parentRelativeLevel();
+	// a view of a view starts where all of its ancestors start in the underlying image
+	size_t parentLevelStart = 0;
+	size_t parentLayerStart = 0;
+	for (std::shared_ptr<Texture> parent = _original; parent; parent = parent->parentTexture()) {
+		parentLevelStart += parent->parentRelativeLevel();
+		parentLayerStart += parent->parentRelativeSlice();
+	}
+
 	auto parentLevelEnd = parentLevelStart + _original->mipmapLevelCount() - 1;
 	auto levelStart = std::min(parentLevelStart + _levels.start, parentLevelEnd);
 	auto levelEnd = std::min(levelStart + _levels.length - 1, parentLevelEnd);
 
-	auto parentLayerStart = _original->parentRelativeSlice();
 	auto parentLayerEnd = parentLayerStart + _original->arrayLength() - 1;
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
@@ -109,10 +134,20 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 		// TODO
 		abort();
 	}
+
+	_sampledImageView = createSampledImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), info);
 };
 
 Indium::TextureView::~TextureView() {
-	DynamicVK::vkDestroyImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), _imageView, nullptr);
+	auto device = std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device();
+	if (_sampledImageView) {
+		DynamicVK::vkDestroyImageView(device, _sampledImageView, nullptr);
+	}
+	DynamicVK::vkDestroyImageView(device, _imageView, nullptr);
+};
+
+VkImageView Indium::TextureView::sampledImageView() {
+	return _sampledImageView ? _sampledImageView : _imageView;
 };
 
 Indium::PixelFormat Indium::TextureView::pixelFormat() const {
@@ -472,7 +507,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
 	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -497,9 +535,18 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		// TODO
 		abort();
 	}
+
+	_sampledImageView = createSampledImageView(_device->device(), info2);
+};
+
+VkImageView Indium::ConcreteTexture::sampledImageView() {
+	return _sampledImageView ? _sampledImageView : _imageView;
 };
 
 Indium::ConcreteTexture::~ConcreteTexture() {
+	if (_sampledImageView) {
+		DynamicVK::vkDestroyImageView(_device->device(), _sampledImageView, nullptr);
+	}
 	DynamicVK::vkDestroyImageView(_device->device(), _imageView, nullptr);
 	DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
 	DynamicVK::vkFreeMemory(_device->device(), _memory, nullptr);
@@ -676,7 +723,10 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
 	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -799,7 +849,10 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
 	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();

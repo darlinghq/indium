@@ -177,11 +177,45 @@ void Indium::PrivateCommandBuffer::commit() {
 		// TODO: implement this for other encoders (we need to synchronize those texture accesses as well)
 	}
 
+	// A view shares its synchronization state with the texture it was made from, so acquiring a
+	// texture and a view of it separately would make this submission wait for its own signal.
+	// Synchronize each underlying texture once, and only as written if any use of it writes.
+	const auto rootTexture = [](std::shared_ptr<Texture> texture) {
+		while (auto parent = texture->parentTexture()) {
+			texture = parent;
+		}
+		return texture;
+	};
+	const auto toRoots = [&](std::vector<std::shared_ptr<Texture>>& textures) {
+		std::vector<std::shared_ptr<Texture>> roots;
+		for (const auto& texture: textures) {
+			auto root = rootTexture(texture);
+			if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
+				roots.push_back(root);
+			}
+		}
+		textures = std::move(roots);
+	};
+	toRoots(readWriteTextures);
+	toRoots(readOnlyTextures);
+	readOnlyTextures.erase(std::remove_if(readOnlyTextures.begin(), readOnlyTextures.end(), [&](const auto& texture) {
+		return std::find(readWriteTextures.begin(), readWriteTextures.end(), texture) != readWriteTextures.end();
+	}), readOnlyTextures.end());
+
+	// Texture timeline values are handed out below and must reach the queue in the same order,
+	// or a submission could wait on a binary semaphore that a later-reserved one signals first.
+	std::unique_lock queueLock(_privateDevice->graphicsQueueMutex());
+
 	for (const auto& texture: readWriteTextures) {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-		auto sema = _privateDevice->getWrappedBinarySemaphore(privateTexture->needsExportablePresentationSemaphore());
+		// Only textures something else presents consume the presentation semaphore. Signaling
+		// one that is never waited on would leave it signaled when it is reused.
+		std::shared_ptr<BinarySemaphore> sema;
+		if (!std::dynamic_pointer_cast<ConcreteTexture>(privateTexture)) {
+			sema = _privateDevice->getWrappedBinarySemaphore(privateTexture->needsExportablePresentationSemaphore());
+			privateTexture->beginUpdatingPresentationSemaphore(sema);
+		}
 		presentationSemaphores.push_back(sema);
-		privateTexture->beginUpdatingPresentationSemaphore(sema);
 	}
 
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
@@ -238,11 +272,13 @@ void Indium::PrivateCommandBuffer::commit() {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 		const auto& presentSema = presentationSemaphores[i];
 
-		VkSemaphoreSubmitInfo signalInfo {};
-		signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-		signalInfo.semaphore = presentSema->semaphore;
-		signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		signalInfos.push_back(signalInfo);
+		if (presentSema) {
+			VkSemaphoreSubmitInfo signalInfo {};
+			signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+			signalInfo.semaphore = presentSema->semaphore;
+			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			signalInfos.push_back(signalInfo);
+		}
 
 		handleTextureSemaphores(privateTexture);
 	}
@@ -286,12 +322,14 @@ void Indium::PrivateCommandBuffer::commit() {
 		abort();
 	}
 
+	queueLock.unlock();
 	lock.unlock();
 
 	// now that the binary semaphore signals are pending, we can allow them to be used
-	for (const auto& texture: readWriteTextures) {
-		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-		privateTexture->endUpdatingPresentationSemaphore();
+	for (size_t i = 0; i < readWriteTextures.size(); ++i) {
+		if (presentationSemaphores[i]) {
+			std::dynamic_pointer_cast<PrivateTexture>(readWriteTextures[i])->endUpdatingPresentationSemaphore();
+		}
 	}
 
 	std::vector<Handler> scheduledHandlers;

@@ -162,7 +162,7 @@ namespace Indium {
 					}
 
 					auto& info = imageInfos.emplace_front();
-					info.imageView = privateTexture ? privateTexture->imageView() : VK_NULL_HANDLE;
+					info.imageView = privateTexture ? privateTexture->sampledImageView() : VK_NULL_HANDLE;
 					info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
 
 					auto& descSet = writeDescSet.emplace_back();

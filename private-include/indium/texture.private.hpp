@@ -55,6 +55,12 @@ namespace Indium {
 
 		virtual VkImageLayout imageLayout() = 0;
 
+		/**
+		 * The view to bind in a descriptor. Descriptors may only name a single aspect, so for a
+		 * combined depth/stencil texture this is a depth-only view; otherwise it is `imageView()`.
+		 */
+		virtual VkImageView sampledImageView() { return imageView(); }
+
 		virtual size_t vulkanArrayLength() const;
 
 		// TODO: figure out how to allow simultaneous reads and properly synchronize them with writes.
@@ -102,6 +108,7 @@ namespace Indium {
 	private:
 		std::shared_ptr<PrivateTexture> _original;
 		VkImageView _imageView;
+		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		PixelFormat _pixelFormat;
 		TextureType _textureType;
 		VkImageAspectFlags _imageAspect;
@@ -131,6 +138,7 @@ namespace Indium {
 		virtual size_t parentRelativeSlice() const override;
 
 		virtual VkImageView imageView() override;
+		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual std::shared_ptr<Device> device() override;
 		virtual VkImageLayout imageLayout() override;
@@ -156,6 +164,7 @@ namespace Indium {
 		TextureDescriptor _descriptor;
 		VkImage _image;
 		VkImageView _imageView;
+		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		VkDeviceMemory _memory;
 		StorageMode _storageMode;
 
@@ -177,6 +186,7 @@ namespace Indium {
 		virtual TextureSwizzleChannels swizzle() const override;
 
 		virtual VkImageView imageView() override;
+		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
 		virtual size_t vulkanArrayLength() const override;
