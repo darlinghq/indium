@@ -1,7 +1,9 @@
 #include <indium/device.private.hpp>
 #include <indium/memory-type.private.hpp>
 
+#include <cctype>
 #include <iostream>
+#include <iterator>
 #include <indium/instance.private.hpp>
 #include <indium/command-queue.private.hpp>
 #include <indium/render-pipeline.private.hpp>
@@ -485,6 +487,55 @@ bool Indium::PrivateDevice::supportsDepth24Stencil8PixelFormat() const {
 	return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
 };
 
+uint32_t Indium::PrivateDevice::vendorID() const {
+	return _properties.vendorID;
+};
+
+uint32_t Indium::PrivateDevice::deviceID() const {
+	return _properties.deviceID;
+};
+
+Indium::DeviceType Indium::PrivateDevice::deviceType() const {
+	switch (_properties.deviceType) {
+		case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return DeviceType::IntegratedGPU;
+		case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return DeviceType::DiscreteGPU;
+		case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return DeviceType::VirtualGPU;
+		case VK_PHYSICAL_DEVICE_TYPE_CPU:            return DeviceType::CPU;
+		default:                                     return DeviceType::Other;
+	}
+};
+
+std::vector<Indium::MemoryHeap> Indium::PrivateDevice::memoryHeaps() const {
+	std::vector<MemoryHeap> heaps;
+	for (uint32_t i = 0; i < _memoryProperties.memoryHeapCount; ++i) {
+		const auto& heap = _memoryProperties.memoryHeaps[i];
+		heaps.push_back(MemoryHeap { heap.size, (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0 });
+	}
+	return heaps;
+};
+
+std::array<uint8_t, 16> Indium::PrivateDevice::deviceUUID() const {
+	VkPhysicalDeviceIDProperties idProperties {};
+	idProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+	VkPhysicalDeviceProperties2 properties {};
+	properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	properties.pNext = &idProperties;
+	DynamicVK::vkGetPhysicalDeviceProperties2(_physicalDevice, &properties);
+
+	std::array<uint8_t, 16> uuid {};
+	static_assert(sizeof(idProperties.deviceUUID) == 16);
+	std::copy(std::begin(idProperties.deviceUUID), std::end(idProperties.deviceUUID), uuid.begin());
+	return uuid;
+};
+
+std::optional<uint32_t> Indium::PrivateDevice::memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const {
+	auto index = findMemoryType(memoryTypeBits, storageMode);
+	if (index == SIZE_MAX) {
+		return std::nullopt;
+	}
+	return static_cast<uint32_t>(index);
+};
+
 uint64_t Indium::PrivateDevice::maxBufferLength() const {
 	VkPhysicalDeviceVulkan11Properties vk11Props {};
 	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
@@ -800,6 +851,39 @@ std::shared_ptr<Indium::DepthStencilState> Indium::PrivateDevice::newDepthStenci
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {
 	return globalDeviceList.empty() ? nullptr : globalDeviceList.front();
+};
+
+std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice(const std::string& preferredDevice) {
+	if (!preferredDevice.empty()) {
+		bool isIndex = std::all_of(preferredDevice.begin(), preferredDevice.end(), [](unsigned char c) { return std::isdigit(c); });
+		if (isIndex) {
+			size_t index = 0;
+			try {
+				index = std::stoul(preferredDevice);
+			} catch (const std::out_of_range&) {
+				index = SIZE_MAX;
+			}
+			if (index < globalDeviceList.size()) {
+				return globalDeviceList[index];
+			}
+		} else {
+			const auto lowercase = [](std::string string) {
+				std::transform(string.begin(), string.end(), string.begin(), [](unsigned char c) { return std::tolower(c); });
+				return string;
+			};
+			auto wanted = lowercase(preferredDevice);
+			for (const auto& device: globalDeviceList) {
+				if (lowercase(device->name()).find(wanted) != std::string::npos) {
+					return device;
+				}
+			}
+		}
+	}
+	return createSystemDefaultDevice();
+};
+
+std::vector<std::shared_ptr<Indium::Device>> Indium::copyAllDevices() {
+	return std::vector<std::shared_ptr<Device>>(globalDeviceList.begin(), globalDeviceList.end());
 };
 
 void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {

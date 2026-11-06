@@ -1,8 +1,11 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <memory>
 #include <cstdint>
+#include <optional>
+#include <vector>
 
 #include <indium/init.hpp>
 #include <indium/base.hpp>
@@ -26,11 +29,51 @@ namespace Indium {
 	class ComputePipelineReflection;
 	class Function;
 
+	enum class DeviceType {
+		Other,
+		IntegratedGPU,
+		DiscreteGPU,
+		VirtualGPU,
+		CPU,
+	};
+
+	struct MemoryHeap {
+		uint64_t size;
+		/** Whether the heap is memory local to the device (e.g. video memory). */
+		bool deviceLocal;
+	};
+
 	class Device {
 	public:
 		virtual ~Device() = 0;
 
 		virtual std::string name() const = 0;
+
+		/** The PCI vendor ID (or Khronos vendor ID) the Vulkan driver reports. */
+		virtual uint32_t vendorID() const = 0;
+
+		/** The vendor-specific device ID the Vulkan driver reports. */
+		virtual uint32_t deviceID() const = 0;
+
+		virtual DeviceType deviceType() const = 0;
+
+		/** The memory heaps of the Vulkan device, in the driver's order. */
+		virtual std::vector<MemoryHeap> memoryHeaps() const = 0;
+
+		/**
+		 * The Vulkan device UUID (VkPhysicalDeviceIDProperties::deviceUUID). It identifies the same
+		 * physical device across processes and APIs, e.g. to match an OpenGL device to this one.
+		 */
+		virtual std::array<uint8_t, 16> deviceUUID() const = 0;
+
+		/**
+		 * The index of the Vulkan memory type Indium allocates resources of `storageMode` from,
+		 * among the types `memoryTypeBits` allows (e.g. from VkMemoryRequirements). Lets code that
+		 * imports memory into this device's Vulkan device choose the same way Indium does.
+		 *
+		 * @returns `std::nullopt` if no allowed type fits.
+		 */
+		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const = 0;
 
 		/**
 		 * An approximation of how much memory this device can use with good
@@ -124,4 +167,14 @@ namespace Indium {
 	};
 
 	std::shared_ptr<Device> createSystemDefaultDevice();
+
+	/**
+	 * Like `createSystemDefaultDevice()`, but returns the device `preferredDevice` names if there is
+	 * one: either the decimal index of a device in `copyAllDevices()` or a part of a device's name,
+	 * compared without regard to case. An empty or unmatched preference selects the default device.
+	 */
+	std::shared_ptr<Device> createSystemDefaultDevice(const std::string& preferredDevice);
+
+	/** All devices Indium can use, the default one first. */
+	std::vector<std::shared_ptr<Device>> copyAllDevices();
 };

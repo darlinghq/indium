@@ -77,6 +77,12 @@ namespace Indium {
 		virtual std::string name() const override;
 		virtual uint64_t recommendedMaxWorkingSetSize() const override;
 		virtual uint64_t maxBufferLength() const override;
+		virtual uint32_t vendorID() const override;
+		virtual uint32_t deviceID() const override;
+		virtual DeviceType deviceType() const override;
+		virtual std::vector<MemoryHeap> memoryHeaps() const override;
+		virtual std::array<uint8_t, 16> deviceUUID() const override;
+		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
