@@ -35,6 +35,11 @@ namespace Indium {
 		std::vector<uint64_t> _eventLoopWaitValues;
 		std::vector<std::function<void()>> _eventLoopCallbacks;
 
+		std::mutex _fallbackMutex;
+		std::shared_ptr<Buffer> _fallbackBuffer;
+		std::shared_ptr<SamplerState> _fallbackSampler;
+		bool _nullDescriptor = false;
+
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
 		~PrivateDevice();
@@ -96,6 +101,23 @@ namespace Indium {
 		void putBinarySemaphore(const BinarySemaphore& semaphore);
 
 		std::shared_ptr<BinarySemaphore> getWrappedBinarySemaphore(bool exportable = false);
+
+		/**
+		 * Stand-ins for resources a function uses but the caller never bound. Reading an unbound
+		 * buffer through address 0, or an unwritten descriptor, faults or hangs the GPU; Metal leaves
+		 * the result of such a read undefined, so reading zeros or a default sampler is conforming.
+		 *
+		 * The fallback buffer is a zero-filled shared buffer of fallbackBufferSize bytes.
+		 */
+		static constexpr size_t fallbackBufferSize = 64 * 1024;
+		std::shared_ptr<Buffer> fallbackBuffer();
+		std::shared_ptr<SamplerState> fallbackSampler();
+
+		/**
+		 * Whether VK_EXT_robustness2's nullDescriptor is enabled, which makes VK_NULL_HANDLE a valid
+		 * image view or vertex buffer that reads as zero.
+		 */
+		bool nullDescriptorEnabled() const { return _nullDescriptor; }
 
 		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);

@@ -361,15 +361,25 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 		for (size_t vulkanIndex = 0; vulkanIndex < vertexInputBindings.size(); ++vulkanIndex) {
 			const auto& metalIndex = vertexInputBindings[vulkanIndex];
 
-			if (metalIndex >= _functionResources[0].buffers.size()) {
-				// technically, this requires the `nullDescriptor` feature, but we should never run into this case anyways.
-				buffers[vulkanIndex] = VK_NULL_HANDLE;
-				offsets[vulkanIndex] = 0;
-			} else {
-				auto [buffer, offset] = _functionResources[0].buffers[metalIndex];
-				auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+			std::shared_ptr<PrivateBuffer> privateBuffer;
+			size_t offset = 0;
+			if (metalIndex < _functionResources[0].buffers.size()) {
+				privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(_functionResources[0].buffers[metalIndex].first);
+				offset = _functionResources[0].buffers[metalIndex].second;
+			}
+
+			if (privateBuffer) {
 				buffers[vulkanIndex] = privateBuffer->buffer();
 				offsets[vulkanIndex] = offset;
+			} else {
+				// The pipeline fetches vertices from a buffer index that was never bound. A null buffer
+				// (which reads as zero) needs nullDescriptor; otherwise read the zero-filled fallback.
+				if (_privateDevice->nullDescriptorEnabled()) {
+					buffers[vulkanIndex] = VK_NULL_HANDLE;
+				} else {
+					buffers[vulkanIndex] = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->fallbackBuffer())->buffer();
+				}
+				offsets[vulkanIndex] = 0;
 			}
 		}
 

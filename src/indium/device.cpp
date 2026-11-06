@@ -344,6 +344,27 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		}
 	}
 
+	// Enable only nullDescriptor from VK_EXT_robustness2, not its costlier robust access features: it
+	// lets an unbound vertex buffer or texture be bound as VK_NULL_HANDLE, which reads as zero.
+	VkPhysicalDeviceRobustness2FeaturesEXT robustness2 {};
+	robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) == 0;
+	})) {
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &robustness2;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		if (robustness2.nullDescriptor) {
+			robustness2.robustBufferAccess2 = VK_FALSE;
+			robustness2.robustImageAccess2 = VK_FALSE;
+			robustness2.pNext = features13.pNext;
+			features13.pNext = &robustness2;
+			extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+			_nullDescriptor = true;
+		}
+	}
+
 	VkDeviceCreateInfo deviceCreateInfo {};
 	deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
@@ -565,6 +586,23 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, 
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
+};
+
+std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::fallbackBuffer() {
+	std::scoped_lock lock(_fallbackMutex);
+	if (!_fallbackBuffer) {
+		std::vector<char> zeros(fallbackBufferSize, 0);
+		_fallbackBuffer = newBuffer(zeros.data(), zeros.size(), ResourceOptions::StorageModeShared);
+	}
+	return _fallbackBuffer;
+};
+
+std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::fallbackSampler() {
+	std::scoped_lock lock(_fallbackMutex);
+	if (!_fallbackSampler) {
+		_fallbackSampler = newSamplerState(SamplerDescriptor {});
+	}
+	return _fallbackSampler;
 };
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {

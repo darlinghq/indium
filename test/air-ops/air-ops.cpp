@@ -172,6 +172,13 @@ static bool testControlFlow(Indium::Device* device) {
 	return compare("control_flow", slots, run<int32_t>(device, "control_flow", want.size(), { ns }), want);
 }
 
+// A buffer the kernel reads but the caller never bound must not fault the GPU. Metal leaves such a
+// read undefined; Indium reads zeros, so every count is 0 and so is every result.
+static bool testUnboundBuffer(Indium::Device* device) {
+	std::vector<int32_t> want(threadCount * 4, 0);
+	return compare("control_flow (unbound input)", 4, run<int32_t>(device, "control_flow", want.size(), {}), want);
+}
+
 // The library reports each kernel's buffer arguments as air-ops.metal declares them, and a pipeline
 // asking for that reflection can be created.
 static bool testReflection(Indium::Device* device) {
@@ -219,6 +226,7 @@ int main(int argc, char** argv) {
 		ok = testTableLookup(device.get()) && ok;
 		ok = testControlFlow(device.get()) && ok;
 		ok = testReflection(device.get()) && ok;
+		ok = testUnboundBuffer(device.get()) && ok;
 
 		keepPollingDevice = false;
 		device->wakeupEventLoop();

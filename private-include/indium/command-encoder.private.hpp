@@ -103,12 +103,16 @@ namespace Indium {
 						continue;
 					}
 
-					if (bindingInfo.index >= functionResources.buffers.size()) {
-						addresses.push_back(0);
+					std::shared_ptr<PrivateBuffer> privateBuf;
+					if (bindingInfo.index < functionResources.buffers.size()) {
+						privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index].first);
+					}
+					if (!privateBuf) {
+						// the shader would dereference address 0
+						auto fallback = std::dynamic_pointer_cast<PrivateBuffer>(privateDevice->fallbackBuffer());
+						addresses.push_back(fallback->gpuAddress());
 						continue;
 					}
-
-					auto privateBuf = std::dynamic_pointer_cast<PrivateBuffer>(functionResources.buffers[bindingInfo.index].first);
 					addresses.push_back(privateBuf->gpuAddress() + functionResources.buffers[bindingInfo.index].second);
 				}
 
@@ -137,16 +141,18 @@ namespace Indium {
 				auto& bindingInfo = funcInfo.bindings[j];
 
 				if (bindingInfo.type == BindingType::Texture) {
-					if (bindingInfo.index >= functionResources.textures.size()) {
+					std::shared_ptr<PrivateTexture> privateTexture;
+					if (bindingInfo.index < functionResources.textures.size()) {
+						privateTexture = std::dynamic_pointer_cast<PrivateTexture>(functionResources.textures[bindingInfo.index]);
+					}
+					// without nullDescriptor, an unbound texture can only be left unwritten
+					if (!privateTexture && !privateDevice->nullDescriptorEnabled()) {
 						continue;
 					}
 
-					auto texture = functionResources.textures[bindingInfo.index];
-					auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-
 					auto& info = imageInfos.emplace_front();
-					info.imageView = privateTexture->imageView();
-					info.imageLayout = privateTexture->imageLayout();
+					info.imageView = privateTexture ? privateTexture->imageView() : VK_NULL_HANDLE;
+					info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
 
 					auto& descSet = writeDescSet.emplace_back();
 					descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -162,11 +168,17 @@ namespace Indium {
 					if (bindingInfo.index == SIZE_MAX) {
 						// this binding uses an embedded sampler
 						embeddedSampler = true;
-					} else if (bindingInfo.index >= functionResources.samplers.size()) {
-						continue;
 					}
 
-					auto sampler = embeddedSampler ? funcInfo.embeddedSamplerStates[bindingInfo.embeddedSamplerIndex] : functionResources.samplers[bindingInfo.index];
+					std::shared_ptr<SamplerState> sampler;
+					if (embeddedSampler) {
+						sampler = funcInfo.embeddedSamplerStates[bindingInfo.embeddedSamplerIndex];
+					} else if (bindingInfo.index < functionResources.samplers.size()) {
+						sampler = functionResources.samplers[bindingInfo.index];
+					}
+					if (!sampler) {
+						sampler = privateDevice->fallbackSampler();
+					}
 					auto privateSampler = std::dynamic_pointer_cast<PrivateSamplerState>(sampler);
 
 					auto& info = imageInfos.emplace_front();
