@@ -479,6 +479,12 @@ std::string Indium::PrivateDevice::name() const {
 	device-local heap bounds the result too. Without a device-local heap, every
 	heap counts, as in recommendedMaxWorkingSetSize().
 */
+bool Indium::PrivateDevice::supportsDepth24Stencil8PixelFormat() const {
+	VkFormatProperties properties {};
+	DynamicVK::vkGetPhysicalDeviceFormatProperties(_physicalDevice, VK_FORMAT_D24_UNORM_S8_UINT, &properties);
+	return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+};
+
 uint64_t Indium::PrivateDevice::maxBufferLength() const {
 	VkPhysicalDeviceVulkan11Properties vk11Props {};
 	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;

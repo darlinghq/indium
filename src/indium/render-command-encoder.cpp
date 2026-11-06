@@ -203,6 +203,28 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		resolveAttachments.push_back(ref);
 	}
 
+	// memoryBarrier() records pipeline barriers inside the pass, which Vulkan only allows when they
+	// match a self-dependency of the subpass: one between fragment work (framebuffer-local) and one
+	// from vertex work to anything after it
+	{
+		auto& fragment = dependencies.emplace_back();
+		fragment.srcSubpass = 0;
+		fragment.dstSubpass = 0;
+		fragment.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		fragment.dstStageMask = fragment.srcStageMask;
+		fragment.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		fragment.dstAccessMask = fragment.srcAccessMask;
+		fragment.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		auto& vertex = dependencies.emplace_back();
+		vertex.srcSubpass = 0;
+		vertex.dstSubpass = 0;
+		vertex.srcStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		vertex.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		vertex.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vertex.dstAccessMask = vertex.srcAccessMask;
+	}
+
 	auto& subpassDesc = subpasses.emplace_back();
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
@@ -294,7 +316,7 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
-void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(std::shared_ptr<RenderPipelineState> renderPipelineState) {
+void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) {
 	auto buf = _privateCommandBuffer.lock();
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
 	if (_privatePSO) {
@@ -491,7 +513,7 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	finishTrackedEncoder(buf->commandBuffer());
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
 	_functionResources[0].setBuffer(buffer, offset, index);
 };
 
@@ -505,11 +527,11 @@ void Indium::PrivateRenderCommandEncoder::setVertexBufferOffset(size_t offset, s
 	_functionResources[0].setBufferOffset(offset, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(const std::shared_ptr<SamplerState>& state, size_t index) {
 	_functionResources[0].setSamplerState(state, std::nullopt, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(const std::shared_ptr<SamplerState>& state, float lodMinClamp, float lodMaxClamp, size_t index) {
 	_functionResources[0].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
 };
 
@@ -525,7 +547,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexSamplerStates(const std::vect
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexTexture(std::shared_ptr<Texture> texture, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexTexture(const std::shared_ptr<Texture>& texture, size_t index) {
 	_functionResources[0].setTexture(texture, index);
 };
 
@@ -540,7 +562,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentBytes(const void* bytes, si
 	_functionResources[1].setBytes(cmdBuf->device(), bytes, length, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
 	_functionResources[1].setBuffer(buffer, offset, index);
 };
 
@@ -554,11 +576,11 @@ void Indium::PrivateRenderCommandEncoder::setFragmentBufferOffset(size_t offset,
 	_functionResources[1].setBufferOffset(offset, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(const std::shared_ptr<SamplerState>& state, size_t index) {
 	_functionResources[1].setSamplerState(state, std::nullopt, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(const std::shared_ptr<SamplerState>& state, float lodMinClamp, float lodMaxClamp, size_t index) {
 	_functionResources[1].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
 };
 
@@ -574,7 +596,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentSamplerStates(const std::ve
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentTexture(const std::shared_ptr<Texture>& texture, size_t index) {
 	_functionResources[1].setTexture(texture, index);
 };
 
@@ -584,7 +606,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTextures(std::vector<std::s
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
 	if (!_privatePSO) {
 		return;
 	}
@@ -627,15 +649,15 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	_savedFunctionResources.push_back(_functionResources[1]);
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount) {
 	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, instanceCount, 0, 0);
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset) {
 	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, 1);
 };
 
-void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<DepthStencilState> state) {
+void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared_ptr<DepthStencilState>& state) {
 	auto buf = _privateCommandBuffer.lock();
 	auto privateState = std::dynamic_pointer_cast<PrivateDepthStencilState>(state);
 	auto& desc = privateState->descriptor();
@@ -810,4 +832,53 @@ void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> 
 void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) {
 	// TODO: check what Metal does in this case. this is just an educated guess
 	useResources(resources, usage, RenderStages::Vertex | RenderStages::Fragment | RenderStages::Tile | RenderStages::Object | RenderStages::Mesh);
+};
+
+void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) {
+	constexpr size_t knownScope = static_cast<size_t>(BarrierScope::Buffers | BarrierScope::Textures | BarrierScope::RenderTargets);
+	constexpr size_t supportedStages = static_cast<size_t>(RenderStages::Vertex | RenderStages::Fragment);
+	if (!scope || (static_cast<size_t>(scope) & ~knownScope)) {
+		throw std::invalid_argument("Invalid memory barrier scope");
+	}
+	if (!after || !before || (static_cast<size_t>(after) & ~supportedStages) || (static_cast<size_t>(before) & ~supportedStages)) {
+		throw std::invalid_argument("Unsupported memory barrier stages");
+	}
+
+	VkMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	VkPipelineStageFlags srcStages = 0;
+	VkPipelineStageFlags dstStages = 0;
+	VkDependencyFlags flags = 0;
+
+	if (!!(scope & (BarrierScope::Buffers | BarrierScope::Textures))) {
+		barrier.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.dstAccessMask |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	}
+
+	if (after == RenderStages::Vertex) {
+		srcStages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		dstStages = (!!(before & RenderStages::Vertex) ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0) |
+			(!!(before & RenderStages::Fragment) ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : 0);
+		// vertex work does not write render targets
+		if (!barrier.srcAccessMask) {
+			return;
+		}
+	} else if (before == RenderStages::Fragment) {
+		// the fragment stage of earlier draws (with the vertex stage, which precedes it) before
+		// the fragment stage of later ones
+		srcStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dstStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		if (!!(scope & BarrierScope::RenderTargets)) {
+			srcStages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dstStages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			barrier.srcAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dstAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		}
+		flags = VK_DEPENDENCY_BY_REGION_BIT;
+	} else {
+		throw std::invalid_argument("A render pass cannot order later vertex work after earlier fragment work");
+	}
+
+	auto buf = _privateCommandBuffer.lock();
+	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, flags, 1, &barrier, 0, nullptr, 0, nullptr);
 };

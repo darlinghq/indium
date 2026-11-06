@@ -52,6 +52,11 @@ namespace Indium {
 		 */
 		virtual uint64_t maxBufferLength() const = 0;
 
+		/**
+		 * Whether textures of `PixelFormat::Depth24Unorm_Stencil8` can be created and rendered to.
+		 */
+		virtual bool supportsDepth24Stencil8PixelFormat() const = 0;
+
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) = 0;

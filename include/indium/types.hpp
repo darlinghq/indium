@@ -585,6 +585,13 @@ namespace Indium {
 	};
 	INDIUM_BITFLAG_ENUM_CLASS(RenderStages);
 
+	enum class BarrierScope: size_t {
+		Buffers = 1 << 0,
+		Textures = 1 << 1,
+		RenderTargets = 1 << 2,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(BarrierScope);
+
 	enum class BlitOption: size_t {
 		None = 0,
 		DepthFromDepthStencil = 1 << 0,
