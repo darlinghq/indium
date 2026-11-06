@@ -119,6 +119,12 @@ namespace Indium {
 		 */
 		bool nullDescriptorEnabled() const { return _nullDescriptor; }
 
+		/**
+		 * The memory type a resource with the given storage mode is allocated from, among those
+		 * `memoryTypeBits` allows; SIZE_MAX if none fits.
+		 */
+		size_t findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const;
+
 		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);
 		INDIUM_PROPERTY(VkDevice, d, D,evice) = VK_NULL_HANDLE;

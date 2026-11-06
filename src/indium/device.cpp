@@ -1,4 +1,5 @@
 #include <indium/device.private.hpp>
+#include <indium/memory-type.private.hpp>
 
 #include <iostream>
 #include <indium/instance.private.hpp>
@@ -586,6 +587,10 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, 
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
+};
+
+size_t Indium::PrivateDevice::findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const {
+	return chooseMemoryType(memoryProperties(), memoryTypeBits, storageMode);
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::fallbackBuffer() {

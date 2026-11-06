@@ -401,27 +401,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
-	size_t targetIndex = SIZE_MAX;
-
-	for (size_t i = 0; i < _device->memoryProperties().memoryTypeCount; ++i) {
-		const auto& type = _device->memoryProperties().memoryTypes[i];
-
-		if ((reqs.memoryTypeBits & (1 << i)) == 0) {
-			continue;
-		}
-
-		if ((_storageMode == StorageMode::Managed || _storageMode == StorageMode::Shared) && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-			continue;
-		}
-
-		if (_storageMode == StorageMode::Shared && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
-			continue;
-		}
-
-		// okay, this is good enough
-		targetIndex = i;
-		break;
-	}
+	size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
 
 	if (targetIndex == SIZE_MAX) {
 		throw std::runtime_error("No suitable memory region found for image with requested storage mode");

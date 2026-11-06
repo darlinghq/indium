@@ -43,27 +43,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 
 	DynamicVK::vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
 
-	size_t targetIndex = SIZE_MAX;
-
-	for (size_t i = 0; i < _privateDevice->memoryProperties().memoryTypeCount; ++i) {
-		const auto& type = _privateDevice->memoryProperties().memoryTypes[i];
-
-		if ((requirements.memoryTypeBits & (1 << i)) == 0) {
-			continue;
-		}
-
-		if ((_storageMode == StorageMode::Managed || _storageMode == StorageMode::Shared) && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-			continue;
-		}
-
-		if (_storageMode == StorageMode::Shared && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
-			continue;
-		}
-
-		// okay, this is good enough
-		targetIndex = i;
-		break;
-	}
+	size_t targetIndex = _privateDevice->findMemoryType(requirements.memoryTypeBits, _storageMode);
 
 	if (targetIndex == SIZE_MAX) {
 		throw std::runtime_error("No suitable memory region found for buffer with requested storage mode");

@@ -62,4 +62,10 @@ set_target_properties(indium-test-dynamic-llvm-mismatch PROPERTIES CXX_STANDARD 
 add_test(NAME dynamic-llvm-mismatch COMMAND indium-test-dynamic-llvm-mismatch)
 # the top-level LLVM discovery block, run against fake llvm-config trees
 add_test(NAME llvm-discovery COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/llvm-discovery/check.sh")
+
+# Indium's memory type choice, on synthetic memory type layouts
+add_executable(indium-test-memory-type memory-type/memory-type.cpp)
+target_include_directories(indium-test-memory-type PRIVATE "${INDIUM_ROOT}/include" "${INDIUM_ROOT}/private-include")
+set_target_properties(indium-test-memory-type PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME memory-type COMMAND indium-test-memory-type)
 add_subdirectory(texture-usage)
