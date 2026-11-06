@@ -173,6 +173,10 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		tmp.dstAlphaBlendFactor = blendFactorToVkBlendFactor(colorInfo.destinationAlphaBlendFactor);
 		tmp.alphaBlendOp = blendOperationToVkBlendOp(colorInfo.alphaBlendOperation);
 		tmp.colorWriteMask = colorWriteMaskToVkColorComponentFlags(colorInfo.writeMask);
+		// an attachment slot without a format has nothing to write to
+		if (colorInfo.pixelFormat == PixelFormat::Invalid) {
+			tmp.colorWriteMask = 0;
+		}
 		colorBlendStates.push_back(tmp);
 	}
 	VkPipelineColorBlendStateCreateInfo colorBlendState {};
