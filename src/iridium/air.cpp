@@ -1,4 +1,5 @@
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <iridium/air.hpp>
 #include <iridium/bits.hpp>
@@ -41,6 +42,24 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	}
 
 	_module = LLVMSupport::Module(moduleRef, DynamicLLVM::LLVMDisposeModule);
+
+	// SPIR-V requires structured control flow, while AIR may contain any reducible CFG and keeps local
+	// aggregates in memory. Promote locals to SSA values and give every selection and loop its own merge
+	// block before translating. LLVM has no AIR target, so present the module as the SPIR-V it is being
+	// lowered to while the passes run, and restore its triple afterwards.
+	std::string triple = DynamicLLVM::LLVMGetTarget(moduleRef);
+	DynamicLLVM::LLVMSetTarget(moduleRef, "spirv64-unknown-unknown");
+	auto passOptions = DynamicLLVM::LLVMCreatePassBuilderOptions();
+	auto passError = DynamicLLVM::LLVMRunPasses(moduleRef, "function(sroa,mem2reg,loop-unroll,sroa,mem2reg,simplifycfg,structurizecfg)", nullptr, passOptions);
+	DynamicLLVM::LLVMDisposePassBuilderOptions(passOptions);
+	DynamicLLVM::LLVMSetTarget(moduleRef, triple.c_str());
+
+	if (passError) {
+		auto message = DynamicLLVM::LLVMGetErrorMessage(passError);
+		std::string detail = message ? message : "unknown LLVM error";
+		DynamicLLVM::LLVMDisposeErrorMessage(message);
+		throw std::runtime_error("Failed to normalize AIR control flow: " + detail);
+	}
 
 	_function = DynamicLLVM::LLVMGetNamedFunction(_module.get(), _name.c_str());
 
@@ -1952,66 +1971,267 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	//
 	// analyze CFG structures
 	//
-
-	// TODO: handle more complex CFG structures
+	// SPIR-V's structured control flow needs every conditional branch to name the block its paths merge
+	// at (OpSelectionMerge), every loop header to name its merge and continue blocks (OpLoopMerge), and
+	// no block to be the merge block of two constructs. The passes run on the module beforehand leave a
+	// structurized CFG; recover those blocks from its dominator and post-dominator sets.
+	//
 
 	enum class CFGType {
 		None = 0,
 		Selection,
+		Loop,
 	};
 
 	struct CFGInfo {
 		CFGType type = CFGType::None;
-		SPIRV::ResultID selectionMergeBlock = SPIRV::ResultIDInvalid;
+		SPIRV::ResultID mergeBlock = SPIRV::ResultIDInvalid;
+		SPIRV::ResultID continueBlock = SPIRV::ResultIDInvalid;
 	};
+
+	using BlockSet = std::set<LLVMBasicBlockRef>;
 
 	std::unordered_map<SPIRV::ResultID, CFGInfo> cfgInfos;
 
+	std::vector<LLVMBasicBlockRef> blocks;
 	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
-		auto lastInst = DynamicLLVM::LLVMGetLastInstruction(bb);
-		auto lastInstOpcode = DynamicLLVM::LLVMGetInstructionOpcode(lastInst);
+		blocks.push_back(bb);
+	}
+	const BlockSet allBlocks(blocks.begin(), blocks.end());
 
-		CFGInfo cfgInfo {};
+	auto successorsOf = [](LLVMBasicBlockRef bb) {
+		auto terminator = DynamicLLVM::LLVMGetLastInstruction(bb);
+		std::vector<LLVMBasicBlockRef> successors(DynamicLLVM::LLVMGetNumSuccessors(terminator));
+		for (unsigned i = 0; i < successors.size(); ++i) {
+			successors[i] = DynamicLLVM::LLVMGetSuccessor(terminator, i);
+		}
+		return successors;
+	};
 
-		if (IRIDIUM_IS_BR(lastInstOpcode) && DynamicLLVM::LLVMIsConditional(lastInst)) {
-			// check if this is a basic conditional/selection (i.e. an `if`)
-			auto firstBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 0);
-			auto secondBlock = DynamicLLVM::LLVMGetSuccessor(lastInst, 1);
+	auto intersect = [](const BlockSet& a, const BlockSet& b) {
+		BlockSet result;
+		std::set_intersection(a.begin(), a.end(), b.begin(), b.end(), std::inserter(result, result.begin()));
+		return result;
+	};
 
-			auto lastInstFirstBlock = DynamicLLVM::LLVMGetLastInstruction(firstBlock);
-			auto lastInstSecondBlock = DynamicLLVM::LLVMGetLastInstruction(secondBlock);
-			auto lastInstOpcodeFirstBlock = DynamicLLVM::LLVMGetInstructionOpcode(lastInstFirstBlock);
-			auto lastInstOpcodeSecondBlock = DynamicLLVM::LLVMGetInstructionOpcode(lastInstSecondBlock);
+	auto blockID = [&](LLVMBasicBlockRef bb) {
+		return builder.lookupResultID(reinterpret_cast<uintptr_t>(bb));
+	};
 
-			SPIRV::ResultID mergeBlock = SPIRV::ResultIDInvalid;
+	auto isConditionalBranch = [](LLVMValueRef terminator) {
+		return IRIDIUM_IS_BR(DynamicLLVM::LLVMGetInstructionOpcode(terminator)) && DynamicLLVM::LLVMIsConditional(terminator);
+	};
 
-			// check if the first block is the special block
-			if (IRIDIUM_IS_BR(lastInstOpcodeFirstBlock) && !DynamicLLVM::LLVMIsConditional(lastInstFirstBlock)) {
-				// make sure the target block is the same
-				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstFirstBlock, 0);
-
-				if (block == secondBlock) {
-					// perfect, the second block is the merge block then
-					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(secondBlock));
+	// Solves "set(block) = {block} + the intersection of set(n) over its neighbours n" to a fixed point,
+	// starting from the full set. With successors as neighbours (`within` limits which ones count) this
+	// gives the post-dominators, with predecessors the dominators.
+	auto solve = [&](const BlockSet& universe, auto&& neighboursOf, auto&& isRoot) {
+		std::unordered_map<LLVMBasicBlockRef, BlockSet> sets;
+		for (auto bb: universe) {
+			sets[bb] = isRoot(bb) ? BlockSet { bb } : universe;
+		}
+		for (bool changed = true; changed;) {
+			changed = false;
+			for (auto bb: blocks) {
+				if (!universe.count(bb) || isRoot(bb)) {
+					continue;
 				}
-			} else if (IRIDIUM_IS_BR(lastInstOpcodeSecondBlock) && !DynamicLLVM::LLVMIsConditional(lastInstSecondBlock)) {
-				// make sure the target block is the same
-				auto block = DynamicLLVM::LLVMGetSuccessor(lastInstSecondBlock, 0);
-
-				if (block == firstBlock) {
-					// perfect, the first block is the merge block then
-					mergeBlock = builder.lookupResultID(reinterpret_cast<uintptr_t>(firstBlock));
+				auto next = universe;
+				for (auto neighbour: neighboursOf(bb)) {
+					next = intersect(next, sets[neighbour]);
 				}
-			}
-
-			if (mergeBlock != SPIRV::ResultIDInvalid) {
-				cfgInfo.type = CFGType::Selection;
-				cfgInfo.selectionMergeBlock = mergeBlock;
+				next.insert(bb);
+				if (next != sets[bb]) {
+					sets[bb] = std::move(next);
+					changed = true;
+				}
 			}
 		}
+		return sets;
+	};
 
-		if (cfgInfo.type != CFGType::None) {
-			cfgInfos[builder.lookupResultID(reinterpret_cast<uintptr_t>(bb))] = cfgInfo;
+	// The nearest of `candidates` that satisfies `accept`: the one whose own set is largest.
+	auto nearest = [](const BlockSet& candidates, std::unordered_map<LLVMBasicBlockRef, BlockSet>& sets, auto&& accept) {
+		LLVMBasicBlockRef result = nullptr;
+		for (auto candidate: candidates) {
+			if (accept(candidate) && (!result || sets[candidate].size() > sets[result].size())) {
+				result = candidate;
+			}
+		}
+		return result;
+	};
+
+	std::unordered_map<LLVMBasicBlockRef, std::vector<LLVMBasicBlockRef>> predecessors;
+	for (auto bb: blocks) {
+		for (auto successor: successorsOf(bb)) {
+			predecessors[successor].push_back(bb);
+		}
+	}
+
+	auto postDominators = solve(allBlocks, successorsOf, [&](LLVMBasicBlockRef bb) { return successorsOf(bb).empty(); });
+	auto dominators = solve(allBlocks, [&](LLVMBasicBlockRef bb) { return predecessors[bb]; }, [&](LLVMBasicBlockRef bb) { return bb == blocks.front(); });
+
+	// a selection merges at its immediate post-dominator
+	for (auto bb: blocks) {
+		if (!isConditionalBranch(DynamicLLVM::LLVMGetLastInstruction(bb))) {
+			continue;
+		}
+		auto merge = nearest(postDominators[bb], postDominators, [&](LLVMBasicBlockRef candidate) { return candidate != bb; });
+		if (merge) {
+			cfgInfos[blockID(bb)] = CFGInfo { CFGType::Selection, blockID(merge) };
+		}
+	}
+
+	// A back edge (latch -> header, where the header dominates the latch) makes a loop. Its merge is the
+	// header's nearest post-dominator outside the loop. The latch's branch moves into a new continue block,
+	// because the continue target has to be a block of its own that only branches back to the header.
+	std::unordered_map<LLVMBasicBlockRef, SPIRV::ResultID> continueBlocks;
+	// A loop header whose branch is a selection within the loop cannot also declare it (it declares the
+	// loop), so it branches to a new block that does: header -> {that block, the selection's merge}.
+	std::unordered_map<LLVMBasicBlockRef, std::pair<SPIRV::ResultID, SPIRV::ResultID>> headerSelections;
+
+	for (auto latch: blocks) {
+		for (auto header: successorsOf(latch)) {
+			if (!dominators[latch].count(header)) {
+				continue;
+			}
+
+			BlockSet loop { header, latch };
+			std::vector<LLVMBasicBlockRef> pending;
+			if (latch != header) {
+				pending.push_back(latch);
+			}
+			while (!pending.empty()) {
+				auto block = pending.back();
+				pending.pop_back();
+				for (auto predecessor: predecessors[block]) {
+					if (loop.insert(predecessor).second && predecessor != header) {
+						pending.push_back(predecessor);
+					}
+				}
+			}
+
+			auto merge = nearest(postDominators[header], postDominators, [&](LLVMBasicBlockRef candidate) { return !loop.count(candidate); });
+			if (!merge) {
+				throw ImpossibleResultID("loop has no merge block");
+			}
+
+			auto headerID = blockID(header);
+			auto existing = cfgInfos.find(headerID);
+			if (existing != cfgInfos.end() && existing->second.type == CFGType::Loop) {
+				throw ImpossibleResultID("loop has more than one back edge");
+			}
+
+			auto continueID = builder.reserveResultID();
+			continueBlocks[latch] = continueID;
+			cfgInfos[headerID] = CFGInfo { CFGType::Loop, blockID(merge), continueID };
+
+			// Within the loop, paths that leave it or go back to the header end the enclosing construct,
+			// so they do not count when finding where a selection inside the loop merges. Post-dominators
+			// over the loop body, with the latch as its only exit, give those merges.
+			auto loopSuccessors = [&](LLVMBasicBlockRef bb) {
+				std::vector<LLVMBasicBlockRef> result;
+				for (auto successor: successorsOf(bb)) {
+					if (loop.count(successor) && successor != header) {
+						result.push_back(successor);
+					}
+				}
+				return result;
+			};
+			auto local = solve(loop, loopSuccessors, [&](LLVMBasicBlockRef bb) { return bb == latch; });
+			auto innerMerge = [&](LLVMBasicBlockRef block) {
+				return nearest(local[block], local, [&](LLVMBasicBlockRef candidate) {
+					return candidate != block && candidate != header && local[candidate] != loop;
+				});
+			};
+
+			auto headerTerminator = DynamicLLVM::LLVMGetLastInstruction(header);
+			if (header != latch && isConditionalBranch(headerTerminator) &&
+				loop.count(DynamicLLVM::LLVMGetSuccessor(headerTerminator, 0)) && loop.count(DynamicLLVM::LLVMGetSuccessor(headerTerminator, 1))) {
+				auto merge = innerMerge(header);
+				if (!merge) {
+					throw ImpossibleResultID("selection in a loop header has no merge block");
+				}
+				headerSelections[header] = { builder.reserveResultID(), blockID(merge) };
+			}
+
+			for (auto block: loop) {
+				auto found = cfgInfos.find(blockID(block));
+				if (found == cfgInfos.end() || found->second.type != CFGType::Selection) {
+					continue;
+				}
+				if (block == latch) {
+					// the latch's conditional branch continues or leaves the loop; that needs no selection
+					cfgInfos.erase(found);
+					continue;
+				}
+				if (auto merge = innerMerge(block)) {
+					found->second.mergeBlock = blockID(merge);
+				}
+			}
+		}
+	}
+
+	// Two constructs cannot share a merge block. When a selection's merge is already taken (it leaves an
+	// enclosing construct), give it a new merge block that is never reached instead. Outer constructs,
+	// whose headers have fewer dominators, keep the real block.
+	std::vector<SPIRV::ResultID> unreachableMerges;
+	{
+		std::set<SPIRV::ResultID> claimedMerges;
+		auto headers = blocks;
+		std::stable_sort(headers.begin(), headers.end(), [&](LLVMBasicBlockRef a, LLVMBasicBlockRef b) {
+			return dominators[a].size() < dominators[b].size();
+		});
+		for (auto bb: headers) {
+			auto found = cfgInfos.find(blockID(bb));
+			if (found == cfgInfos.end()) {
+				continue;
+			}
+			if (!claimedMerges.insert(found->second.mergeBlock).second) {
+				auto id = builder.reserveResultID();
+				found->second.mergeBlock = id;
+				unreachableMerges.push_back(id);
+			}
+		}
+	}
+
+	// SPIR-V requires a value's definition to come before its uses in block order (except through PHIs),
+	// and AIR's block order need not have that property, so emit the blocks in reverse post-order.
+	{
+		BlockSet visited;
+		std::vector<LLVMBasicBlockRef> postOrder;
+		std::vector<std::pair<LLVMBasicBlockRef, size_t>> stack { { blocks.front(), 0 } };
+		visited.insert(blocks.front());
+		while (!stack.empty()) {
+			auto& [block, next] = stack.back();
+			auto successors = successorsOf(block);
+			if (next < successors.size()) {
+				auto successor = successors[next++];
+				if (visited.insert(successor).second) {
+					stack.push_back({ successor, 0 });
+				}
+			} else {
+				postOrder.push_back(block);
+				stack.pop_back();
+			}
+		}
+		std::vector<LLVMBasicBlockRef> ordered(postOrder.rbegin(), postOrder.rend());
+		for (auto bb: blocks) {
+			if (!visited.count(bb)) {
+				ordered.push_back(bb);
+			}
+		}
+		blocks = std::move(ordered);
+	}
+
+	// A PHI's value can be used across a back edge, before the PHI itself is emitted, so give every PHI
+	// its result ID up front.
+	for (auto bb: blocks) {
+		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+			if (DynamicLLVM::LLVMGetInstructionOpcode(inst) == LLVMPHI) {
+				auto id = builder.associateResultID(reinterpret_cast<uintptr_t>(inst));
+				builder.setResultType(id, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst)));
+			}
 		}
 	}
 
@@ -2019,7 +2239,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// translate instructions
 	//
 	isFirst = true;
-	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
+	for (auto bb: blocks) {
 		if (isFirst) {
 			isFirst = false;
 
@@ -2598,6 +2818,23 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 #else
 				case LLVMBr: {
 #endif
+					auto loop = cfgInfos.find(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
+					if (loop != cfgInfos.end() && loop->second.type == CFGType::Loop) {
+						builder.encodeLoopMerge(loop->second.mergeBlock, loop->second.continueBlock);
+						auto selection = headerSelections.find(bb);
+						if (selection != headerSelections.end()) {
+							builder.encodeBranch(selection->second.first);
+							builder.insertLabel(selection->second.first);
+							builder.encodeSelectionMerge(selection->second.second);
+						}
+					}
+
+					auto continueBlock = continueBlocks.find(bb);
+					if (continueBlock != continueBlocks.end()) {
+						builder.encodeBranch(continueBlock->second);
+						builder.insertLabel(continueBlock->second);
+					}
+
 					if (DynamicLLVM::LLVMIsConditional(inst)) {
 						auto condition = DynamicLLVM::LLVMGetCondition(inst);
 						auto trueLabel = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetSuccessor(inst, 0));
@@ -2607,17 +2844,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 						auto it = cfgInfos.find(builder.lookupResultID(reinterpret_cast<uintptr_t>(bb)));
 
-						if (it != cfgInfos.end()) {
-							auto& cfgInfo = it->second;
-
-							switch (cfgInfo.type) {
-								case CFGType::Selection: {
-									builder.encodeSelectionMerge(cfgInfo.selectionMergeBlock);
-								} break;
-
-								default:
-									break;
-							}
+						if (it != cfgInfos.end() && it->second.type == CFGType::Selection) {
+							builder.encodeSelectionMerge(it->second.mergeBlock);
 						}
 
 						builder.encodeBranchConditional(llvmValueToResultID(builder, condition), llvmValueToResultID(builder, trueLabel), llvmValueToResultID(builder, falseLabel));
@@ -2633,15 +2861,32 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto type = llvmTypeToSPIRVType(builder, lltype);
 
 					std::vector<std::pair<SPIRV::ResultID, SPIRV::ResultID>> variablesAndBlocks;
+					std::vector<uintptr_t> forwardValues;
 
 					auto opCount = DynamicLLVM::LLVMCountIncoming(inst);
 					for (size_t i = 0; i < opCount; ++i) {
 						auto variable = DynamicLLVM::LLVMGetIncomingValue(inst, i);
-						auto label = DynamicLLVM::LLVMBasicBlockAsValue(DynamicLLVM::LLVMGetIncomingBlock(inst, i));
-						variablesAndBlocks.push_back(std::make_pair(llvmValueToResultID(builder, variable), llvmValueToResultID(builder, label)));
+						auto incomingBlock = DynamicLLVM::LLVMGetIncomingBlock(inst, i);
+						auto label = llvmValueToResultID(builder, DynamicLLVM::LLVMBasicBlockAsValue(incomingBlock));
+
+						// the edge now leaves from the block the branch was moved to
+						auto continueBlock = continueBlocks.find(incomingBlock);
+						if (continueBlock != continueBlocks.end()) {
+							label = continueBlock->second;
+						}
+						auto selection = headerSelections.find(incomingBlock);
+						if (selection != headerSelections.end()) {
+							label = selection->second.first;
+						}
+
+						// a value coming in over a back edge may not have been translated yet
+						bool forward = builder.lookupResultID(reinterpret_cast<uintptr_t>(variable)) == SPIRV::ResultIDInvalid &&
+							DynamicLLVM::LLVMGetValueKind(variable) == LLVMInstructionValueKind;
+						variablesAndBlocks.push_back(std::make_pair(forward ? SPIRV::ResultIDInvalid : llvmValueToResultID(builder, variable), label));
+						forwardValues.push_back(forward ? reinterpret_cast<uintptr_t>(variable) : 0);
 					}
 
-					auto resID = builder.encodePhi(type, variablesAndBlocks);
+					auto resID = builder.encodePhi(type, variablesAndBlocks, builder.lookupResultID(reinterpret_cast<uintptr_t>(inst)), forwardValues);
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
@@ -2709,10 +2954,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+				case LLVMUnreachable: {
+					builder.encodeUnreachable();
+				} break;
+
 				default:
 					throw std::runtime_error("Unhandled instruction opcode: " + std::to_string(opcode));
 			}
 		}
+	}
+
+	for (auto label: unreachableMerges) {
+		builder.insertLabel(label);
+		builder.encodeUnreachable();
 	}
 
 	builder.endFunction();

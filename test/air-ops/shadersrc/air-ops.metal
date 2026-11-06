@@ -56,3 +56,32 @@ kernel void float_ops(device float* out [[buffer(0)]], device const float* xs [[
 kernel void table_lookup(device float* out [[buffer(0)]], uint id [[thread_position_in_grid]]) {
 	out[id] = table[id];
 }
+
+kernel void control_flow(device uint* out [[buffer(0)]], device const uint* ns [[buffer(1)]], uint id [[thread_position_in_grid]]) {
+	uint n = ns[id];
+	device uint* r = out + id * 4;
+
+	uint squares = 0;
+	for (uint i = 0; i < n; ++i) {
+		squares += i * i;
+	}
+	r[0] = squares;
+
+	r[1] = (n & 1) ? n * 3 + 1 : n / 2;
+
+	uint nested = 0;
+	for (uint i = 0; i < n; ++i) {
+		for (uint j = 0; j < i; ++j) {
+			nested += i ^ j;
+		}
+	}
+	r[2] = nested;
+
+	uint k = 0;
+	for (; k < n; ++k) {
+		if (k * k > id * 5) {
+			break;
+		}
+	}
+	r[3] = k;
+}

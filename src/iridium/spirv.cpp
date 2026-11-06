@@ -310,6 +310,17 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::beginFunction(ResultID id) {
 };
 
 void Iridium::SPIRV::Builder::endFunction() {
+	auto end = _currentFunctionWriter->offset();
+	for (const auto& [offset, association]: _forwardPhiOperands) {
+		auto id = lookupResultID(association);
+		if (id == ResultIDInvalid) {
+			throw std::runtime_error("PHI operand is never defined");
+		}
+		_currentFunctionWriter->seek(offset);
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(id);
+	}
+	_forwardPhiOperands.clear();
+	_currentFunctionWriter->seek(end);
 	_currentFunctionWriter = nullptr;
 };
 
@@ -766,12 +777,18 @@ void Iridium::SPIRV::Builder::encodeBranchConditional(ResultID condition, Result
 	endInstruction(std::move(tmp));
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks) {
-	auto result = reserveResultID();
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks, ResultID result, std::vector<uintptr_t> forwardValues) {
+	if (result == ResultIDInvalid) {
+		result = reserveResultID();
+	}
 	auto tmp = beginInstruction(Opcode::Phi, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
-	for (const auto& [variable, block]: variablesAndBlocks) {
+	for (size_t i = 0; i < variablesAndBlocks.size(); ++i) {
+		const auto& [variable, block] = variablesAndBlocks[i];
+		if (i < forwardValues.size() && forwardValues[i] != 0) {
+			_forwardPhiOperands.emplace_back(_currentFunctionWriter->offset(), forwardValues[i]);
+		}
 		_currentFunctionWriter->writeIntegerLE<uint32_t>(variable);
 		_currentFunctionWriter->writeIntegerLE<uint32_t>(block);
 	}
@@ -783,6 +800,19 @@ void Iridium::SPIRV::Builder::encodeSelectionMerge(ResultID mergeBlock) {
 	auto tmp = beginInstruction(Opcode::SelectionMerge, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(mergeBlock);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(0);
+	endInstruction(std::move(tmp));
+};
+
+void Iridium::SPIRV::Builder::encodeLoopMerge(ResultID mergeBlock, ResultID continueBlock) {
+	auto tmp = beginInstruction(Opcode::LoopMerge, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(mergeBlock);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(continueBlock);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(0);
+	endInstruction(std::move(tmp));
+};
+
+void Iridium::SPIRV::Builder::encodeUnreachable() {
+	auto tmp = beginInstruction(Opcode::Unreachable, *_currentFunctionWriter);
 	endInstruction(std::move(tmp));
 };
 

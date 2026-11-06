@@ -148,6 +148,30 @@ static bool testTableLookup(Indium::Device* device) {
 	return compare("table_lookup", 1, run<float>(device, "table_lookup", want.size(), {}), want);
 }
 
+static bool testControlFlow(Indium::Device* device) {
+	constexpr size_t slots = 4;
+	std::vector<int32_t> ns { 0, 1, 2, 5, 6, 9, 3, 12 };
+
+	std::vector<int32_t> want;
+	for (size_t id = 0; id < threadCount; ++id) {
+		uint32_t n = ns[id];
+		uint32_t squares = 0, nested = 0, k = 0;
+		for (uint32_t i = 0; i < n; ++i) {
+			squares += i * i;
+			for (uint32_t j = 0; j < i; ++j) {
+				nested += i ^ j;
+			}
+		}
+		for (; k < n && k * k <= id * 5; ++k);
+		want.push_back(squares);
+		want.push_back((n & 1) ? n * 3 + 1 : n / 2);
+		want.push_back(nested);
+		want.push_back(k);
+	}
+
+	return compare("control_flow", slots, run<int32_t>(device, "control_flow", want.size(), { ns }), want);
+}
+
 int main(int argc, char** argv) {
 	Indium::init(nullptr, 0, ENABLE_VALIDATION);
 
@@ -166,6 +190,7 @@ int main(int argc, char** argv) {
 		ok = testIntOps(device.get()) && ok;
 		ok = testFloatOps(device.get()) && ok;
 		ok = testTableLookup(device.get()) && ok;
+		ok = testControlFlow(device.get()) && ok;
 
 		keepPollingDevice = false;
 		device->wakeupEventLoop();

@@ -2,6 +2,8 @@
 
 #include <llvm-c/BitReader.h>
 #include <llvm-c/Core.h>
+#include <llvm-c/Error.h>
+#include <llvm-c/Transforms/PassBuilder.h>
 
 #include <dlfcn.h>
 
@@ -67,10 +69,13 @@ namespace Iridium {
 			_macro(LLVMCountIncoming) \
 			_macro(LLVMCountParamTypes) \
 			_macro(LLVMCountStructElementTypes) \
+			_macro(LLVMCreatePassBuilderOptions) \
 			_macro(LLVMCreateMemoryBufferWithMemoryRange) \
 			_macro(LLVMDisposeMemoryBuffer) \
 			_macro(LLVMDisposeMessage) \
+			_macro(LLVMDisposeErrorMessage) \
 			_macro(LLVMDisposeModule) \
+			_macro(LLVMDisposePassBuilderOptions) \
 			_macro(LLVMGetAlignment) \
 			_macro(LLVMGetArrayLength) \
 			_macro(LLVMGetCalledValue) \
@@ -78,6 +83,7 @@ namespace Iridium {
 			_macro(LLVMGetConstOpcode) \
 			_macro(LLVMGetElementAsConstant) \
 			_macro(LLVMGetElementType) \
+			_macro(LLVMGetErrorMessage) \
 			_macro(LLVMGetFCmpPredicate) \
 			_macro(LLVMGetAllocatedType) \
 			_macro(LLVMGetGEPSourceElementType) \
@@ -106,12 +112,14 @@ namespace Iridium {
 			_macro(LLVMGetNumIndices) \
 			_macro(LLVMGetNumMaskElements) \
 			_macro(LLVMGetNumOperands) \
+			_macro(LLVMGetNumSuccessors) \
 			_macro(LLVMGetOperand) \
 			_macro(LLVMGetParam) \
 			_macro(LLVMGetParamTypes) \
 			_macro(LLVMGetPointerAddressSpace) \
 			_macro(LLVMGetReturnType) \
 			_macro(LLVMGetSuccessor) \
+			_macro(LLVMGetTarget) \
 			_macro(LLVMGetTypeByName) \
 			_macro(LLVMGetTypeKind) \
 			_macro(LLVMGetUndefMaskElem) \
@@ -127,6 +135,8 @@ namespace Iridium {
 			_macro(LLVMIsPackedStruct) \
 			_macro(LLVMParseBitcode2) \
 			_macro(LLVMPrintModuleToString) \
+			_macro(LLVMRunPasses) \
+			_macro(LLVMSetTarget) \
 			_macro(LLVMStructGetTypeAtIndex) \
 			_macro(LLVMTypeOf)
 

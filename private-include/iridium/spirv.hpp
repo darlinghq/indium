@@ -560,6 +560,7 @@ namespace Iridium {
 			DPdy = 208,
 			Fwidth = 209,
 			Phi = 245,
+			LoopMerge = 246,
 			SelectionMerge = 247,
 			Label = 248,
 			Branch = 249,
@@ -567,6 +568,7 @@ namespace Iridium {
 			Kill = 252,
 			Return = 253,
 			ReturnValue = 254,
+			Unreachable = 255,
 			ExecutionModeId = 331,
 		};
 
@@ -683,6 +685,8 @@ namespace Iridium {
 			std::unordered_map<ResultID, DynamicByteWriter> _functionWriters;
 			PrivateFunctionInfo* _currentFunctionInfo = nullptr;
 			DynamicByteWriter* _currentFunctionWriter = nullptr;
+			// PHI operands that name a value defined later in the function: (operand offset, value association)
+			std::vector<std::pair<size_t, uintptr_t>> _forwardPhiOperands;
 			std::unordered_set<Capability> _requiredCapabilities;
 			uint8_t _versionMajor = 1;
 			uint8_t _versionMinor = 0;
@@ -784,8 +788,12 @@ namespace Iridium {
 			ResultID encodeFOrdGreaterThan(ResultID operand1, ResultID operand2);
 			void encodeBranch(ResultID targetLabel);
 			void encodeBranchConditional(ResultID condition, ResultID trueLabel, ResultID falseLabel);
-			ResultID encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks);
+			// `result` is used as the PHI's ID when valid. When `forwardValues[i]` is nonzero, operand i is the value
+			// associated with it, which may be defined later in the function; it is filled in by endFunction().
+			ResultID encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks, ResultID result = ResultIDInvalid, std::vector<uintptr_t> forwardValues = {});
 			void encodeSelectionMerge(ResultID mergeBlock);
+			void encodeLoopMerge(ResultID mergeBlock, ResultID continueBlock);
+			void encodeUnreachable();
 			ResultID encodeSqrt(ResultID resultTypeID, ResultID target);
 			ResultID encodeTrunc(ResultID resultTypeID, ResultID operand);
 			// Emitters for instructions without a dedicated helper; every operand is a result ID or literal word.

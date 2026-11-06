@@ -233,6 +233,105 @@ entry:
   ret void
 }
 
+; out[id * 4 + k]: a counted loop, an if/else, a nested loop and a loop with two exits
+define void @control_flow(ptr addrspace(1) noalias nocapture %out, ptr addrspace(1) noalias nocapture readonly %ns, i32 %id) local_unnamed_addr #0 {
+entry:
+  %idx = zext i32 %id to i64
+  %pn = getelementptr inbounds i32, ptr addrspace(1) %ns, i64 %idx
+  %n = load i32, ptr addrspace(1) %pn, align 4
+  %base = mul i32 %id, 4
+  %empty = icmp eq i32 %n, 0
+  br i1 %empty, label %squares.done, label %squares
+
+squares:
+  %i = phi i32 [ 0, %entry ], [ %i.next, %squares ]
+  %sum = phi i32 [ 0, %entry ], [ %sum.next, %squares ]
+  %sq = mul i32 %i, %i
+  %sum.next = add i32 %sum, %sq
+  %i.next = add nuw i32 %i, 1
+  %more = icmp ult i32 %i.next, %n
+  br i1 %more, label %squares, label %squares.done
+
+squares.done:
+  %r0 = phi i32 [ 0, %entry ], [ %sum.next, %squares ]
+  %bit = and i32 %n, 1
+  %odd = icmp ne i32 %bit, 0
+  br i1 %odd, label %collatz.odd, label %collatz.even
+
+collatz.odd:
+  %triple = mul i32 %n, 3
+  %up = add i32 %triple, 1
+  br label %collatz.done
+
+collatz.even:
+  %down = lshr i32 %n, 1
+  br label %collatz.done
+
+collatz.done:
+  %r1 = phi i32 [ %up, %collatz.odd ], [ %down, %collatz.even ]
+  br i1 %empty, label %outer.done, label %outer
+
+outer:
+  %oi = phi i32 [ 0, %collatz.done ], [ %oi.next, %inner.done ]
+  %osum = phi i32 [ 0, %collatz.done ], [ %isum.out, %inner.done ]
+  %inner.empty = icmp eq i32 %oi, 0
+  br i1 %inner.empty, label %inner.done, label %inner
+
+inner:
+  %j = phi i32 [ 0, %outer ], [ %j.next, %inner ]
+  %isum = phi i32 [ %osum, %outer ], [ %isum.next, %inner ]
+  %x = xor i32 %oi, %j
+  %isum.next = add i32 %isum, %x
+  %j.next = add nuw i32 %j, 1
+  %inner.more = icmp ult i32 %j.next, %oi
+  br i1 %inner.more, label %inner, label %inner.done
+
+inner.done:
+  %isum.out = phi i32 [ %osum, %outer ], [ %isum.next, %inner ]
+  %oi.next = add nuw i32 %oi, 1
+  %outer.more = icmp ult i32 %oi.next, %n
+  br i1 %outer.more, label %outer, label %outer.done
+
+outer.done:
+  %r2 = phi i32 [ 0, %collatz.done ], [ %isum.out, %inner.done ]
+  %limit = mul i32 %id, 5
+  br label %search
+
+search:
+  %k = phi i32 [ 0, %outer.done ], [ %k.next, %search.next ]
+  %at.end = icmp eq i32 %k, %n
+  br i1 %at.end, label %search.done, label %search.body
+
+search.body:
+  %ksq = mul i32 %k, %k
+  %found = icmp ugt i32 %ksq, %limit
+  br i1 %found, label %search.done, label %search.next
+
+search.next:
+  %k.next = add nuw i32 %k, 1
+  br label %search
+
+search.done:
+  %r3 = phi i32 [ %n, %search ], [ %k, %search.body ]
+  %i0 = add i32 %base, 0
+  %x0 = zext i32 %i0 to i64
+  %p0 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x0
+  store i32 %r0, ptr addrspace(1) %p0, align 4
+  %i1 = add i32 %base, 1
+  %x1 = zext i32 %i1 to i64
+  %p1 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x1
+  store i32 %r1, ptr addrspace(1) %p1, align 4
+  %i2 = add i32 %base, 2
+  %x2 = zext i32 %i2 to i64
+  %p2 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x2
+  store i32 %r2, ptr addrspace(1) %p2, align 4
+  %i3 = add i32 %base, 3
+  %x3 = zext i32 %i3 to i64
+  %p3 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x3
+  store i32 %r3, ptr addrspace(1) %p3, align 4
+  ret void
+}
+
 declare i32 @air.min.s.i32(i32, i32)
 declare i32 @air.max.u.i32(i32, i32)
 declare i32 @air.abs.s.i32(i32)
@@ -252,7 +351,7 @@ attributes #0 = { norecurse nounwind }
 !llvm.module.flags = !{!0}
 !air.version = !{!1}
 !air.language_version = !{!2}
-!air.kernel = !{!3, !10, !15}
+!air.kernel = !{!3, !10, !15, !18}
 
 !0 = !{i32 1, !"wchar_size", i32 4}
 !1 = !{i32 2, i32 2, i32 0}
@@ -275,3 +374,7 @@ attributes #0 = { norecurse nounwind }
 !15 = !{ptr @table_lookup, !4, !16}
 !16 = !{!12, !17}
 !17 = !{i32 1, !"air.thread_position_in_grid", !"air.arg_type_name", !"uint", !"air.arg_name", !"id"}
+
+!18 = !{ptr @control_flow, !4, !19}
+!19 = !{!6, !20, !9}
+!20 = !{i32 1, !"air.buffer", !"air.location_index", i32 1, i32 1, !"air.read", !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"uint", !"air.arg_name", !"ns"}
