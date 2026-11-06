@@ -1182,6 +1182,84 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	return true;
 }
 
+// The direct members described by an air.struct_type_info node: each is an offset, a size, an array
+// length, a type name and a name. Nested descriptions (a key string followed by its node) are skipped.
+static std::vector<Iridium::StructMemberInfo> airStructMembers(LLVMValueRef node) {
+	std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetMDNodeNumOperands(node));
+	DynamicLLVM::LLVMGetMDNodeOperands(node, operands.data());
+
+	std::vector<Iridium::StructMemberInfo> members;
+	for (size_t i = 0; i < operands.size();) {
+		if (operands[i] && DynamicLLVM::LLVMIsAMDString(operands[i])) {
+			i += 2;
+			continue;
+		}
+		if (i + 4 >= operands.size() || !DynamicLLVM::LLVMIsAConstantInt(operands[i]) || !DynamicLLVM::LLVMIsAMDString(operands[i + 3]) || !DynamicLLVM::LLVMIsAMDString(operands[i + 4])) {
+			// reflection only describes the shader, so stop at anything unrecognized rather than fail
+			break;
+		}
+		members.push_back(Iridium::StructMemberInfo {
+			static_cast<size_t>(DynamicLLVM::LLVMConstIntGetZExtValue(operands[i])),
+			std::string(llvmMDStringToStringView(operands[i + 3])),
+			std::string(llvmMDStringToStringView(operands[i + 4])),
+		});
+		i += 5;
+	}
+	return members;
+}
+
+// The reflection information for a buffer, texture or sampler parameter; other parameters (stage
+// inputs and built-ins) have none.
+static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef parameterOperand) {
+	std::vector<LLVMValueRef> info(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+	DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, info.data());
+	if (info.size() < 2 || !DynamicLLVM::LLVMIsAMDString(info[1])) {
+		return std::nullopt;
+	}
+
+	Iridium::ArgumentInfo argument;
+	auto kind = llvmMDStringToStringView(info[1]);
+	if (kind == "air.buffer") {
+		argument.type = Iridium::BindingType::Buffer;
+	} else if (kind == "air.texture") {
+		argument.type = Iridium::BindingType::Texture;
+	} else if (kind == "air.sampler") {
+		argument.type = Iridium::BindingType::Sampler;
+	} else {
+		return std::nullopt;
+	}
+
+	auto integer = [](LLVMValueRef value) -> size_t {
+		return DynamicLLVM::LLVMIsAConstantInt(value) ? DynamicLLVM::LLVMConstIntGetZExtValue(value) : 0;
+	};
+	auto string = [](LLVMValueRef value) {
+		return DynamicLLVM::LLVMIsAMDString(value) ? std::string(llvmMDStringToStringView(value)) : std::string();
+	};
+
+	for (size_t i = 2; i + 1 < info.size(); ++i) {
+		if (!info[i] || !DynamicLLVM::LLVMIsAMDString(info[i])) {
+			continue;
+		}
+		auto key = llvmMDStringToStringView(info[i]);
+		auto value = info[i + 1];
+		if (key == "air.location_index") {
+			argument.index = integer(value);
+		} else if (key == "air.arg_name") {
+			argument.name = string(value);
+		} else if (key == "air.arg_type_name") {
+			argument.typeName = string(value);
+		} else if (key == "air.arg_type_size") {
+			argument.size = integer(value);
+		} else if (key == "air.arg_type_align_size") {
+			argument.alignment = integer(value);
+		} else if (key == "air.struct_type_info" && value && !DynamicLLVM::LLVMIsAMDString(value)) {
+			argument.members = airStructMembers(value);
+		}
+	}
+
+	return argument;
+}
+
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
 	//std::cout << "    " << tmp << std::endl;
@@ -1419,6 +1497,12 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 	std::vector<LLVMValueRef> parameterOperands(DynamicLLVM::LLVMGetMDNodeNumOperands(rootInfoOperands[2]));
 	DynamicLLVM::LLVMGetMDNodeOperands(rootInfoOperands[2], parameterOperands.data());
+
+	for (auto parameterOperand: parameterOperands) {
+		if (auto argument = airArgumentInfo(parameterOperand)) {
+			funcInfo.arguments.push_back(std::move(*argument));
+		}
+	}
 
 	//
 	// analyze parameters and mark special values (like the vertex ID)

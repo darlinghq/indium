@@ -26,6 +26,7 @@ namespace Indium {
 		std::vector<Iridium::BindingInfo> bindings;
 		std::vector<Iridium::EmbeddedSampler> embeddedSamplers;
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
+		std::vector<ArgumentInfo> arguments;
 	};
 
 	class PrivateFunction: public Function {
@@ -33,6 +34,8 @@ namespace Indium {
 		PrivateFunction(std::shared_ptr<PrivateLibrary> library, const std::string& name, const FunctionInfo& functionInfo);
 
 		virtual std::shared_ptr<Device> device() override;
+		virtual FunctionType functionType() const override;
+		virtual const std::vector<ArgumentInfo>& argumentInfo() const override;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 

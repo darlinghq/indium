@@ -91,10 +91,31 @@ namespace Iridium {
 		float lodMax;
 	};
 
+	// A direct member of a structure passed in a buffer, as the shader declares it.
+	struct StructMemberInfo {
+		size_t offset = 0;
+		std::string typeName;
+		std::string name;
+	};
+
+	// A buffer, texture or sampler argument of a function, as the shader declares it. `index` is the
+	// Metal argument table index ([[buffer(n)]] and so on); `size` and `alignment` describe a buffer's
+	// pointee type and are zero for textures and samplers.
+	struct ArgumentInfo {
+		BindingType type;
+		size_t index = 0;
+		std::string name;
+		std::string typeName;
+		size_t size = 0;
+		size_t alignment = 0;
+		std::vector<StructMemberInfo> members;
+	};
+
 	struct FunctionInfo {
 		FunctionType type;
 		std::vector<BindingInfo> bindings;
 		std::vector<EmbeddedSampler> embeddedSamplers;
+		std::vector<ArgumentInfo> arguments;
 	};
 
 	struct OutputInfo {

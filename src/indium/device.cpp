@@ -317,8 +317,11 @@ std::shared_ptr<Indium::RenderPipelineState> Indium::PrivateDevice::newRenderPip
 };
 
 std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) {
-	if (options != PipelineOption::None) {
-		throw std::runtime_error("TODO: support compute pipeline options");
+	// The reflection options only ask for argument information, which every function carries
+	// (Function::argumentInfo); they do not change the pipeline.
+	constexpr auto reflectionOptions = static_cast<size_t>(PipelineOption::ArgumentInfo | PipelineOption::BufferTypeInfo);
+	if ((static_cast<size_t>(options) & ~reflectionOptions) != 0) {
+		throw std::invalid_argument("unsupported compute pipeline option");
 	}
 	return std::make_shared<PrivateComputePipelineState>(shared_from_this(), descriptor);
 };
@@ -334,6 +337,24 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
 };
+
+static Indium::ArgumentInfo argumentInfoFromIridium(const Iridium::ArgumentInfo& argument) {
+	Indium::ArgumentInfo result;
+	switch (argument.type) {
+		case Iridium::BindingType::Texture: result.kind = Indium::ArgumentKind::Texture; break;
+		case Iridium::BindingType::Sampler: result.kind = Indium::ArgumentKind::Sampler; break;
+		default: result.kind = Indium::ArgumentKind::Buffer; break;
+	}
+	result.index = argument.index;
+	result.name = argument.name;
+	result.typeName = argument.typeName;
+	result.size = argument.size;
+	result.alignment = argument.alignment;
+	for (const auto& member: argument.members) {
+		result.members.push_back(Indium::ArgumentMemberInfo { member.offset, member.typeName, member.name });
+	}
+	return result;
+}
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
 	// TODO: cache translated libraries
@@ -359,6 +380,9 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 
 		funcInfo.bindings.insert(funcInfo.bindings.end(), info.bindings.begin(), info.bindings.end());
 		funcInfo.embeddedSamplers.insert(funcInfo.embeddedSamplers.end(), info.embeddedSamplers.begin(), info.embeddedSamplers.end());
+		for (const auto& argument: info.arguments) {
+			funcInfo.arguments.push_back(argumentInfoFromIridium(argument));
+		}
 	}
 
 	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, funcInfoMap);

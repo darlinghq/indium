@@ -172,6 +172,33 @@ static bool testControlFlow(Indium::Device* device) {
 	return compare("control_flow", slots, run<int32_t>(device, "control_flow", want.size(), { ns }), want);
 }
 
+// The library reports each kernel's buffer arguments as air-ops.metal declares them, and a pipeline
+// asking for that reflection can be created.
+static bool testReflection(Indium::Device* device) {
+	auto library = device->newLibrary(air_ops_metallib, air_ops_metallib_len);
+	auto function = library->newFunction("int_ops");
+	bool ok = function->functionType() == Indium::FunctionType::Kernel;
+
+	const char* names[] = { "out", "a", "b" };
+	auto& arguments = function->argumentInfo();
+	ok = ok && arguments.size() == 3;
+	for (size_t i = 0; ok && i < arguments.size(); ++i) {
+		auto& argument = arguments[i];
+		ok = argument.kind == Indium::ArgumentKind::Buffer && argument.index == i && argument.name == names[i]
+			&& argument.typeName == "int" && argument.size == 4 && argument.alignment == 4 && argument.members.empty();
+	}
+
+	try {
+		device->newComputePipelineState(function, Indium::PipelineOption::ArgumentInfo | Indium::PipelineOption::BufferTypeInfo);
+	} catch (const std::exception& e) {
+		std::cerr << "reflection: pipeline creation failed: " << e.what() << std::endl;
+		ok = false;
+	}
+
+	std::cout << "reflection: " << (ok ? "as declared" : "WRONG") << std::endl;
+	return ok;
+}
+
 int main(int argc, char** argv) {
 	Indium::init(nullptr, 0, ENABLE_VALIDATION);
 
@@ -191,6 +218,7 @@ int main(int argc, char** argv) {
 		ok = testFloatOps(device.get()) && ok;
 		ok = testTableLookup(device.get()) && ok;
 		ok = testControlFlow(device.get()) && ok;
+		ok = testReflection(device.get()) && ok;
 
 		keepPollingDevice = false;
 		device->wakeupEventLoop();
