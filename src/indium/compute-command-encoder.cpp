@@ -7,25 +7,15 @@ Indium::ComputeCommandEncoder::~ComputeCommandEncoder() {};
 Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const ComputePassDescriptor& descriptor):
 	_privateCommandBuffer(commandBuffer),
 	_privateDevice(std::dynamic_pointer_cast<PrivateDevice>(commandBuffer->device())),
-	_descriptor(descriptor)
+	_descriptor(descriptor),
+	_descriptorPools(_privateDevice->device())
 {
-	VkDescriptorPoolCreateInfo poolCreateInfo {};
-	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolCreateInfo.poolSizeCount = poolSizes.size();
-	poolCreateInfo.pPoolSizes = poolSizes.data();
-	poolCreateInfo.maxSets = 64;
-
-	if (DynamicVK::vkCreateDescriptorPool(_privateDevice->device(), &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
 };
 
 Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 	for (auto& pipeline: _savedPipelines) {
 		DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 	}
-	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
@@ -140,7 +130,7 @@ Indium::DispatchType Indium::PrivateComputeCommandEncoder::dispatchType() {
 void Indium::PrivateComputeCommandEncoder::updateBindings() {
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers);
+	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pso->layout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 };

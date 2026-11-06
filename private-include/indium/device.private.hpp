@@ -35,8 +35,15 @@ namespace Indium {
 		std::vector<uint64_t> _eventLoopWaitValues;
 		std::vector<std::function<void()>> _eventLoopCallbacks;
 
+		// waitForSemaphore() only needs to wake the event loop when a poller is blocked on a list
+		// that predates the new semaphore. Registrations count additions to the list; a poller
+		// counts itself in blockedPollers before it blocks, then rechecks registrations.
+		std::atomic<uint64_t> _eventLoopRegistrations { 0 };
+		std::atomic<uint32_t> _eventLoopBlockedPollers { 0 };
+
 		// Vulkan requires submissions and presentation on one queue to be externally synchronized
 		std::mutex _graphicsQueueMutex;
+		std::mutex _oneshotCommandPoolMutex;
 
 		std::mutex _fallbackMutex;
 		std::shared_ptr<Buffer> _fallbackBuffer;
@@ -127,6 +134,11 @@ namespace Indium {
 		 * Held around every submission to and presentation on `graphicsQueue()`.
 		 */
 		std::mutex& graphicsQueueMutex() { return _graphicsQueueMutex; }
+
+		/**
+		 * Held from allocating a command buffer from `oneshotCommandPool()` until freeing it.
+		 */
+		std::mutex& oneshotCommandPoolMutex() { return _oneshotCommandPoolMutex; }
 
 		/**
 		 * The memory type a resource with the given storage mode is allocated from, among those

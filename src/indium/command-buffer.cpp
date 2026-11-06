@@ -34,7 +34,8 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 
 	VkCommandBufferAllocateInfo allocInfo {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = _privateCommandQueue->commandPool();
+	_commandPool = _privateCommandQueue->acquireCommandPool();
+	allocInfo.commandPool = _commandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
@@ -52,7 +53,8 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 };
 
 Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
-	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _privateCommandQueue->commandPool(), 1, &_commandBuffer);
+	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _commandPool, 1, &_commandBuffer);
+	_privateCommandQueue->releaseCommandPool(_commandPool);
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {

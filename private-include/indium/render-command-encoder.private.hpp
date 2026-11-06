@@ -28,7 +28,7 @@ namespace Indium {
 		std::shared_ptr<PrivateRenderPipelineState> _privatePSO;
 		VkFramebuffer _framebuffer = VK_NULL_HANDLE;
 		VkRenderPass _renderPass = VK_NULL_HANDLE;
-		VkDescriptorPool _pool = VK_NULL_HANDLE;
+		DescriptorPoolChain _descriptorPools;
 
 		std::vector<FunctionResources> _savedFunctionResources;
 

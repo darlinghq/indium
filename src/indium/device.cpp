@@ -813,6 +813,7 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	const std::vector<VkSemaphore> semaphores = _eventLoopSemaphores;
 	const std::vector<uint64_t> values = _eventLoopWaitValues;
 	const std::vector<std::function<void()>> callbacks = _eventLoopCallbacks;
+	const uint64_t registrations = _eventLoopRegistrations.load(std::memory_order_seq_cst);
 
 	lock.unlock();
 
@@ -823,7 +824,22 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	info.pValues = values.data();
 	info.flags = VK_SEMAPHORE_WAIT_ANY_BIT;
 
+	// Pairs with waitForSemaphore(), which counts its registration before it checks for blocked
+	// pollers: with both sides sequentially consistent, either this poller sees the registration
+	// and does not block on the stale list, or the registrant sees this poller and wakes it.
+	const bool mayBlock = timeoutNanoseconds > 0;
+	if (mayBlock) {
+		_eventLoopBlockedPollers.fetch_add(1, std::memory_order_seq_cst);
+		if (_eventLoopRegistrations.load(std::memory_order_seq_cst) != registrations) {
+			timeoutNanoseconds = 0;
+		}
+	}
+
 	auto result = DynamicVK::vkWaitSemaphores(_device, &info, timeoutNanoseconds);
+
+	if (mayBlock) {
+		_eventLoopBlockedPollers.fetch_sub(1, std::memory_order_seq_cst);
+	}
 
 	if (result == VK_TIMEOUT) {
 		// timed out with no semaphores ready
@@ -894,10 +910,14 @@ void Indium::PrivateDevice::waitForSemaphore(VkSemaphore semaphore, uint64_t tar
 		_eventLoopSemaphores.push_back(semaphore);
 		_eventLoopWaitValues.push_back(targetValue);
 		_eventLoopCallbacks.push_back(callback);
+		_eventLoopRegistrations.fetch_add(1, std::memory_order_seq_cst);
 	}
 
-	// now wakeup the event loop so it can start waiting on this new semaphore
-	wakeupEventLoop();
+	// a poller that is blocked waits on a list without this semaphore; wake it so it starts
+	// waiting on the new list (one that is not blocked yet will pick the semaphore up itself)
+	if (_eventLoopBlockedPollers.load(std::memory_order_seq_cst) > 0) {
+		wakeupEventLoop();
+	}
 };
 
 // TODO: create a semaphore pool to avoid constantly creating and destroying semaphores

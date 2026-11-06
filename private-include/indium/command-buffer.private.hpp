@@ -56,6 +56,9 @@ namespace Indium {
 		INDIUM_PROPERTY(VkCommandBuffer, c, C,ommandBuffer) = VK_NULL_HANDLE;
 
 	private:
+		VkCommandPool _commandPool = VK_NULL_HANDLE;
+
+	private:
 		std::condition_variable _scheduledCondvar;
 		bool _scheduledHandlersFinished = false;
 	};

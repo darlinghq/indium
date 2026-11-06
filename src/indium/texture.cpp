@@ -455,6 +455,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, 0);
 
 	// transition the image into the general layout
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
 	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -519,6 +521,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
 
 	VkImageViewCreateInfo info2 {};
 	info2.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -646,6 +649,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	// FIXME: handle compressed formats
 	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
 
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
 	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -735,6 +740,7 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
 };
 
 void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
@@ -772,6 +778,8 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
 	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
 
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
 	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -861,6 +869,7 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
 
 	memcpy(bytes, tmpBuf->contents(), byteSize);
 };

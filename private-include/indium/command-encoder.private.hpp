@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 #include <memory>
 #include <optional>
@@ -53,7 +54,10 @@ namespace Indium {
 		};
 
 		void setBufferOffset(size_t offset, size_t index) {
-			buffers[index].second = offset;
+			// only meaningful for a buffer that is already bound
+			if (index < buffers.size()) {
+				buffers[index].second = offset;
+			}
 		};
 
 		void setSamplerState(std::shared_ptr<SamplerState> state, std::optional<std::pair<float, float>> lodClamps, size_t index) {
@@ -78,20 +82,75 @@ namespace Indium {
 		};
 	};
 
+	static constexpr std::array<VkDescriptorPoolSize, 4> poolSizes {
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 512 },
+	};
+
+	/**
+	 * The descriptor pools of one encoder. An encoder allocates descriptor sets for every draw or
+	 * dispatch, so a fixed-size pool runs out; this adds a pool whenever the current one is
+	 * exhausted. The sets stay valid until the chain is destroyed with its encoder, which the
+	 * command buffer keeps alive until it completes.
+	 */
+	class DescriptorPoolChain {
+		INDIUM_PREVENT_COPY(DescriptorPoolChain);
+
+	private:
+		VkDevice _device;
+		std::vector<VkDescriptorPool> _pools;
+
+		void addPool() {
+			VkDescriptorPoolCreateInfo createInfo {};
+			createInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+			createInfo.poolSizeCount = poolSizes.size();
+			createInfo.pPoolSizes = poolSizes.data();
+			createInfo.maxSets = 64;
+
+			VkDescriptorPool pool = VK_NULL_HANDLE;
+			if (DynamicVK::vkCreateDescriptorPool(_device, &createInfo, nullptr, &pool) != VK_SUCCESS) {
+				throw std::runtime_error("Failed to create a descriptor pool");
+			}
+			_pools.push_back(pool);
+		};
+
+	public:
+		explicit DescriptorPoolChain(VkDevice device): _device(device) {
+			addPool();
+		};
+
+		~DescriptorPoolChain() {
+			for (auto pool: _pools) {
+				DynamicVK::vkDestroyDescriptorPool(_device, pool, nullptr);
+			}
+		};
+
+		void allocate(const VkDescriptorSetLayout* layouts, uint32_t count, VkDescriptorSet* sets) {
+			VkDescriptorSetAllocateInfo allocateInfo {};
+			allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+			allocateInfo.descriptorSetCount = count;
+			allocateInfo.pSetLayouts = layouts;
+
+			allocateInfo.descriptorPool = _pools.back();
+			auto result = DynamicVK::vkAllocateDescriptorSets(_device, &allocateInfo, sets);
+			if (result == VK_ERROR_OUT_OF_POOL_MEMORY || result == VK_ERROR_FRAGMENTED_POOL) {
+				addPool();
+				allocateInfo.descriptorPool = _pools.back();
+				result = DynamicVK::vkAllocateDescriptorSets(_device, &allocateInfo, sets);
+			}
+			if (result != VK_SUCCESS) {
+				throw std::runtime_error("Failed to allocate descriptor sets");
+			}
+		};
+	};
+
 	template<size_t setCount>
-	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, VkDescriptorPool pool, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers) {
+	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, DescriptorPoolChain& pools, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers) {
 		std::array<VkDescriptorSet, setCount> descriptorSets {};
 
-		VkDescriptorSetAllocateInfo setAllocateInfo {};
-		setAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		setAllocateInfo.descriptorPool = pool;
-		setAllocateInfo.descriptorSetCount = descriptorSets.size();
-		setAllocateInfo.pSetLayouts = setLayouts.data();
-
-		if (DynamicVK::vkAllocateDescriptorSets(privateDevice->device(), &setAllocateInfo, descriptorSets.data()) != VK_SUCCESS) {
-			// TODO
-			abort();
-		}
+		pools.allocate(setLayouts.data(), descriptorSets.size(), descriptorSets.data());
 
 		for (size_t i = 0; i < descriptorSets.size(); ++i) {
 			std::vector<VkWriteDescriptorSet> writeDescSet;
@@ -212,10 +271,4 @@ namespace Indium {
 		return descriptorSets;
 	};
 
-	static constexpr std::array<VkDescriptorPoolSize, 4> poolSizes {
-		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },
-		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 512 },
-		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512 },
-		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 512 },
-	};
 };

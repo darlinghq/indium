@@ -19,7 +19,8 @@ Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor):
 	_privateCommandBuffer(commandBuffer),
 	_descriptor(descriptor),
-	_privateDevice(commandBuffer->privateDevice())
+	_privateDevice(commandBuffer->privateDevice()),
+	_descriptorPools(_privateDevice->device())
 {
 	auto buf = _privateCommandBuffer.lock();
 
@@ -76,17 +77,6 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	if (depthStencilTexture && depthStencilTexture->sampleCount() != firstTexture->sampleCount()) {
 		throw std::runtime_error("Render pass depth and color sample counts must match");
 	}
-	VkDescriptorPoolCreateInfo poolCreateInfo {};
-	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolCreateInfo.poolSizeCount = poolSizes.size();
-	poolCreateInfo.pPoolSizes = poolSizes.data();
-	poolCreateInfo.maxSets = 64; // i guess
-
-	if (DynamicVK::vkCreateDescriptorPool(vkDevice, &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
 	std::vector<VkClearValue> clearValues;
 
 	for (const auto& color: descriptor.colorAttachments) {
@@ -313,7 +303,6 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	if (_renderPass) {
 		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
 	}
-	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
 void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) {
@@ -414,7 +403,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
+	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 

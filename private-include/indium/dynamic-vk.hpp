@@ -150,6 +150,7 @@ namespace Indium {
 			_macro(vkCreateSwapchainKHR) \
 			_macro(vkDestroyBuffer) \
 			_macro(vkDestroyCommandPool) \
+			_macro(vkResetCommandPool) \
 			_macro(vkDestroyDebugUtilsMessengerEXT) \
 			_macro(vkDestroyDescriptorPool) \
 			_macro(vkDestroyDescriptorSetLayout) \
