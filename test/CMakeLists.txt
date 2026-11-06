@@ -11,6 +11,7 @@ add_subdirectory(basic-compute-mslc)
 add_subdirectory(store-reference)
 add_subdirectory(const-bitcast-operand)
 add_subdirectory(air-ops)
+add_subdirectory(sampler-lod)
 add_subdirectory(texture-readback)
 add_subdirectory(multisample-resolve)
 
