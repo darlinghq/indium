@@ -1,4 +1,5 @@
 #include <indium/blit-command-encoder.private.hpp>
+#include <indium/command-encoder.private.hpp>
 #include <indium/command-buffer.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/buffer.private.hpp>
@@ -459,5 +460,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(std::shared_pt
 };
 
 void Indium::PrivateBlitCommandEncoder::endEncoding() {
-	// nothing for now
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		finishTrackedEncoder(commandBuffer->commandBuffer());
+	}
 };

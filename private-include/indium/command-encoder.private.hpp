@@ -17,6 +17,17 @@
 #include <indium/dynamic-vk.hpp>
 
 namespace Indium {
+	// Metal tracks hazards between the encoders of a command buffer: what one encoder writes,
+	// the next one sees. Vulkan commands in one command buffer are not ordered that way, so
+	// every encoder ends with a full memory dependency on everything recorded before it.
+	inline void finishTrackedEncoder(VkCommandBuffer commandBuffer) {
+		VkMemoryBarrier barrier {};
+		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+	}
+
 	struct FunctionResources {
 		std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
 		std::vector<std::shared_ptr<Texture>> textures;

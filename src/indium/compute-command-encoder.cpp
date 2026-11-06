@@ -29,7 +29,9 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 };
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
-	// nothing for now
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		finishTrackedEncoder(commandBuffer->commandBuffer());
+	}
 };
 
 void Indium::PrivateComputeCommandEncoder::setComputePipelineState(std::shared_ptr<ComputePipelineState> state) {

@@ -488,6 +488,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
+	finishTrackedEncoder(buf->commandBuffer());
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
