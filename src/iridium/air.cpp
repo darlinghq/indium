@@ -399,6 +399,41 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 
 static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef inst);
 
+// The interface location of a vertex output, fragment input or fragment output, from its AIR descriptor.
+// [[user(locnN)]] varyings name their location explicitly (it is what links the two stages), and a
+// fragment output carries its color attachment index after air.render_target. Anything else keeps the
+// position-based `fallback`.
+static uint32_t airInterfaceLocation(LLVMValueRef descriptor, uint32_t fallback) {
+	std::vector<LLVMValueRef> operands(DynamicLLVM::LLVMGetMDNodeNumOperands(descriptor));
+	DynamicLLVM::LLVMGetMDNodeOperands(descriptor, operands.data());
+
+	for (size_t i = 0; i < operands.size(); ++i) {
+		if (!operands[i] || !DynamicLLVM::LLVMIsAMDString(operands[i])) {
+			continue;
+		}
+		auto value = llvmMDStringToStringView(operands[i]);
+
+		constexpr std::string_view userPrefix = "user(locn";
+		if (value.size() > userPrefix.size() + 1 && value.substr(0, userPrefix.size()) == userPrefix && value.back() == ')') {
+			auto digits = value.substr(userPrefix.size(), value.size() - userPrefix.size() - 1);
+			uint32_t location = 0;
+			for (char digit: digits) {
+				if (digit < '0' || digit > '9') {
+					throw ImpossibleResultID("invalid varying location " + std::string(value));
+				}
+				location = location * 10 + (digit - '0');
+			}
+			return location;
+		}
+
+		if (value == "air.render_target" && i + 1 < operands.size() && DynamicLLVM::LLVMIsAConstantInt(operands[i + 1])) {
+			return DynamicLLVM::LLVMConstIntGetZExtValue(operands[i + 1]);
+		}
+	}
+
+	return fallback;
+}
+
 static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef llvmValue) {
 	using namespace Iridium::SPIRV;
 
@@ -1359,7 +1394,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMStructGetTypeAtIndex(funcRetType, i));
 				auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
 				auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
-				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { location } });
+				builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { airInterfaceLocation(returnValueOperand, location) } });
 				++location;
 				_outputValueIDs.push_back(var);
 				builder.referenceGlobalVariable(var);
@@ -1376,7 +1411,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		} else {
 			auto ptrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, type, 8));
 			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Output);
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { 0 } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { returnValueOperands.empty() ? 0 : airInterfaceLocation(returnValueOperands[0], 0) } });
 			_outputValueIDs.push_back(var);
 			builder.referenceGlobalVariable(var);
 		}
@@ -1564,7 +1599,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			auto var = builder.addGlobalVariable(ptrType, SPIRV::StorageClass::Input);
 			auto load = builder.encodeLoad(type, var);
 
-			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { paramLocation } });
+			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::Location, { airInterfaceLocation(parameterOperand, paramLocation) } });
 			++paramLocation;
 
 			builder.referenceGlobalVariable(var);

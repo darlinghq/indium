@@ -44,6 +44,8 @@ add_test(NAME vector-types COMMAND indium-test-vector-types)
 add_iridium_check(indium-test-numeric-constants numeric-constants/numeric-constants.cpp)
 add_iridium_check(indium-test-vector-splat vector-splat/vector-splat.cpp)
 add_test(NAME vector-splat COMMAND indium-test-vector-splat)
+add_iridium_check(indium-test-interface-locations interface-locations/interface-locations.cpp)
+add_test(NAME interface-locations COMMAND indium-test-interface-locations)
 
 # init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
 # from a library constructor); the library the test loads claims to be LLVM 1.
