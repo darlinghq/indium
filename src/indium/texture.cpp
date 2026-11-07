@@ -7,6 +7,9 @@
 #include <stdexcept>
 #include <cstring>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 Indium::Texture::~Texture() {};
 Indium::PrivateTexture::~PrivateTexture() {};
 
@@ -340,7 +343,10 @@ bool Indium::PrivateTexture::needsExportablePresentationSemaphore() const {
 // concrete texture
 //
 
-Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor):
+// DRM_FORMAT_MOD_LINEAR from the Linux kernel's drm_fourcc.h: no tiling, rows one after another.
+static constexpr uint64_t drmFormatModifierLinear = 0;
+
+Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import):
 	PrivateTexture(device),
 	_descriptor(descriptor)
 {
@@ -385,13 +391,45 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
+	// An imported DMA-BUF holds one linear 2D color image, described to Vulkan through an explicit
+	// DRM format modifier layout (VK_EXT_image_drm_format_modifier).
+	VkExternalMemoryImageCreateInfo externalInfo {};
+	VkSubresourceLayout planeLayout {};
+	VkImageDrmFormatModifierExplicitCreateInfoEXT modifierInfo {};
+	if (import) {
+		if (_descriptor.textureType != TextureType::e2D || !isColor || !canBeLinear || _descriptor.arrayLength != 1) {
+			throw std::runtime_error("A DMA-BUF texture must be a single-level 2D color texture");
+		}
+		size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+		if (bytesPerPixel == 0 || import->bytesPerRow < _descriptor.width * bytesPerPixel || import->offset % bytesPerPixel != 0) {
+			throw std::runtime_error("Invalid DMA-BUF layout");
+		}
+
+		info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+
+		planeLayout.offset = import->offset;
+		planeLayout.size = 0;
+		planeLayout.rowPitch = import->bytesPerRow;
+
+		modifierInfo.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+		modifierInfo.drmFormatModifier = drmFormatModifierLinear;
+		modifierInfo.drmFormatModifierPlaneCount = 1;
+		modifierInfo.pPlaneLayouts = &planeLayout;
+
+		externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+		externalInfo.pNext = &modifierInfo;
+		externalInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+		info.pNext = &externalInfo;
+	}
+
 	constexpr auto knownUsage = TextureUsage::ShaderRead | TextureUsage::ShaderWrite | TextureUsage::RenderTarget;
 	if ((static_cast<uint32_t>(descriptor.usage) & ~static_cast<uint32_t>(knownUsage)) != 0) {
 		throw std::runtime_error("Unsupported texture usage flags");
 	}
 	VkFormatProperties formatProperties {};
 	DynamicVK::vkGetPhysicalDeviceFormatProperties(_device->physicalDevice(), info.format, &formatProperties);
-	auto features = info.tiling == VK_IMAGE_TILING_LINEAR ? formatProperties.linearTilingFeatures : formatProperties.optimalTilingFeatures;
+	auto features = info.tiling == VK_IMAGE_TILING_OPTIMAL ? formatProperties.optimalTilingFeatures : formatProperties.linearTilingFeatures;
 	bool unknownUsage = descriptor.usage == TextureUsage::Unknown;
 	info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	if ((descriptor.usage & TextureUsage::ShaderRead) != TextureUsage::Unknown ||
@@ -418,7 +456,41 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.pQueueFamilyIndices = nullptr;
 	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	{
+	if (import) {
+		VkPhysicalDeviceImageDrmFormatModifierInfoEXT modifierQuery {};
+		modifierQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT;
+		modifierQuery.drmFormatModifier = drmFormatModifierLinear;
+		modifierQuery.sharingMode = info.sharingMode;
+
+		VkPhysicalDeviceExternalImageFormatInfo externalQuery {};
+		externalQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+		externalQuery.pNext = &modifierQuery;
+		externalQuery.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+		VkPhysicalDeviceImageFormatInfo2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+		query.pNext = &externalQuery;
+		query.format = info.format;
+		query.type = info.imageType;
+		query.tiling = info.tiling;
+		query.usage = info.usage;
+		query.flags = info.flags;
+
+		VkExternalImageFormatProperties externalProperties {};
+		externalProperties.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+
+		VkImageFormatProperties2 properties {};
+		properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+		properties.pNext = &externalProperties;
+
+		auto status = DynamicVK::vkGetPhysicalDeviceImageFormatProperties2(_device->physicalDevice(), &query, &properties);
+		if (status != VK_SUCCESS
+			|| !(externalProperties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)
+			|| properties.imageFormatProperties.maxExtent.width < info.extent.width
+			|| properties.imageFormatProperties.maxExtent.height < info.extent.height) {
+			throw std::runtime_error("The device cannot import a linear DMA-BUF image with this format and usage");
+		}
+	} else {
 		VkImageFormatProperties properties {};
 		auto status = DynamicVK::vkGetPhysicalDeviceImageFormatProperties(_device->physicalDevice(), info.format,
 			info.imageType, info.tiling, info.usage, info.flags, &properties);
@@ -428,6 +500,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 
 	if (DynamicVK::vkCreateImage(_device->device(), &info, nullptr, &_image) != VK_SUCCESS) {
+		if (import) {
+			throw std::runtime_error("The DMA-BUF image could not be created");
+		}
 		// TODO
 		abort();
 	}
@@ -436,22 +511,33 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
-	size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
+	VkDeviceSize memoryOffset = 0;
+	if (import) {
+		// An imported DMA-BUF is a dedicated allocation of its own, bound at offset 0 and freed
+		// directly; it never comes from or goes back to the memory pool.
+		if (!importMemory(*import, reqs)) {
+			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+			throw std::runtime_error("The DMA-BUF could not be imported");
+		}
+	} else {
+		size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
 
-	if (targetIndex == SIZE_MAX) {
-		throw std::runtime_error("No suitable memory region found for image with requested storage mode");
+		if (targetIndex == SIZE_MAX) {
+			throw std::runtime_error("No suitable memory region found for image with requested storage mode");
+		}
+
+		auto kind = info.tiling == VK_IMAGE_TILING_LINEAR ? MemoryPool::Kind::LinearImage : MemoryPool::Kind::OptimalImage;
+		try {
+			_allocation = _device->memoryPool().allocate(_device->device(), targetIndex, reqs, kind);
+		} catch (...) {
+			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+			throw;
+		}
+		_memory = _allocation.memory;
+		memoryOffset = _allocation.offset;
 	}
 
-	auto kind = info.tiling == VK_IMAGE_TILING_LINEAR ? MemoryPool::Kind::LinearImage : MemoryPool::Kind::OptimalImage;
-	try {
-		_allocation = _device->memoryPool().allocate(_device->device(), targetIndex, reqs, kind);
-	} catch (...) {
-		DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
-		throw;
-	}
-	_memory = _allocation.memory;
-
-	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, _allocation.offset);
+	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
 
 	// transition the image into the general layout
 	// the one-shot command pool is shared by every thread that uploads or reads back
@@ -541,6 +627,60 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	_sampledImageView = createSampledImageView(_device->device(), info2);
 };
 
+// Imports the DMA-BUF as the dedicated memory of `_image` (VK_KHR_external_memory_fd,
+// VK_EXT_external_memory_dma_buf). The image is created with VK_IMAGE_LAYOUT_UNDEFINED, as external
+// images must be, and moved to the general layout like every other texture. With the linear
+// modifier there is no compression or tiling metadata that such a transition could reset.
+bool Indium::ConcreteTexture::importMemory(const DMABufImport& import, const VkMemoryRequirements& reqs) {
+	// The image must fit in the buffer, whose size is where a DMA-BUF descriptor seeks to at its end
+	// (Linux kernel DMA-BUF documentation).
+	off_t bufferSize = lseek(import.fd, 0, SEEK_END);
+	if (bufferSize <= 0 || static_cast<uint64_t>(bufferSize) < reqs.size
+		|| import.offset + import.bytesPerRow * (_descriptor.height - 1) + _descriptor.width * pixelFormatToByteCount(_descriptor.pixelFormat) > static_cast<uint64_t>(bufferSize)) {
+		return false;
+	}
+
+	VkMemoryFdPropertiesKHR fdProperties {};
+	fdProperties.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+	if (DynamicVK::vkGetMemoryFdPropertiesKHR(_device->device(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, import.fd, &fdProperties) != VK_SUCCESS) {
+		return false;
+	}
+
+	uint32_t typeBits = reqs.memoryTypeBits & fdProperties.memoryTypeBits;
+	if (typeBits == 0) {
+		return false;
+	}
+
+	// A successful import takes ownership of the descriptor it is given.
+	int fd = fcntl(import.fd, F_DUPFD_CLOEXEC, 0);
+	if (fd < 0) {
+		return false;
+	}
+
+	VkMemoryDedicatedAllocateInfo dedicatedInfo {};
+	dedicatedInfo.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+	dedicatedInfo.image = _image;
+
+	VkImportMemoryFdInfoKHR importInfo {};
+	importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+	importInfo.pNext = &dedicatedInfo;
+	importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+	importInfo.fd = fd;
+
+	VkMemoryAllocateInfo allocateInfo {};
+	allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocateInfo.pNext = &importInfo;
+	// The memory is the whole buffer; the image's plane layout places it at the import offset.
+	allocateInfo.allocationSize = static_cast<VkDeviceSize>(bufferSize);
+	allocateInfo.memoryTypeIndex = __builtin_ctz(typeBits);
+
+	if (DynamicVK::vkAllocateMemory(_device->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
+		close(fd);
+		return false;
+	}
+	return true;
+};
+
 VkImageView Indium::ConcreteTexture::sampledImageView() {
 	return _sampledImageView ? _sampledImageView : _imageView;
 };
@@ -551,7 +691,12 @@ Indium::ConcreteTexture::~ConcreteTexture() {
 	}
 	DynamicVK::vkDestroyImageView(_device->device(), _imageView, nullptr);
 	DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
-	_device->memoryPool().free(_device->device(), _allocation);
+	if (_allocation.memory != VK_NULL_HANDLE) {
+		_device->memoryPool().free(_device->device(), _allocation);
+	} else if (_memory != VK_NULL_HANDLE) {
+		// imported DMA-BUF memory (importMemory), not from the pool
+		DynamicVK::vkFreeMemory(_device->device(), _memory, nullptr);
+	}
 };
 
 Indium::TextureType Indium::ConcreteTexture::textureType() const {

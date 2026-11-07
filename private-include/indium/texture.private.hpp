@@ -166,13 +166,27 @@ namespace Indium {
 		VkImage _image;
 		VkImageView _imageView;
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
-		VkDeviceMemory _memory;
+		VkDeviceMemory _memory = VK_NULL_HANDLE;
 		StorageMode _storageMode;
 		MemoryPool::Allocation _allocation;
 
 	public:
-		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor);
+		// A linear image in a Linux DMA-BUF to use as the texture's storage.
+		struct DMABufImport {
+			int fd;
+			uint64_t offset;
+			uint64_t bytesPerRow;
+		};
+
+		// With `import`, the texture's storage is imported instead of allocated, and every failure
+		// to create it throws std::runtime_error.
+		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr);
 		virtual ~ConcreteTexture();
+
+	private:
+		bool importMemory(const DMABufImport& import, const VkMemoryRequirements& reqs);
+
+	public:
 
 		virtual TextureType textureType() const override;
 		virtual PixelFormat pixelFormat() const override;
