@@ -10,6 +10,14 @@ std::shared_ptr<Indium::Device> Indium::PrivateFunction::device() {
 	return _privateDevice;
 };
 
+Indium::FunctionType Indium::PrivateFunction::functionType() const {
+	return _functionInfo.functionType;
+};
+
+const std::vector<Indium::ArgumentInfo>& Indium::PrivateFunction::argumentInfo() const {
+	return _functionInfo.arguments;
+};
+
 std::shared_ptr<Indium::Device> Indium::PrivateLibrary::device() {
 	return _privateDevice;
 };

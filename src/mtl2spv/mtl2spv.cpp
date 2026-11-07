@@ -61,7 +61,11 @@ int main(int argc, char** argv) {
 	size_t outputSize = 0;
 	Iridium::OutputInfo outputInfo;
 	auto result = Iridium::translate(buffer, inFileSize, outputSize, outputInfo);
-	bool ok = outputSize == 0 || !!result;
+	// translate() returns nullptr on failure. Testing outputSize as well made
+	// every failure look like success, because a failed translation reports a
+	// zero output size; a successful translation always returns a non-null
+	// buffer, since even an empty module has a SPIR-V header.
+	bool ok = result != nullptr;
 
 	if (ok) {
 		outFileSPV.write(static_cast<const char*>(result), outputSize);

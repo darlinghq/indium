@@ -2,6 +2,43 @@ project(indium)
 cmake_minimum_required(VERSION 3.20)
 
 find_package(Vulkan REQUIRED)
+
+# Iridium compiles against these LLVM headers and loads the shared libLLVM of the same major at run time, so the LLVM
+# found here needs an llvm-config that reports a shared library. find_package also looks in <prefix>/llvm/lib/cmake/llvm
+# for every PATH entry, so with /opt/rocm/bin on PATH it picks ROCm's private LLVM ahead of the system one, and a cached
+# LLVM_DIR can name an LLVM that was removed since. Unless LLVM_DIR names a usable LLVM, use the llvm-config on PATH.
+function(indium_llvm_config_works tool result)
+	set(${result} FALSE PARENT_SCOPE)
+	execute_process(COMMAND "${tool}" --link-shared --libnames
+		OUTPUT_VARIABLE libname RESULT_VARIABLE status ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+	if (status EQUAL 0 AND libname)
+		set(${result} TRUE PARENT_SCOPE)
+	endif()
+endfunction()
+
+set(indium_llvm_usable FALSE)
+if (LLVM_DIR)
+	# <prefix>/lib/cmake/llvm or <prefix>/lib64/cmake/llvm. Resolve symlinks first: a distro cmake dir is often a
+	# symlink into <prefix>/lib/llvm-N, and CMake collapses ".." lexically before it follows a link.
+	get_filename_component(indium_llvm_real_dir "${LLVM_DIR}" REALPATH)
+	get_filename_component(indium_llvm_prefix "${indium_llvm_real_dir}/../../.." ABSOLUTE)
+	indium_llvm_config_works("${indium_llvm_prefix}/bin/llvm-config" indium_llvm_usable)
+endif()
+if (NOT indium_llvm_usable)
+	find_program(INDIUM_PATH_LLVM_CONFIG llvm-config)
+	if (INDIUM_PATH_LLVM_CONFIG)
+		indium_llvm_config_works("${INDIUM_PATH_LLVM_CONFIG}" indium_path_llvm_usable)
+		execute_process(COMMAND "${INDIUM_PATH_LLVM_CONFIG}" --cmakedir
+			OUTPUT_VARIABLE indium_path_llvm_dir RESULT_VARIABLE indium_status ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+		if (indium_path_llvm_usable AND indium_status EQUAL 0 AND EXISTS "${indium_path_llvm_dir}")
+			if (LLVM_DIR)
+				message(WARNING "LLVM_DIR=${LLVM_DIR} has no llvm-config with a shared library; using ${indium_path_llvm_dir}")
+			endif()
+			set(LLVM_DIR "${indium_path_llvm_dir}" CACHE PATH "The directory containing a CMake configuration file for LLVM." FORCE)
+		endif()
+	endif()
+endif()
+
 find_package(LLVM REQUIRED CONFIG)
 
 if (DARLING)
@@ -158,11 +195,35 @@ if (NOT DARLING)
 	)
 endif()
 
-execute_process(
-	COMMAND llvm-config --link-shared --libnames
-	OUTPUT_VARIABLE HOST_LLVM_LIBNAME
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-)
+# Use an llvm-config of the same major as the headers found above. A stale cached LLVM_DIR can point at
+# a removed LLVM whose llvm-config exists but whose library is gone, so fall back to the one on PATH.
+set(HOST_LLVM_LIBNAME "")
+foreach(candidate IN ITEMS "${LLVM_TOOLS_BINARY_DIR}/llvm-config" llvm-config)
+	execute_process(
+		COMMAND "${candidate}" --version
+		OUTPUT_VARIABLE candidate_version
+		RESULT_VARIABLE candidate_status
+		ERROR_QUIET
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+	)
+	if (candidate_status EQUAL 0 AND candidate_version MATCHES "^${LLVM_VERSION_MAJOR}\\.")
+		execute_process(
+			COMMAND "${candidate}" --link-shared --libnames
+			OUTPUT_VARIABLE HOST_LLVM_LIBNAME
+			RESULT_VARIABLE candidate_status
+			ERROR_QUIET
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+		)
+		if (candidate_status EQUAL 0 AND HOST_LLVM_LIBNAME)
+			break()
+		endif()
+		set(HOST_LLVM_LIBNAME "")
+	endif()
+endforeach()
+if (NOT HOST_LLVM_LIBNAME)
+	message(FATAL_ERROR "No working llvm-config for LLVM ${LLVM_VERSION} (LLVM_DIR=${LLVM_DIR}). "
+		"Install an LLVM with a shared libLLVM, or pass -DLLVM_DIR=<its lib/cmake/llvm directory>.")
+endif()
 
 target_compile_definitions(iridium PRIVATE
 	"HOST_LLVM_LIBNAME=\"${HOST_LLVM_LIBNAME}\""
@@ -191,6 +252,7 @@ else()
 	option(ENABLE_TESTS "Whether or not to enable tests" OFF)
 
 	if (ENABLE_TESTS)
+		enable_testing()
 		add_subdirectory(test)
 	endif ()
 endif()

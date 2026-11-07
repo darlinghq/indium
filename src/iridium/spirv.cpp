@@ -1,6 +1,16 @@
+#include <algorithm>
 #include <iridium/spirv.hpp>
 #include <optional>
 #include <functional>
+#include <stdexcept>
+
+static size_t powerOf2Ceil(size_t value) {
+	size_t result = 1;
+	while (result < value) {
+		result <<= 1;
+	}
+	return result;
+}
 
 bool Iridium::SPIRV::Decoration::operator==(const Decoration& other) const {
 	if (type != other.type || arguments.size() != other.arguments.size()) {
@@ -19,6 +29,7 @@ bool Iridium::SPIRV::Type::operator==(const Type& other) const {
 		backingType != other.backingType ||
 		scalarWidth != other.scalarWidth ||
 		integerIsSigned != other.integerIsSigned ||
+		layoutFree != other.layoutFree ||
 		entryCount != other.entryCount ||
 		structureMembers.size() != other.structureMembers.size() ||
 		pointerStorageClass != other.pointerStorageClass ||
@@ -109,6 +120,17 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareType(const Type& type) 
 	if (typeCopy.backingType == Type::BackingType::Array) {
 		declareType(Type(Type::IntegerTag {}, 32, false));
 		typeCopy.arrayLengthID = reserveResultID();
+	}
+
+	// One layout per vector, whoever declares it first: LLVM's natural vector
+	// layout, which the AIR datalayout specifies for every vector width.
+	if (typeCopy.backingType == Type::BackingType::Vector) {
+		auto element = _reverseTypeIDs.find(typeCopy.targetType);
+		if (element == _reverseTypeIDs.end()) {
+			throw std::logic_error("vector of an undeclared element type");
+		}
+		typeCopy.size = typeCopy.entryCount * element->second->size;
+		typeCopy.alignment = powerOf2Ceil(typeCopy.size);
 	}
 
 	ResultID id = _currentResultID;
@@ -224,9 +246,16 @@ void Iridium::SPIRV::Builder::addEntryPoint(const EntryPoint& entryPoint) {
 	_entryPoints.push_back(entryPoint);
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::addGlobalVariable(ResultID typeID, StorageClass storageClass) {
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::addGlobalVariable(ResultID typeID, StorageClass storageClass, ResultID initializer) {
 	auto resultID = reserveResultID();
-	_globalVariables[resultID] = GlobalVariable { storageClass, typeID };
+	_globalVariables[resultID] = GlobalVariable { storageClass, typeID, initializer };
+	return resultID;
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::addFunctionVariable(ResultID typeID) {
+	auto resultID = reserveResultID();
+	_currentFunctionInfo->variables[resultID] = FunctionVariable { typeID, ResultIDInvalid };
+	setResultType(resultID, typeID);
 	return resultID;
 };
 
@@ -281,6 +310,17 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::beginFunction(ResultID id) {
 };
 
 void Iridium::SPIRV::Builder::endFunction() {
+	auto end = _currentFunctionWriter->offset();
+	for (const auto& [offset, association]: _forwardPhiOperands) {
+		auto id = lookupResultID(association);
+		if (id == ResultIDInvalid) {
+			throw std::runtime_error("PHI operand is never defined");
+		}
+		_currentFunctionWriter->seek(offset);
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(id);
+	}
+	_forwardPhiOperands.clear();
+	_currentFunctionWriter->seek(end);
 	_currentFunctionWriter = nullptr;
 };
 
@@ -297,14 +337,25 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 
 	auto id = reserveResultID();
 
-	_constantScalars.emplace(key, id);
+	if (specializationID == SpecializationIDInvalid) {
+		_constantScalars.emplace(key, id);
+	}
 
-	auto tmp = beginInstruction((specializationID != SpecializationIDInvalid) ? Opcode::SpecConstant : Opcode::Constant, _constants);
+	bool boolean = reverseLookupType(typeID)->backingType == Type::BackingType::Boolean;
+	auto opcode = specializationID != SpecializationIDInvalid ? Opcode::SpecConstant : Opcode::Constant;
+	if (boolean) {
+		opcode = specializationID != SpecializationIDInvalid
+			? (value ? Opcode::SpecConstantTrue : Opcode::SpecConstantFalse)
+			: (value ? Opcode::ConstantTrue : Opcode::ConstantFalse);
+	}
+	auto tmp = beginInstruction(opcode, _constants);
 	_constants.writeIntegerLE<uint32_t>(typeID);
 	_constants.writeIntegerLE<uint32_t>(id);
-	_constants.writeIntegerLE<uint32_t>(value & 0xffffffff);
-	if (usesTwoWords) {
-		_constants.writeIntegerLE<uint32_t>(value >> 32);
+	if (!boolean) {
+		_constants.writeIntegerLE<uint32_t>(value & 0xffffffff);
+		if (usesTwoWords) {
+			_constants.writeIntegerLE<uint32_t>(value >> 32);
+		}
 	}
 	endInstruction(std::move(tmp));
 
@@ -313,6 +364,10 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalarCommon(ui
 	}
 
 	return id;
+};
+
+template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<bool>(bool value, SpecializationID specializationID) {
+	return declareConstantScalarCommon(value, declareType(Type(Type::BooleanTag {})), false, specializationID);
 };
 
 template<> Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareConstantScalar<uint8_t>(uint8_t value, SpecializationID specializationID) {
@@ -425,7 +480,10 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::insertLabel(ResultID id) {
 };
 
 void Iridium::SPIRV::Builder::referenceGlobalVariable(ResultID id) {
-	_currentFunctionInfo->referencedGlobalVariables.push_back(id);
+	auto& referenced = _currentFunctionInfo->referencedGlobalVariables;
+	if (std::find(referenced.begin(), referenced.end(), id) == referenced.end()) {
+		referenced.push_back(id);
+	}
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeUConvert(ResultID typeID, ResultID operand) {
@@ -719,12 +777,18 @@ void Iridium::SPIRV::Builder::encodeBranchConditional(ResultID condition, Result
 	endInstruction(std::move(tmp));
 };
 
-Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks) {
-	auto result = reserveResultID();
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodePhi(ResultID resultTypeID, std::vector<std::pair<ResultID, ResultID>> variablesAndBlocks, ResultID result, std::vector<uintptr_t> forwardValues) {
+	if (result == ResultIDInvalid) {
+		result = reserveResultID();
+	}
 	auto tmp = beginInstruction(Opcode::Phi, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
-	for (const auto& [variable, block]: variablesAndBlocks) {
+	for (size_t i = 0; i < variablesAndBlocks.size(); ++i) {
+		const auto& [variable, block] = variablesAndBlocks[i];
+		if (i < forwardValues.size() && forwardValues[i] != 0) {
+			_forwardPhiOperands.emplace_back(_currentFunctionWriter->offset(), forwardValues[i]);
+		}
 		_currentFunctionWriter->writeIntegerLE<uint32_t>(variable);
 		_currentFunctionWriter->writeIntegerLE<uint32_t>(block);
 	}
@@ -736,6 +800,19 @@ void Iridium::SPIRV::Builder::encodeSelectionMerge(ResultID mergeBlock) {
 	auto tmp = beginInstruction(Opcode::SelectionMerge, *_currentFunctionWriter);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(mergeBlock);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(0);
+	endInstruction(std::move(tmp));
+};
+
+void Iridium::SPIRV::Builder::encodeLoopMerge(ResultID mergeBlock, ResultID continueBlock) {
+	auto tmp = beginInstruction(Opcode::LoopMerge, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(mergeBlock);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(continueBlock);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(0);
+	endInstruction(std::move(tmp));
+};
+
+void Iridium::SPIRV::Builder::encodeUnreachable() {
+	auto tmp = beginInstruction(Opcode::Unreachable, *_currentFunctionWriter);
 	endInstruction(std::move(tmp));
 };
 
@@ -910,6 +987,9 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 				}
 				endInstruction(std::move(tmp));
 			}
+			if (type.layoutFree) {
+				continue;
+			}
 			tmp = beginInstruction(Opcode::MemberDecorate, _writer);
 			_writer.writeIntegerLE<uint32_t>(id);
 			_writer.writeIntegerLE<uint32_t>(i);
@@ -934,7 +1014,7 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 
 	// now emit automatic type decorations
 	for (const auto& [type, id]: _typeIDs) {
-		if (type.backingType == Type::BackingType::RuntimeArray || type.backingType == Type::BackingType::Array) {
+		if (!type.layoutFree && (type.backingType == Type::BackingType::RuntimeArray || type.backingType == Type::BackingType::Array)) {
 			auto elmTypeInst = _reverseTypeIDs[type.targetType];
 			tmp = beginInstruction(Opcode::Decorate, _writer);
 			_writer.writeIntegerLE<uint32_t>(id);
@@ -1120,7 +1200,9 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 		_writer.writeIntegerLE<uint32_t>(var.typeID);
 		_writer.writeIntegerLE<uint32_t>(id);
 		_writer.writeIntegerLE<uint32_t>(static_cast<uint32_t>(var.storageClass));
-		// TODO: support initializers
+		if (var.initializer != ResultIDInvalid) {
+			_writer.writeIntegerLE<uint32_t>(var.initializer);
+		}
 		endInstruction(std::move(tmp));
 	}
 
@@ -1198,4 +1280,34 @@ void* Iridium::SPIRV::Builder::finalize(size_t& outputSize) {
 	// return final output size and extracted buffer
 	outputSize = _writer.size();
 	return _writer.extractBuffer();
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeOp(Opcode opcode, ResultID resultTypeID, const std::vector<uint32_t>& operands) {
+	auto result = reserveResultID();
+	auto tmp = beginInstruction(opcode, *_currentFunctionWriter);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(resultTypeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
+	for (auto operand: operands) {
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
+	}
+	endInstruction(std::move(tmp));
+	return result;
+};
+
+void Iridium::SPIRV::Builder::encodeOpWithoutResult(Opcode opcode, const std::vector<uint32_t>& operands) {
+	auto tmp = beginInstruction(opcode, *_currentFunctionWriter);
+	for (auto operand: operands) {
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
+	}
+	endInstruction(std::move(tmp));
+};
+
+Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeGLSLOp(GLSLOpcode opcode, ResultID resultTypeID, const std::vector<ResultID>& operands) {
+	auto result = reserveResultID();
+	auto tmp = beginGLSLInstruction(opcode, *_currentFunctionWriter, resultTypeID, result);
+	for (auto operand: operands) {
+		_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
+	}
+	endInstruction(std::move(tmp));
+	return result;
 };
