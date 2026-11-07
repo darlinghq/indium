@@ -21,6 +21,7 @@ namespace Indium {
 		std::vector<VkPipeline> _savedPipelines;
 		std::vector<FunctionResources> _savedFunctionResources;
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
+		ScratchArena _scratch;
 
 		void updateBindings();
 

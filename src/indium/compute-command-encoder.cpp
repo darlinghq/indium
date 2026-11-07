@@ -43,7 +43,7 @@ void Indium::PrivateComputeCommandEncoder::setBufferOffset(size_t offset, size_t
 };
 
 void Indium::PrivateComputeCommandEncoder::setBytes(const void* bytes, size_t length, size_t index) {
-	_functionResources.setBytes(_privateDevice, bytes, length, index);
+	_functionResources.setBytes(_privateDevice, _scratch, _keepAliveBuffers, bytes, length, index);
 };
 
 void Indium::PrivateComputeCommandEncoder::setSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
@@ -130,7 +130,7 @@ Indium::DispatchType Indium::PrivateComputeCommandEncoder::dispatchType() {
 void Indium::PrivateComputeCommandEncoder::updateBindings() {
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers);
+	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers, _scratch);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pso->layout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 };

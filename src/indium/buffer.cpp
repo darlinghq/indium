@@ -138,8 +138,13 @@ void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
 };
 
 uint64_t Indium::PrivateBuffer::gpuAddress() {
+	// a buffer's device address never changes, and every draw asks for it once per bound buffer
+	if (_gpuAddress) {
+		return _gpuAddress;
+	}
 	VkBufferDeviceAddressInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	info.buffer = _buffer;
-	return DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	_gpuAddress = DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	return _gpuAddress;
 };

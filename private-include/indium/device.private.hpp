@@ -7,6 +7,7 @@
 
 #include <indium/device.hpp>
 #include <indium/types.private.hpp>
+#include <indium/render-pass-key.private.hpp>
 
 #include <vector>
 #include <mutex>
@@ -15,6 +16,7 @@
 #include <functional>
 #include <atomic>
 #include <optional>
+#include <unordered_map>
 
 namespace Indium {
 	class PrivateDevice;
@@ -205,5 +207,20 @@ namespace Indium {
 
 		INDIUM_PROPERTY(VkPhysicalDeviceMemoryProperties, m, M,emoryProperties);
 		INDIUM_PROPERTY_READONLY(Feature, f, F,eatures);
+
+	public:
+		/**
+		 * A render pass for `info`. Render passes with the same description (see RenderPassKey)
+		 * share one VkRenderPass, which the device owns and destroys; then `deviceOwned` is set.
+		 * Otherwise the caller owns the new render pass and must destroy it.
+		 */
+		VkRenderPass acquireRenderPass(const VkRenderPassCreateInfo& info, bool& deviceOwned);
+
+	private:
+		// Kept after every other member: QuartzCore uses this class through pointers only, so
+		// appending members does not move the ones it reads.
+		static constexpr size_t maxCachedRenderPasses = 256;
+		std::mutex _renderPassMutex;
+		std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKey::Hash> _renderPasses;
 	};
 };

@@ -29,5 +29,9 @@ namespace Indium {
 
 		INDIUM_PROPERTY(VkBuffer, b, B,uffer) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkDeviceMemory, m, M,emory) = VK_NULL_HANDLE;
+
+	private:
+		// after the members other libraries' inline accessors read
+		uint64_t _gpuAddress = 0;
 	};
 };
