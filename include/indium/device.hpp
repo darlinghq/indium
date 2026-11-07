@@ -175,6 +175,9 @@ namespace Indium {
 	 */
 	std::shared_ptr<Device> createSystemDefaultDevice(const std::string& preferredDevice);
 
-	/** All devices Indium can use, the default one first. */
+	/**
+	 * All devices Indium can use, the default one first. GPUs come before other devices, discrete GPUs
+	 * first; a CPU rasterizer is only listed when there is no GPU.
+	 */
 	std::vector<std::shared_ptr<Device>> copyAllDevices();
 };
