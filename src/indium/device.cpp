@@ -517,6 +517,15 @@ bool Indium::PrivateDevice::supportsDepth24Stencil8PixelFormat() const {
 	return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
 };
 
+bool Indium::PrivateDevice::supportsTextureSampleCount(uint32_t sampleCount) const {
+	// a VkSampleCountFlagBits value is its sample count, a power of two
+	if (sampleCount == 0 || (sampleCount & (sampleCount - 1)) != 0) {
+		return false;
+	}
+	const auto& limits = _properties.limits;
+	return (limits.framebufferColorSampleCounts & limits.framebufferDepthSampleCounts & sampleCount) != 0;
+};
+
 uint32_t Indium::PrivateDevice::vendorID() const {
 	return _properties.vendorID;
 };

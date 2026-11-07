@@ -100,6 +100,11 @@ namespace Indium {
 		 */
 		virtual bool supportsDepth24Stencil8PixelFormat() const = 0;
 
+		/**
+		 * Whether color and depth render targets with `sampleCount` samples per pixel can be created.
+		 */
+		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const = 0;
+
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) = 0;
