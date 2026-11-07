@@ -63,6 +63,13 @@ int main() {
 		report(shared && (memory.memoryTypes[*shared].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT), "shared storage uses host-visible memory");
 		report(!device->memoryTypeIndex(0, Indium::StorageMode::Private), "no memory type when none is allowed");
 
+		const auto renderable = properties.properties.limits.framebufferColorSampleCounts & properties.properties.limits.framebufferDepthSampleCounts;
+		bool sampleCountsMatch = device->supportsTextureSampleCount(1) && !device->supportsTextureSampleCount(0) && !device->supportsTextureSampleCount(3);
+		for (uint32_t count = 1; count <= 64; count *= 2) {
+			sampleCountsMatch = sampleCountsMatch && device->supportsTextureSampleCount(count) == ((renderable & count) != 0);
+		}
+		report(sampleCountsMatch, "texture sample counts");
+
 		auto all = Indium::copyAllDevices();
 		report(!all.empty() && all.front() == device, "the default device comes first");
 		report(Indium::createSystemDefaultDevice("0") == all.front() && Indium::createSystemDefaultDevice(std::to_string(all.size() - 1)) == all.back(), "a device chosen by index");

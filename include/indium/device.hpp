@@ -100,6 +100,11 @@ namespace Indium {
 		 */
 		virtual bool supportsDepth24Stencil8PixelFormat() const = 0;
 
+		/**
+		 * Whether color and depth render targets with `sampleCount` samples per pixel can be created.
+		 */
+		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const = 0;
+
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) = 0;
@@ -175,6 +180,9 @@ namespace Indium {
 	 */
 	std::shared_ptr<Device> createSystemDefaultDevice(const std::string& preferredDevice);
 
-	/** All devices Indium can use, the default one first. */
+	/**
+	 * All devices Indium can use, the default one first. GPUs come before other devices, discrete GPUs
+	 * first; a CPU rasterizer is only listed when there is no GPU.
+	 */
 	std::vector<std::shared_ptr<Device>> copyAllDevices();
 };

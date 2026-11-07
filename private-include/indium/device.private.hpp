@@ -10,6 +10,8 @@
 
 #include <vector>
 #include <mutex>
+#include <condition_variable>
+#include <set>
 #include <functional>
 #include <atomic>
 #include <optional>
@@ -44,6 +46,30 @@ namespace Indium {
 		// Vulkan requires submissions and presentation on one queue to be externally synchronized
 		std::mutex _graphicsQueueMutex;
 		std::mutex _oneshotCommandPoolMutex;
+
+		// The Vulkan device is created the first time something needs it (see device()), so that
+		// listing devices, or choosing one, costs no VkDevice for the devices left unused.
+		std::mutex _logicalDeviceMutex;
+		std::condition_variable _logicalDeviceCondition;
+		std::atomic<bool> _logicalDeviceCreated { false };
+		bool _wakeupBeforeCreation = false;
+		std::set<uint32_t> _queueFamilyIndices;
+		std::vector<const char*> _enabledExtensions;
+
+		VkDevice _device = VK_NULL_HANDLE;
+		VkQueue _graphicsQueue = VK_NULL_HANDLE;
+		VkQueue _computeQueue = VK_NULL_HANDLE;
+		VkQueue _transferQueue = VK_NULL_HANDLE;
+		VkCommandPool _oneshotCommandPool = VK_NULL_HANDLE;
+
+		void createLogicalDevice();
+
+		void ensureLogicalDevice() const {
+			if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+				// creating the Vulkan device on first use does not change what this device is
+				const_cast<PrivateDevice*>(this)->createLogicalDevice();
+			}
+		}
 
 		std::mutex _fallbackMutex;
 		std::shared_ptr<Buffer> _fallbackBuffer;
@@ -84,6 +110,7 @@ namespace Indium {
 		virtual std::array<uint8_t, 16> deviceUUID() const override;
 		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
+		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) override;
@@ -152,9 +179,21 @@ namespace Indium {
 		 */
 		size_t findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const;
 
+		/**
+		 * The Vulkan device and its queues. They are created by the first call to any of these or to
+		 * a new...() method; until then the device only holds what its VkPhysicalDevice reports.
+		 */
+		VkDevice device() const { ensureLogicalDevice(); return _device; }
+		VkQueue graphicsQueue() const { ensureLogicalDevice(); return _graphicsQueue; }
+		VkQueue computeQueue() const { ensureLogicalDevice(); return _computeQueue; }
+		VkQueue transferQueue() const { ensureLogicalDevice(); return _transferQueue; }
+		VkCommandPool oneshotCommandPool() const { ensureLogicalDevice(); return _oneshotCommandPool; }
+
+		/** Whether the Vulkan device has been created yet. */
+		bool logicalDeviceCreated() const { return _logicalDeviceCreated.load(std::memory_order_acquire); }
+
 		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);
-		INDIUM_PROPERTY(VkDevice, d, D,evice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(std::optional<uint32_t>, g, G,raphicsQueueFamilyIndex);
 		INDIUM_PROPERTY(std::optional<uint32_t>, c, C,omputeQueueFamilyIndex);
 		INDIUM_PROPERTY(std::optional<uint32_t>, t, T,ransferQueueFamilyIndex);
@@ -162,11 +201,7 @@ namespace Indium {
 		// but in practice, they're actually the same.
 		// TODO: maybe implement this just in case?
 		//INDIUM_PROPERTY(std::optional<uint32_t>, p, P,resentQueueFamilyIndex);
-		INDIUM_PROPERTY(VkQueue, g, G,raphicsQueue) = VK_NULL_HANDLE;
-		INDIUM_PROPERTY(VkQueue, c, C,omputeQueue) = VK_NULL_HANDLE;
-		INDIUM_PROPERTY(VkQueue, t, T,ransferQueue) = VK_NULL_HANDLE;
 		//INDIUM_PROPERTY(VkQueue, p, P,resentQueue) = VK_NULL_HANDLE;
-		INDIUM_PROPERTY(VkCommandPool, o,O,neshotCommandPool) = VK_NULL_HANDLE;
 
 		INDIUM_PROPERTY(VkPhysicalDeviceMemoryProperties, m, M,emoryProperties);
 		INDIUM_PROPERTY_READONLY(Feature, f, F,eatures);
