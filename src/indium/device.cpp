@@ -460,9 +460,11 @@ void Indium::PrivateDevice::createLogicalDevice() {
 
 Indium::PrivateDevice::~PrivateDevice() {
 	if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
-		// nothing was created: render passes are only cached once the device exists
+		// nothing was created: render passes and memory blocks only exist once the device does
 		return;
 	}
+	// every buffer and texture holds a reference to the device, so none is left
+	_memoryPool.releaseAll(_device);
 	for (const auto& [key, renderPass]: _renderPasses) {
 		DynamicVK::vkDestroyRenderPass(_device, renderPass, nullptr);
 	}

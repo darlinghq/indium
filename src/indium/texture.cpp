@@ -442,17 +442,16 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		throw std::runtime_error("No suitable memory region found for image with requested storage mode");
 	}
 
-	VkMemoryAllocateInfo allocateInfo {};
-	allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocateInfo.allocationSize = reqs.size;
-	allocateInfo.memoryTypeIndex = targetIndex;
-
-	if (DynamicVK::vkAllocateMemory(_device->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
-		// TODO
-		abort();
+	auto kind = info.tiling == VK_IMAGE_TILING_LINEAR ? MemoryPool::Kind::LinearImage : MemoryPool::Kind::OptimalImage;
+	try {
+		_allocation = _device->memoryPool().allocate(_device->device(), targetIndex, reqs, kind);
+	} catch (...) {
+		DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+		throw;
 	}
+	_memory = _allocation.memory;
 
-	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, 0);
+	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, _allocation.offset);
 
 	// transition the image into the general layout
 	// the one-shot command pool is shared by every thread that uploads or reads back
@@ -552,7 +551,7 @@ Indium::ConcreteTexture::~ConcreteTexture() {
 	}
 	DynamicVK::vkDestroyImageView(_device->device(), _imageView, nullptr);
 	DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
-	DynamicVK::vkFreeMemory(_device->device(), _memory, nullptr);
+	_device->memoryPool().free(_device->device(), _allocation);
 };
 
 Indium::TextureType Indium::ConcreteTexture::textureType() const {

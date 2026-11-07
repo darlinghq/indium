@@ -2,6 +2,8 @@
 
 #include <indium/buffer.hpp>
 
+#include <indium/memory-pool.private.hpp>
+
 #include <vulkan/vulkan.h>
 
 namespace Indium {
@@ -33,5 +35,6 @@ namespace Indium {
 	private:
 		// after the members other libraries' inline accessors read
 		uint64_t _gpuAddress = 0;
+		MemoryPool::Allocation _allocation;
 	};
 };

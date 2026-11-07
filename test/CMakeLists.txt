@@ -22,6 +22,7 @@ add_subdirectory(texture-readback)
 add_subdirectory(multisample-resolve)
 add_subdirectory(render-pass-key)
 add_subdirectory(encoder-scratch)
+add_subdirectory(memory-pool)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header

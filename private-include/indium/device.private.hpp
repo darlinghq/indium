@@ -8,6 +8,7 @@
 #include <indium/device.hpp>
 #include <indium/types.private.hpp>
 #include <indium/render-pass-key.private.hpp>
+#include <indium/memory-pool.private.hpp>
 
 #include <vector>
 #include <mutex>
@@ -216,11 +217,17 @@ namespace Indium {
 		 */
 		VkRenderPass acquireRenderPass(const VkRenderPassCreateInfo& info, bool& deviceOwned);
 
+		/**
+		 * Where buffers and textures get their device memory from.
+		 */
+		MemoryPool& memoryPool() { return _memoryPool; }
+
 	private:
 		// Kept after every other member: QuartzCore uses this class through pointers only, so
 		// appending members does not move the ones it reads.
 		static constexpr size_t maxCachedRenderPasses = 256;
 		std::mutex _renderPassMutex;
 		std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKey::Hash> _renderPasses;
+		MemoryPool _memoryPool;
 	};
 };
