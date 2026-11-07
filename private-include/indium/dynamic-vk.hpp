@@ -170,9 +170,11 @@ namespace Indium {
 			_macro(vkGetDeviceQueue) \
 			_macro(vkGetImageMemoryRequirements) \
 			_macro(vkGetImageSubresourceLayout) \
+			_macro(vkGetMemoryFdPropertiesKHR) \
 			_macro(vkGetPhysicalDeviceFeatures2) \
 			_macro(vkGetPhysicalDeviceFormatProperties) \
 			_macro(vkGetPhysicalDeviceImageFormatProperties) \
+			_macro(vkGetPhysicalDeviceImageFormatProperties2) \
 			_macro(vkGetPhysicalDeviceMemoryProperties) \
 			_macro(vkGetPhysicalDeviceMemoryProperties2) \
 			_macro(vkGetPhysicalDeviceProperties) \

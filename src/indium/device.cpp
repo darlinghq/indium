@@ -314,6 +314,8 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		{ VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, Feature::ExternalSemaphoreFD },
 		{ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, Feature::NonSemanticInfo },
 		{ VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, Feature::MemoryBudget },
+		{ VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, Feature::ExternalMemoryDMABuf },
+		{ VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME, Feature::ImageDRMFormatModifier },
 	};
 
 	for (const auto& prop: extProps) {
@@ -922,6 +924,27 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const TextureDescriptor& descriptor) {
 	ensureLogicalDevice();
 	return std::make_shared<ConcreteTexture>(shared_from_this(), descriptor);
+};
+
+// Decided from the physical device's extensions alone, so asking does not create the logical device.
+// VK_EXT_external_memory_dma_buf needs VK_KHR_external_memory_fd. The other
+// dependencies of both extensions are core in Vulkan 1.3, which Indium requires.
+bool Indium::PrivateDevice::supportsDMABufImport() const {
+	const auto needed = Feature::ExternalMemoryFD | Feature::ExternalMemoryDMABuf | Feature::ImageDRMFormatModifier;
+	return (_features & needed) == needed;
+};
+
+std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) {
+	ensureLogicalDevice();
+	if (fd < 0 || !supportsDMABufImport()) {
+		return nullptr;
+	}
+	ConcreteTexture::DMABufImport import { fd, offset, bytesPerRow };
+	try {
+		return std::make_shared<ConcreteTexture>(shared_from_this(), descriptor, &import);
+	} catch (const std::runtime_error&) {
+		return nullptr;
+	}
 };
 
 std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::newSamplerState(const SamplerDescriptor& descriptor) {

@@ -156,6 +156,22 @@ namespace Indium {
 		 */
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) = 0;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) = 0;
+
+		/**
+		 * Whether this device can import Linux DMA-BUFs as textures (VK_EXT_external_memory_dma_buf
+		 * and VK_EXT_image_drm_format_modifier are available).
+		 */
+		virtual bool supportsDMABufImport() const = 0;
+
+		/**
+		 * Creates a single-level 2D texture whose storage is a linear image in a Linux DMA-BUF: the
+		 * first row starts `offset` bytes into the buffer and rows are `bytesPerRow` bytes apart.
+		 * Rendering into the texture and CPU access to the buffer see the same memory.
+		 *
+		 * The descriptor `fd` is duplicated; the caller keeps its own. Returns `nullptr` if the device
+		 * cannot import the buffer with this format, size, usage and layout.
+		 */
+		virtual std::shared_ptr<Texture> newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) = 0;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) = 0;
 

@@ -89,6 +89,8 @@ namespace Indium {
 			ExternalSemaphoreFD = 1 << 2,
 			NonSemanticInfo     = 1 << 3,
 			MemoryBudget        = 1 << 4,
+			ExternalMemoryDMABuf = 1 << 5,
+			ImageDRMFormatModifier = 1 << 6,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -123,6 +125,8 @@ namespace Indium {
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;
+		virtual bool supportsDMABufImport() const override;
+		virtual std::shared_ptr<Texture> newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) override;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) override;
 
