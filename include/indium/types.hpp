@@ -279,6 +279,10 @@ namespace Indium {
 	INDIUM_BITFLAG_ENUM_CLASS(TextureUsage);
 
 	enum class FunctionType: size_t {
+		// Not a stage. Exists so a reflected function whose stage the producer
+		// did not fill in can be told apart from one that asked for a vertex
+		// stage, instead of silently becoming a vertex stage.
+		Invalid = 0,
 		Vertex = 1,
 		Fragment = 2,
 		Kernel = 3,
@@ -580,6 +584,13 @@ namespace Indium {
 		Mesh = 1 << 4,
 	};
 	INDIUM_BITFLAG_ENUM_CLASS(RenderStages);
+
+	enum class BarrierScope: size_t {
+		Buffers = 1 << 0,
+		Textures = 1 << 1,
+		RenderTargets = 1 << 2,
+	};
+	INDIUM_BITFLAG_ENUM_CLASS(BarrierScope);
 
 	enum class BlitOption: size_t {
 		None = 0,

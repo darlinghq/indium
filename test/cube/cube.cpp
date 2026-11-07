@@ -293,12 +293,18 @@ int main(int argc, char** argv) {
 	{
 		Renderer renderer(device, window, surface, viewportSize);
 
-		while (true) {
-			if (glfwWindowShouldClose(window)) {
-				break;
-			}
-			glfwPollEvents();
-			renderer.render(frameDuration);
+		// Bounded: nothing closes a window for a test runner, so an
+		// unbounded loop never returns and ctest hangs on it forever. Render
+		// a few frames and finish, still honouring a close request so the
+		// binary stays usable interactively.
+		constexpr int frameBudget = 10;
+
+		for (int frame = 0; frame < frameBudget; ++frame) {
+				if (glfwWindowShouldClose(window)) {
+					break;
+				}
+				glfwPollEvents();
+				renderer.render(frameDuration);
 		}
 	}
 

@@ -17,6 +17,7 @@ namespace Indium {
 		private:
 			std::vector<RenderPipelineColorAttachmentDescriptor> _colorAttachments;
 			PrimitiveTopologyClass _primitiveTopology;
+			VkSampleCountFlagBits _rasterSampleCount;
 			std::shared_ptr<PrivateFunction> _vertexFunction;
 			std::shared_ptr<PrivateFunction> _fragmentFunction;
 			std::optional<VertexDescriptor> _vertexDescriptor;

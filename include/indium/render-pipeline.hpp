@@ -44,7 +44,7 @@ namespace Indium {
 		bool alphaToOneEnabled = false;
 		bool rasterizationEnabled = true;
 		PrimitiveTopologyClass inputPrimitiveTopology = PrimitiveTopologyClass::Unspecified;
-		size_t rasterSampleCount;
+		size_t rasterSampleCount = 1;
 		size_t maxTessellationFactor = 16;
 		bool tessellationFactorScaleEnabled = false;
 		TessellationFactorFormat tessellationFactorFormat = TessellationFactorFormat::Half;

@@ -55,6 +55,12 @@ namespace Indium {
 
 		virtual VkImageLayout imageLayout() = 0;
 
+		/**
+		 * The view to bind in a descriptor. Descriptors may only name a single aspect, so for a
+		 * combined depth/stencil texture this is a depth-only view; otherwise it is `imageView()`.
+		 */
+		virtual VkImageView sampledImageView() { return imageView(); }
+
 		virtual size_t vulkanArrayLength() const;
 
 		// TODO: figure out how to allow simultaneous reads and properly synchronize them with writes.
@@ -88,6 +94,12 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
 		virtual bool needsExportablePresentationSemaphore() const;
+
+		// Declared here so this class has a complete vtable. The readback that has an
+		// image to copy from lives in ConcreteTexture and TextureView, which override
+		// both; without these, every other subclass of PrivateTexture stays abstract.
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 
 	class TextureView: public PrivateTexture {
@@ -96,6 +108,7 @@ namespace Indium {
 	private:
 		std::shared_ptr<PrivateTexture> _original;
 		VkImageView _imageView;
+		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		PixelFormat _pixelFormat;
 		TextureType _textureType;
 		VkImageAspectFlags _imageAspect;
@@ -125,6 +138,7 @@ namespace Indium {
 		virtual size_t parentRelativeSlice() const override;
 
 		virtual VkImageView imageView() override;
+		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual std::shared_ptr<Device> device() override;
 		virtual VkImageLayout imageLayout() override;
@@ -136,6 +150,8 @@ namespace Indium {
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) override;
 		virtual bool needsExportablePresentationSemaphore() const override;
@@ -148,6 +164,7 @@ namespace Indium {
 		TextureDescriptor _descriptor;
 		VkImage _image;
 		VkImageView _imageView;
+		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		VkDeviceMemory _memory;
 		StorageMode _storageMode;
 
@@ -169,11 +186,14 @@ namespace Indium {
 		virtual TextureSwizzleChannels swizzle() const override;
 
 		virtual VkImageView imageView() override;
+		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
 		virtual size_t vulkanArrayLength() const override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
+		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 };

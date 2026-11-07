@@ -8,7 +8,15 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
 #include <condition_variable>
+
+static void invokeHandlers(const std::vector<Indium::CommandBuffer::Handler>& handlers,
+                           const std::shared_ptr<Indium::CommandBuffer>& buffer) noexcept {
+	for (const auto& handler: handlers) {
+		handler(buffer);
+	}
+}
 
 Indium::CommandBuffer::~CommandBuffer() {};
 
@@ -26,7 +34,8 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 
 	VkCommandBufferAllocateInfo allocInfo {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	allocInfo.commandPool = _privateCommandQueue->commandPool();
+	_commandPool = _privateCommandQueue->acquireCommandPool();
+	allocInfo.commandPool = _commandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
@@ -44,7 +53,8 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 };
 
 Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
-	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _privateCommandQueue->commandPool(), 1, &_commandBuffer);
+	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _commandPool, 1, &_commandBuffer);
+	_privateCommandQueue->releaseCommandPool(_commandPool);
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
@@ -108,6 +118,17 @@ void Indium::PrivateCommandBuffer::commit() {
 					privateTexture->precommit(shared_from_this());
 				}
 			}
+		} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
+			for (const auto& texture: blitEncoder->readOnlyTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
+			for (const auto& texture: blitEncoder->readWriteTextures()) {
+				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+					privateTexture->precommit(shared_from_this());
+				}
+			}
 		}
 
 		// TODO: same for other encoders
@@ -132,20 +153,71 @@ void Indium::PrivateCommandBuffer::commit() {
 
 	for (const auto& encoder: _commandEncoders) {
 		if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
-			auto& readOnly = renderEncoder->readOnlyTextures();
-			auto& readWrite = renderEncoder->readWriteTextures();
-			readOnlyTextures.insert(readOnlyTextures.end(), readOnly.begin(), readOnly.end());
-			readWriteTextures.insert(readWriteTextures.end(), readWrite.begin(), readWrite.end());
+			for (const auto& tex : renderEncoder->readOnlyTextures()) {
+				if (std::find(readOnlyTextures.begin(), readOnlyTextures.end(), tex) == readOnlyTextures.end()) {
+					readOnlyTextures.push_back(tex);
+				}
+			}
+			for (const auto& tex : renderEncoder->readWriteTextures()) {
+				if (std::find(readWriteTextures.begin(), readWriteTextures.end(), tex) == readWriteTextures.end()) {
+					readWriteTextures.push_back(tex);
+				}
+			}
+		} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
+			for (const auto& tex : blitEncoder->readOnlyTextures()) {
+				if (std::find(readOnlyTextures.begin(), readOnlyTextures.end(), tex) == readOnlyTextures.end()) {
+					readOnlyTextures.push_back(tex);
+				}
+			}
+			for (const auto& tex : blitEncoder->readWriteTextures()) {
+				if (std::find(readWriteTextures.begin(), readWriteTextures.end(), tex) == readWriteTextures.end()) {
+					readWriteTextures.push_back(tex);
+				}
+			}
 		}
 
 		// TODO: implement this for other encoders (we need to synchronize those texture accesses as well)
 	}
 
+	// A view shares its synchronization state with the texture it was made from, so acquiring a
+	// texture and a view of it separately would make this submission wait for its own signal.
+	// Synchronize each underlying texture once, and only as written if any use of it writes.
+	const auto rootTexture = [](std::shared_ptr<Texture> texture) {
+		while (auto parent = texture->parentTexture()) {
+			texture = parent;
+		}
+		return texture;
+	};
+	const auto toRoots = [&](std::vector<std::shared_ptr<Texture>>& textures) {
+		std::vector<std::shared_ptr<Texture>> roots;
+		for (const auto& texture: textures) {
+			auto root = rootTexture(texture);
+			if (std::find(roots.begin(), roots.end(), root) == roots.end()) {
+				roots.push_back(root);
+			}
+		}
+		textures = std::move(roots);
+	};
+	toRoots(readWriteTextures);
+	toRoots(readOnlyTextures);
+	readOnlyTextures.erase(std::remove_if(readOnlyTextures.begin(), readOnlyTextures.end(), [&](const auto& texture) {
+		return std::find(readWriteTextures.begin(), readWriteTextures.end(), texture) != readWriteTextures.end();
+	}), readOnlyTextures.end());
+
+	// Texture timeline values are handed out below and must reach the queue in the same order,
+	// or a submission could wait on a binary semaphore that a later-reserved one signals first.
+	std::unique_lock queueLock(_privateDevice->graphicsQueueMutex());
+
 	for (const auto& texture: readWriteTextures) {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-		auto sema = _privateDevice->getWrappedBinarySemaphore(privateTexture->needsExportablePresentationSemaphore());
+		// Only textures something else presents consume the presentation semaphore. Signaling
+		// one that is never waited on would leave it signaled when it is reused.
+		std::shared_ptr<BinarySemaphore> sema;
+		if (!std::dynamic_pointer_cast<ConcreteTexture>(privateTexture)) {
+			sema = _privateDevice->getWrappedBinarySemaphore(privateTexture->needsExportablePresentationSemaphore());
+			privateTexture->beginUpdatingPresentationSemaphore(sema);
+		}
 		presentationSemaphores.push_back(sema);
-		privateTexture->beginUpdatingPresentationSemaphore(sema);
 	}
 
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
@@ -202,11 +274,13 @@ void Indium::PrivateCommandBuffer::commit() {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 		const auto& presentSema = presentationSemaphores[i];
 
-		VkSemaphoreSubmitInfo signalInfo {};
-		signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-		signalInfo.semaphore = presentSema->semaphore;
-		signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-		signalInfos.push_back(signalInfo);
+		if (presentSema) {
+			VkSemaphoreSubmitInfo signalInfo {};
+			signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+			signalInfo.semaphore = presentSema->semaphore;
+			signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			signalInfos.push_back(signalInfo);
+		}
 
 		handleTextureSemaphores(privateTexture);
 	}
@@ -216,24 +290,17 @@ void Indium::PrivateCommandBuffer::commit() {
 	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
 	// UPDATE: upon further testing, it seems that this only occurs when the view is off-screen/hidden. weird.
 	_privateDevice->waitForSemaphore(timelineSemaphore->semaphore, timelineSemaphore->count, [self, timelineSemaphore, extraWaitSemaphores, presentationSemaphores]() {
+		std::vector<Handler> handlers;
 		{
 			std::unique_lock lock(self->_mutex);
 			self->_completed = true;
+			if (self->_scheduledHandlersFinished) {
+				handlers.swap(self->_completedHandlers);
+			}
 		}
 
 		self->_completedCondvar.notify_all();
-
-		// TODO: invoke scheduled handlers when the command buffer is scheduled instead of completed
-		for (const auto& handler: self->_scheduledHandlers) {
-			handler(self);
-		}
-		for (const auto& handler: self->_completedHandlers) {
-			handler(self);
-		}
-
-		// the handlers may have captured a reference to us (from their surrounding scope), so clear out handlers so those references go away
-		self->_scheduledHandlers.clear();
-		self->_completedHandlers.clear();
+		invokeHandlers(handlers, self);
 	});
 
 	commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
@@ -257,13 +324,33 @@ void Indium::PrivateCommandBuffer::commit() {
 		abort();
 	}
 
+	queueLock.unlock();
 	lock.unlock();
 
 	// now that the binary semaphore signals are pending, we can allow them to be used
-	for (const auto& texture: readWriteTextures) {
-		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
-		privateTexture->endUpdatingPresentationSemaphore();
+	for (size_t i = 0; i < readWriteTextures.size(); ++i) {
+		if (presentationSemaphores[i]) {
+			std::dynamic_pointer_cast<PrivateTexture>(readWriteTextures[i])->endUpdatingPresentationSemaphore();
+		}
 	}
+
+	std::vector<Handler> scheduledHandlers;
+	{
+		std::unique_lock callbackLock(_mutex);
+		scheduledHandlers.swap(_scheduledHandlers);
+	}
+	invokeHandlers(scheduledHandlers, self);
+
+	std::vector<Handler> completedHandlers;
+	{
+		std::unique_lock callbackLock(_mutex);
+		_scheduledHandlersFinished = true;
+		if (_completed) {
+			completedHandlers.swap(_completedHandlers);
+		}
+	}
+	_scheduledCondvar.notify_all();
+	invokeHandlers(completedHandlers, self);
 
 	// we can now queue drawables for presentation and they'll be synchronized properly
 	for (const auto& drawable: _drawablesToPresent) {
@@ -311,5 +398,12 @@ void Indium::PrivateCommandBuffer::waitUntilCompleted() {
 
 	while (!_completed) {
 		_completedCondvar.wait(lock);
+	}
+};
+
+void Indium::PrivateCommandBuffer::waitUntilScheduled() {
+	std::unique_lock lock(_mutex);
+	while (!_scheduledHandlersFinished) {
+		_scheduledCondvar.wait(lock);
 	}
 };

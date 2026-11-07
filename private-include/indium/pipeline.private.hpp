@@ -40,15 +40,15 @@ namespace Indium {
 			bool needUBO = false;
 
 			for (const auto bindingInfo: function->functionInfo().bindings) {
-				if (bindingInfo.type == Iridium::BindingType::Buffer) {
+				if (bindingInfo.type == BindingType::Buffer) {
 					needUBO = true;
-				} else if (bindingInfo.type == Iridium::BindingType::Texture) {
+				} else if (bindingInfo.type == BindingType::Texture) {
 					auto& binding = bindings.emplace_back();
 					binding.binding = bindingInfo.internalIndex;
-					binding.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+					binding.descriptorType = (bindingInfo.textureAccessType == TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 					binding.descriptorCount = 1;
 					binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
-				} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
+				} else if (bindingInfo.type == BindingType::Sampler) {
 					auto& binding = bindings.emplace_back();
 					binding.binding = bindingInfo.internalIndex;
 					binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;

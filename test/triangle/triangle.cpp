@@ -118,7 +118,13 @@ int main(int argc, char** argv) {
 			commandBuffer->commit();
 		};
 
-		while (true) {
+		// Bounded: nothing closes a window for a test runner, so an unbounded
+		// loop here never returns and ctest hangs on it forever. Render a few
+		// frames and finish, still honouring a close request so the binary is
+		// usable interactively.
+		constexpr int frameBudget = 10;
+
+		for (int frame = 0; frame < frameBudget; ++frame) {
 			if (glfwWindowShouldClose(window)) {
 				break;
 			}

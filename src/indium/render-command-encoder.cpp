@@ -19,28 +19,70 @@ Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor):
 	_privateCommandBuffer(commandBuffer),
 	_descriptor(descriptor),
-	_privateDevice(commandBuffer->privateDevice())
+	_privateDevice(commandBuffer->privateDevice()),
+	_descriptorPools(_privateDevice->device())
 {
 	auto buf = _privateCommandBuffer.lock();
 
 	auto vkDevice = _privateDevice->device();
 	auto vkCmdBuf = buf->commandBuffer();
 
-	VkDescriptorPoolCreateInfo poolCreateInfo {};
-	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	poolCreateInfo.poolSizeCount = poolSizes.size();
-	poolCreateInfo.pPoolSizes = poolSizes.data();
-	poolCreateInfo.maxSets = 64; // i guess
-
-	if (DynamicVK::vkCreateDescriptorPool(vkDevice, &poolCreateInfo, nullptr, &_pool) != VK_SUCCESS) {
-		// TODO
-		abort();
+	// A pass may have no color attachments (a depth-only pass) and gaps between them; unused color
+	// attachments stay in the subpass as VK_ATTACHMENT_UNUSED so the pipeline's indices still match.
+	// Depth and stencil share one Vulkan attachment, so when both are given they must be the same image.
+	auto depthStencilTexture = descriptor.depthAttachment ? descriptor.depthAttachment->texture :
+		(descriptor.stencilAttachment ? descriptor.stencilAttachment->texture : nullptr);
+	if (descriptor.depthAttachment && descriptor.stencilAttachment && descriptor.depthAttachment->texture != descriptor.stencilAttachment->texture) {
+		auto depthImage = std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture);
+		auto stencilImage = std::dynamic_pointer_cast<PrivateTexture>(descriptor.stencilAttachment->texture);
+		if (!depthImage || !stencilImage || depthImage->image() != stencilImage->image()) {
+			throw std::runtime_error("Separate depth and stencil textures are unsupported");
+		}
 	}
 
-	auto firstTexture = descriptor.colorAttachments.front().texture;
+	std::shared_ptr<Texture> firstTexture;
+	for (const auto& color: descriptor.colorAttachments) {
+		if (color.texture) {
+			firstTexture = color.texture;
+			break;
+		}
+	}
+	if (!firstTexture) {
+		firstTexture = depthStencilTexture;
+	}
+	if (!firstTexture) {
+		throw std::runtime_error("Render pass requires an attachment");
+	}
+	auto resolvesColor = [](const auto& color) {
+		return color.texture && (color.storeAction == StoreAction::MultisampleResolve || color.storeAction == StoreAction::StoreAndMultisampleResolve);
+	};
+	for (const auto& color : descriptor.colorAttachments) {
+		if (!color.texture) {
+			continue;
+		}
+		if (color.texture->sampleCount() != firstTexture->sampleCount()) {
+			throw std::runtime_error("Render pass color sample counts must match");
+		}
+		if (resolvesColor(color)) {
+			if (!color.resolveTexture || color.texture->sampleCount() == 1 || color.resolveTexture->sampleCount() != 1 ||
+				color.resolveTexture->pixelFormat() != color.texture->pixelFormat() ||
+				color.resolveTexture->width() != color.texture->width() || color.resolveTexture->height() != color.texture->height()) {
+				throw std::runtime_error("Color resolve requires matching multisample source and single-sample destination");
+			}
+			if (color.level || color.slice || color.depthPlane || color.resolveLevel || color.resolveSlice || color.resolveDepthPlane) {
+				throw std::runtime_error("Color resolve subresources are not supported");
+			}
+		}
+	}
+	if (depthStencilTexture && depthStencilTexture->sampleCount() != firstTexture->sampleCount()) {
+		throw std::runtime_error("Render pass depth and color sample counts must match");
+	}
 	std::vector<VkClearValue> clearValues;
 
 	for (const auto& color: descriptor.colorAttachments) {
+		if (!color.texture) {
+			continue;
+		}
 		auto clearColor = color.clearColor;
 		VkClearValue clearValue {};
 		clearValue.color.float32[0] = clearColor.red;
@@ -51,49 +93,67 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 		// TODO: distinguish between read-only and read-write textures
 		_readWriteTextures.push_back(color.texture);
+		if (resolvesColor(color)) _readWriteTextures.push_back(color.resolveTexture);
 	}
 
-	if (descriptor.depthAttachment || descriptor.stencilAttachment) {
+	if (depthStencilTexture) {
 		VkClearValue clearValue {};
 		clearValue.depthStencil.depth = descriptor.depthAttachment ? descriptor.depthAttachment->clearDepth : 1.0;
 		clearValue.depthStencil.stencil = descriptor.stencilAttachment ? descriptor.stencilAttachment->clearStencil : 0;
 		clearValues.push_back(clearValue);
+		_readWriteTextures.push_back(depthStencilTexture);
 	}
 
 	std::vector<VkAttachmentDescription> renderPassAttachments;
 	std::vector<VkSubpassDescription> subpasses;
 	std::vector<VkSubpassDependency> dependencies;
 
+	// Only an explicit (or default) Clear may discard an attachment's contents. Metal leaves the
+	// contents undefined after DontCare, so preserving them is conforming, and it is what code that
+	// resumes a pass with Load after a DontCare pass in between sees on macOS. Vulkan's DONT_CARE with
+	// an UNDEFINED initial layout lets the driver throw the contents away instead. For the same
+	// reason every attachment is stored.
 	for (const auto& color: descriptor.colorAttachments) {
+		if (!color.texture) {
+			continue;
+		}
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
+		bool clear = loadActionToVkAttachmentLoadOp(color.loadAction, true) == VK_ATTACHMENT_LOAD_OP_CLEAR;
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
-		desc.samples = VK_SAMPLE_COUNT_1_BIT; // TODO: support multisampling
-		desc.loadOp = loadActionToVkAttachmentLoadOp(color.loadAction, true);
-		desc.storeOp = storeActionToVkAttachmentStoreOp(color.storeAction, true);
+		desc.samples = sampleCountToVk(color.texture->sampleCount());
+		desc.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+		desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		desc.initialLayout = (color.loadAction == LoadAction::Load) ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+		desc.initialLayout = clear ? VK_IMAGE_LAYOUT_UNDEFINED : privateTexture->imageLayout();
 		desc.finalLayout = privateTexture->imageLayout();
 		renderPassAttachments.push_back(desc);
 	}
 
-	if (descriptor.depthAttachment) {
-		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture);
+	if (depthStencilTexture) {
+		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(depthStencilTexture);
+		auto format = privateTexture->pixelFormat();
+		bool hasDepth = format != PixelFormat::Stencil8 && format != PixelFormat::X32_Stencil8 && format != PixelFormat::X24_Stencil8;
+		bool hasStencil = format == PixelFormat::Stencil8 || format == PixelFormat::X32_Stencil8 || format == PixelFormat::X24_Stencil8 ||
+			format == PixelFormat::Depth24Unorm_Stencil8 || format == PixelFormat::Depth32Float_Stencil8;
+		// an aspect the pass does not attach is preserved
+		auto clears = [](const auto& attachment) {
+			return attachment && loadActionToVkAttachmentLoadOp(attachment->loadAction, false) == VK_ATTACHMENT_LOAD_OP_CLEAR;
+		};
+		bool clearDepth = clears(descriptor.depthAttachment);
+		bool clearStencil = clears(descriptor.stencilAttachment);
+
 		VkAttachmentDescription desc {};
-		desc.format = pixelFormatToVkFormat(privateTexture->pixelFormat());
-		desc.samples = VK_SAMPLE_COUNT_1_BIT;
-		desc.loadOp = loadActionToVkAttachmentLoadOp(descriptor.depthAttachment->loadAction, false);
-		desc.storeOp = storeActionToVkAttachmentStoreOp(descriptor.depthAttachment->storeAction, false);
-		desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-		desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-		desc.initialLayout = (descriptor.depthAttachment->loadAction == LoadAction::Load) ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_UNDEFINED;
+		desc.format = pixelFormatToVkFormat(format);
+		desc.samples = sampleCountToVk(privateTexture->sampleCount());
+		desc.loadOp = clearDepth ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+		desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		desc.stencilLoadOp = clearStencil ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+		desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+		desc.initialLayout = ((clearDepth || !hasDepth) && (clearStencil || !hasStencil)) ? VK_IMAGE_LAYOUT_UNDEFINED : privateTexture->imageLayout();
 		desc.finalLayout = privateTexture->imageLayout();
 		renderPassAttachments.push_back(desc);
-	}
-
-	if (descriptor.stencilAttachment) {
-		throw std::runtime_error("TODO: support stencil attachments");
 	}
 
 	std::vector<VkAttachmentReference> colorAttachments;
@@ -102,23 +162,65 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	size_t index = 0;
 	for (const auto& color: descriptor.colorAttachments) {
 		VkAttachmentReference ref {};
-		ref.attachment = index;
+		ref.attachment = color.texture ? index++ : VK_ATTACHMENT_UNUSED;
 		ref.layout = VK_IMAGE_LAYOUT_GENERAL;
 		colorAttachments.push_back(ref);
-		++index;
 	}
 
-	if (descriptor.depthAttachment) {
+	if (depthStencilTexture) {
 		depthStencilAttachment.attachment = index;
 		depthStencilAttachment.layout = VK_IMAGE_LAYOUT_GENERAL;
 		++index;
+	}
+
+	std::vector<VkAttachmentReference> resolveAttachments;
+	for (const auto& color : descriptor.colorAttachments) {
+		VkAttachmentReference ref { VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL };
+		if (resolvesColor(color)) {
+			auto texture = std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture);
+			ref.attachment = renderPassAttachments.size();
+			VkAttachmentDescription desc {};
+			desc.format = pixelFormatToVkFormat(texture->pixelFormat());
+			desc.samples = VK_SAMPLE_COUNT_1_BIT;
+			desc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			desc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			desc.finalLayout = texture->imageLayout();
+			renderPassAttachments.push_back(desc);
+		}
+		resolveAttachments.push_back(ref);
+	}
+
+	// memoryBarrier() records pipeline barriers inside the pass, which Vulkan only allows when they
+	// match a self-dependency of the subpass: one between fragment work (framebuffer-local) and one
+	// from vertex work to anything after it
+	{
+		auto& fragment = dependencies.emplace_back();
+		fragment.srcSubpass = 0;
+		fragment.dstSubpass = 0;
+		fragment.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		fragment.dstStageMask = fragment.srcStageMask;
+		fragment.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		fragment.dstAccessMask = fragment.srcAccessMask;
+		fragment.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		auto& vertex = dependencies.emplace_back();
+		vertex.srcSubpass = 0;
+		vertex.dstSubpass = 0;
+		vertex.srcStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		vertex.dstStageMask = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		vertex.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vertex.dstAccessMask = vertex.srcAccessMask;
 	}
 
 	auto& subpassDesc = subpasses.emplace_back();
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
 	subpassDesc.pColorAttachments = colorAttachments.data();
-	subpassDesc.pDepthStencilAttachment = (descriptor.depthAttachment || descriptor.stencilAttachment) ? &depthStencilAttachment : nullptr;
+	subpassDesc.pResolveAttachments = resolveAttachments.data();
+	subpassDesc.pDepthStencilAttachment = depthStencilTexture ? &depthStencilAttachment : nullptr;
 
 	VkRenderPassCreateInfo renderPassInfo {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -137,11 +239,19 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	std::vector<VkImageView> framebufferAttachments;
 
 	for (const auto& colorAttachment: descriptor.colorAttachments) {
-		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(colorAttachment.texture)->imageView());
+		if (colorAttachment.texture) {
+			framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(colorAttachment.texture)->imageView());
+		}
 	}
 
-	if (descriptor.depthAttachment) {
-		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture)->imageView());
+	if (depthStencilTexture) {
+		framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(depthStencilTexture)->imageView());
+	}
+
+	for (const auto& color : descriptor.colorAttachments) {
+		if (resolvesColor(color)) {
+			framebufferAttachments.push_back(std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture)->imageView());
+		}
 	}
 
 	VkFramebufferCreateInfo framebufferInfo {};
@@ -193,10 +303,9 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	if (_renderPass) {
 		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
 	}
-	DynamicVK::vkDestroyDescriptorPool(_privateDevice->device(), _pool, 0);
 };
 
-void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(std::shared_ptr<RenderPipelineState> renderPipelineState) {
+void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) {
 	auto buf = _privateCommandBuffer.lock();
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
 	if (_privatePSO) {
@@ -294,7 +403,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
+	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
@@ -309,15 +418,25 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 		for (size_t vulkanIndex = 0; vulkanIndex < vertexInputBindings.size(); ++vulkanIndex) {
 			const auto& metalIndex = vertexInputBindings[vulkanIndex];
 
-			if (metalIndex >= _functionResources[0].buffers.size()) {
-				// technically, this requires the `nullDescriptor` feature, but we should never run into this case anyways.
-				buffers[vulkanIndex] = VK_NULL_HANDLE;
-				offsets[vulkanIndex] = 0;
-			} else {
-				auto [buffer, offset] = _functionResources[0].buffers[metalIndex];
-				auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+			std::shared_ptr<PrivateBuffer> privateBuffer;
+			size_t offset = 0;
+			if (metalIndex < _functionResources[0].buffers.size()) {
+				privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(_functionResources[0].buffers[metalIndex].first);
+				offset = _functionResources[0].buffers[metalIndex].second;
+			}
+
+			if (privateBuffer) {
 				buffers[vulkanIndex] = privateBuffer->buffer();
 				offsets[vulkanIndex] = offset;
+			} else {
+				// The pipeline fetches vertices from a buffer index that was never bound. A null buffer
+				// (which reads as zero) needs nullDescriptor; otherwise read the zero-filled fallback.
+				if (_privateDevice->nullDescriptorEnabled()) {
+					buffers[vulkanIndex] = VK_NULL_HANDLE;
+				} else {
+					buffers[vulkanIndex] = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->fallbackBuffer())->buffer();
+				}
+				offsets[vulkanIndex] = 0;
 			}
 		}
 
@@ -380,9 +499,10 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
+	finishTrackedEncoder(buf->commandBuffer());
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
 	_functionResources[0].setBuffer(buffer, offset, index);
 };
 
@@ -396,11 +516,11 @@ void Indium::PrivateRenderCommandEncoder::setVertexBufferOffset(size_t offset, s
 	_functionResources[0].setBufferOffset(offset, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(const std::shared_ptr<SamplerState>& state, size_t index) {
 	_functionResources[0].setSamplerState(state, std::nullopt, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexSamplerState(const std::shared_ptr<SamplerState>& state, float lodMinClamp, float lodMaxClamp, size_t index) {
 	_functionResources[0].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
 };
 
@@ -416,7 +536,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexSamplerStates(const std::vect
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::setVertexTexture(std::shared_ptr<Texture> texture, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setVertexTexture(const std::shared_ptr<Texture>& texture, size_t index) {
 	_functionResources[0].setTexture(texture, index);
 };
 
@@ -431,7 +551,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentBytes(const void* bytes, si
 	_functionResources[1].setBytes(cmdBuf->device(), bytes, length, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
 	_functionResources[1].setBuffer(buffer, offset, index);
 };
 
@@ -445,11 +565,11 @@ void Indium::PrivateRenderCommandEncoder::setFragmentBufferOffset(size_t offset,
 	_functionResources[1].setBufferOffset(offset, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(const std::shared_ptr<SamplerState>& state, size_t index) {
 	_functionResources[1].setSamplerState(state, std::nullopt, index);
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(std::shared_ptr<SamplerState> state, float lodMinClamp, float lodMaxClamp, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentSamplerState(const std::shared_ptr<SamplerState>& state, float lodMinClamp, float lodMaxClamp, size_t index) {
 	_functionResources[1].setSamplerState(state, std::make_pair(lodMinClamp, lodMaxClamp), index);
 };
 
@@ -465,7 +585,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentSamplerStates(const std::ve
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::setFragmentTexture(std::shared_ptr<Texture> texture, size_t index) {
+void Indium::PrivateRenderCommandEncoder::setFragmentTexture(const std::shared_ptr<Texture>& texture, size_t index) {
 	_functionResources[1].setTexture(texture, index);
 };
 
@@ -475,7 +595,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTextures(std::vector<std::s
 	}
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
 	if (!_privatePSO) {
 		return;
 	}
@@ -518,15 +638,15 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	_savedFunctionResources.push_back(_functionResources[1]);
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset, size_t instanceCount) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount) {
 	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, instanceCount, 0, 0);
 };
 
-void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, std::shared_ptr<Buffer> indexBuffer, size_t indexBufferOffset) {
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset) {
 	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, 1);
 };
 
-void Indium::PrivateRenderCommandEncoder::setDepthStencilState(std::shared_ptr<DepthStencilState> state) {
+void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared_ptr<DepthStencilState>& state) {
 	auto buf = _privateCommandBuffer.lock();
 	auto privateState = std::dynamic_pointer_cast<PrivateDepthStencilState>(state);
 	auto& desc = privateState->descriptor();
@@ -701,4 +821,53 @@ void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> 
 void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) {
 	// TODO: check what Metal does in this case. this is just an educated guess
 	useResources(resources, usage, RenderStages::Vertex | RenderStages::Fragment | RenderStages::Tile | RenderStages::Object | RenderStages::Mesh);
+};
+
+void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) {
+	constexpr size_t knownScope = static_cast<size_t>(BarrierScope::Buffers | BarrierScope::Textures | BarrierScope::RenderTargets);
+	constexpr size_t supportedStages = static_cast<size_t>(RenderStages::Vertex | RenderStages::Fragment);
+	if (!scope || (static_cast<size_t>(scope) & ~knownScope)) {
+		throw std::invalid_argument("Invalid memory barrier scope");
+	}
+	if (!after || !before || (static_cast<size_t>(after) & ~supportedStages) || (static_cast<size_t>(before) & ~supportedStages)) {
+		throw std::invalid_argument("Unsupported memory barrier stages");
+	}
+
+	VkMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	VkPipelineStageFlags srcStages = 0;
+	VkPipelineStageFlags dstStages = 0;
+	VkDependencyFlags flags = 0;
+
+	if (!!(scope & (BarrierScope::Buffers | BarrierScope::Textures))) {
+		barrier.srcAccessMask |= VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.dstAccessMask |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	}
+
+	if (after == RenderStages::Vertex) {
+		srcStages = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+		dstStages = (!!(before & RenderStages::Vertex) ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : 0) |
+			(!!(before & RenderStages::Fragment) ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : 0);
+		// vertex work does not write render targets
+		if (!barrier.srcAccessMask) {
+			return;
+		}
+	} else if (before == RenderStages::Fragment) {
+		// the fragment stage of earlier draws (with the vertex stage, which precedes it) before
+		// the fragment stage of later ones
+		srcStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		dstStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		if (!!(scope & BarrierScope::RenderTargets)) {
+			srcStages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			dstStages |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			barrier.srcAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dstAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		}
+		flags = VK_DEPENDENCY_BY_REGION_BIT;
+	} else {
+		throw std::invalid_argument("A render pass cannot order later vertex work after earlier fragment work");
+	}
+
+	auto buf = _privateCommandBuffer.lock();
+	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, flags, 1, &barrier, 0, nullptr, 0, nullptr);
 };

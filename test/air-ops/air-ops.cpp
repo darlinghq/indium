@@ -6,11 +6,15 @@
 #include "air-ops.h"
 
 #include <indium/indium.hpp>
+#include <indium/dynamic-vk.hpp>
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <map>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -172,6 +176,91 @@ static bool testControlFlow(Indium::Device* device) {
 	return compare("control_flow", slots, run<int32_t>(device, "control_flow", want.size(), { ns }), want);
 }
 
+// A buffer the kernel reads but the caller never bound must not fault the GPU. Metal leaves such a
+// read undefined; Indium reads zeros, so every count is 0 and so is every result.
+static bool testUnboundBuffer(Indium::Device* device) {
+	std::vector<int32_t> want(threadCount * 4, 0);
+	return compare("control_flow (unbound input)", 4, run<int32_t>(device, "control_flow", want.size(), {}), want);
+}
+
+// The Vulkan specification requires vkAllocateDescriptorSets to fail with VK_ERROR_OUT_OF_POOL_MEMORY
+// once a pool's maxSets would be exceeded, but not every driver does (lavapipe does not), so this
+// enforces it for the pools Indium creates (64 sets each).
+static PFN_vkAllocateDescriptorSets originalAllocateDescriptorSets;
+static std::mutex poolUseMutex;
+static std::map<VkDescriptorPool, uint32_t> poolUse;
+
+static VKAPI_ATTR VkResult VKAPI_CALL allocateWithinMaxSets(VkDevice device, const VkDescriptorSetAllocateInfo* info, VkDescriptorSet* sets) {
+	{
+		std::scoped_lock lock(poolUseMutex);
+		auto& used = poolUse[info->descriptorPool];
+		if (used + info->descriptorSetCount > 64) {
+			return VK_ERROR_OUT_OF_POOL_MEMORY;
+		}
+		used += info->descriptorSetCount;
+	}
+	return originalAllocateDescriptorSets(device, info, sets);
+}
+
+// One encoder may encode any number of dispatches, each of which needs its own descriptor sets, and
+// several threads may create and commit command buffers on one queue at once.
+static bool testManyDispatches(Indium::Device* device) {
+	std::vector<int32_t> ns { 0, 1, 2, 5, 6, 9, 3, 12 };
+	auto want = run<int32_t>(device, "control_flow", threadCount * 4, { ns });
+
+	auto library = device->newLibrary(air_ops_metallib, air_ops_metallib_len);
+	auto pipeline = device->newComputePipelineState(library->newFunction("control_flow"));
+	auto queue = device->newCommandQueue();
+	auto input = device->newBuffer(ns.data(), ns.size() * sizeof(int32_t), Indium::ResourceOptions::StorageModeShared);
+
+	auto encodeAndCheck = [&](size_t dispatches) {
+		std::vector<std::shared_ptr<Indium::Buffer>> outputs;
+		auto commandBuffer = queue->commandBuffer();
+		auto encoder = commandBuffer->computeCommandEncoder();
+		encoder->setComputePipelineState(pipeline);
+		encoder->setBuffer(input, 0, 1);
+		for (size_t i = 0; i < dispatches; ++i) {
+			outputs.push_back(device->newBuffer(want.size() * sizeof(int32_t), Indium::ResourceOptions::StorageModeShared));
+			encoder->setBuffer(outputs.back(), 0, 0);
+			encoder->dispatchThreads(Indium::Size { threadCount, 1, 1 }, Indium::Size { threadCount, 1, 1 });
+		}
+		encoder->endEncoding();
+		commandBuffer->commit();
+		commandBuffer->waitUntilCompleted();
+		for (auto& output: outputs) {
+			if (std::memcmp(output->contents(), want.data(), want.size() * sizeof(int32_t)) != 0) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	Indium::DynamicVK::vkAllocateDescriptorSets.resolve();
+	originalAllocateDescriptorSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(Indium::DynamicVK::vkAllocateDescriptorSets.pointer.load());
+	Indium::DynamicVK::vkAllocateDescriptorSets.pointer = reinterpret_cast<void*>(allocateWithinMaxSets);
+	bool many = encodeAndCheck(300);
+	Indium::DynamicVK::vkAllocateDescriptorSets.pointer = reinterpret_cast<void*>(originalAllocateDescriptorSets);
+	std::cout << "300 dispatches in one encoder: " << (many ? "as expected" : "WRONG") << std::endl;
+
+	std::atomic<bool> concurrent { true };
+	std::vector<std::thread> threads;
+	for (size_t t = 0; t < 4; ++t) {
+		threads.emplace_back([&]() {
+			for (size_t i = 0; i < 25; ++i) {
+				if (!encodeAndCheck(2)) {
+					concurrent = false;
+				}
+			}
+		});
+	}
+	for (auto& thread: threads) {
+		thread.join();
+	}
+	std::cout << "command buffers from 4 threads: " << (concurrent ? "as expected" : "WRONG") << std::endl;
+
+	return many && concurrent;
+}
+
 // The library reports each kernel's buffer arguments as air-ops.metal declares them, and a pipeline
 // asking for that reflection can be created.
 static bool testReflection(Indium::Device* device) {
@@ -219,6 +308,8 @@ int main(int argc, char** argv) {
 		ok = testTableLookup(device.get()) && ok;
 		ok = testControlFlow(device.get()) && ok;
 		ok = testReflection(device.get()) && ok;
+		ok = testUnboundBuffer(device.get()) && ok;
+		ok = testManyDispatches(device.get()) && ok;
 
 		keepPollingDevice = false;
 		device->wakeupEventLoop();

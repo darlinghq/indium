@@ -34,5 +34,6 @@ namespace Indium {
 
 		virtual std::shared_ptr<CommandQueue> commandQueue() = 0;
 		virtual std::shared_ptr<Device> device() = 0;
+		virtual void waitUntilScheduled() = 0;
 	};
 };

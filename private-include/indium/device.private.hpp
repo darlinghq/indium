@@ -35,6 +35,21 @@ namespace Indium {
 		std::vector<uint64_t> _eventLoopWaitValues;
 		std::vector<std::function<void()>> _eventLoopCallbacks;
 
+		// waitForSemaphore() only needs to wake the event loop when a poller is blocked on a list
+		// that predates the new semaphore. Registrations count additions to the list; a poller
+		// counts itself in blockedPollers before it blocks, then rechecks registrations.
+		std::atomic<uint64_t> _eventLoopRegistrations { 0 };
+		std::atomic<uint32_t> _eventLoopBlockedPollers { 0 };
+
+		// Vulkan requires submissions and presentation on one queue to be externally synchronized
+		std::mutex _graphicsQueueMutex;
+		std::mutex _oneshotCommandPoolMutex;
+
+		std::mutex _fallbackMutex;
+		std::shared_ptr<Buffer> _fallbackBuffer;
+		std::shared_ptr<SamplerState> _fallbackSampler;
+		bool _nullDescriptor = false;
+
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
 		~PrivateDevice();
@@ -44,6 +59,7 @@ namespace Indium {
 			ExternalMemoryFD    = 1 << 1,
 			ExternalSemaphoreFD = 1 << 2,
 			NonSemanticInfo     = 1 << 3,
+			MemoryBudget        = 1 << 4,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -59,6 +75,15 @@ namespace Indium {
 		}
 
 		virtual std::string name() const override;
+		virtual uint64_t recommendedMaxWorkingSetSize() const override;
+		virtual uint64_t maxBufferLength() const override;
+		virtual uint32_t vendorID() const override;
+		virtual uint32_t deviceID() const override;
+		virtual DeviceType deviceType() const override;
+		virtual std::vector<MemoryHeap> memoryHeaps() const override;
+		virtual std::array<uint8_t, 16> deviceUUID() const override;
+		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
+		virtual bool supportsDepth24Stencil8PixelFormat() const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) override;
@@ -66,6 +91,7 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) override;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
+		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) override;
@@ -92,6 +118,39 @@ namespace Indium {
 		void putBinarySemaphore(const BinarySemaphore& semaphore);
 
 		std::shared_ptr<BinarySemaphore> getWrappedBinarySemaphore(bool exportable = false);
+
+		/**
+		 * Stand-ins for resources a function uses but the caller never bound. Reading an unbound
+		 * buffer through address 0, or an unwritten descriptor, faults or hangs the GPU; Metal leaves
+		 * the result of such a read undefined, so reading zeros or a default sampler is conforming.
+		 *
+		 * The fallback buffer is a zero-filled shared buffer of fallbackBufferSize bytes.
+		 */
+		static constexpr size_t fallbackBufferSize = 64 * 1024;
+		std::shared_ptr<Buffer> fallbackBuffer();
+		std::shared_ptr<SamplerState> fallbackSampler();
+
+		/**
+		 * Whether VK_EXT_robustness2's nullDescriptor is enabled, which makes VK_NULL_HANDLE a valid
+		 * image view or vertex buffer that reads as zero.
+		 */
+		bool nullDescriptorEnabled() const { return _nullDescriptor; }
+
+		/**
+		 * Held around every submission to and presentation on `graphicsQueue()`.
+		 */
+		std::mutex& graphicsQueueMutex() { return _graphicsQueueMutex; }
+
+		/**
+		 * Held from allocating a command buffer from `oneshotCommandPool()` until freeing it.
+		 */
+		std::mutex& oneshotCommandPoolMutex() { return _oneshotCommandPoolMutex; }
+
+		/**
+		 * The memory type a resource with the given storage mode is allocated from, among those
+		 * `memoryTypeBits` allows; SIZE_MAX if none fits.
+		 */
+		size_t findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const;
 
 		INDIUM_PROPERTY(VkPhysicalDevice, p, P,hysicalDevice) = VK_NULL_HANDLE;
 		INDIUM_PROPERTY(VkPhysicalDeviceProperties, p, P,roperties);

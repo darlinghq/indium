@@ -4,6 +4,7 @@
 #include <indium/buffer.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <stdexcept>
 #include <cstring>
 
 Indium::Texture::~Texture() {};
@@ -68,6 +69,24 @@ size_t Indium::PrivateTexture::vulkanArrayLength() const {
 	return arrayLength();
 };
 
+namespace {
+	// A view that names both the depth and stencil aspects is fine as an attachment, but a
+	// descriptor may only name one aspect. Metal samples the depth of such a texture, so create
+	// a depth-only view for descriptors. Returns VK_NULL_HANDLE when `info` needs no such view.
+	VkImageView createSampledImageView(VkDevice device, VkImageViewCreateInfo info) {
+		constexpr VkImageAspectFlags depthStencil = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+		if ((info.subresourceRange.aspectMask & depthStencil) != depthStencil) {
+			return VK_NULL_HANDLE;
+		}
+		info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		VkImageView view = VK_NULL_HANDLE;
+		if (Indium::DynamicVK::vkCreateImageView(device, &info, nullptr, &view) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create a depth view of a depth/stencil texture");
+		}
+		return view;
+	}
+};
+
 Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers):
 	PrivateTexture(std::dynamic_pointer_cast<PrivateDevice>(original->device())),
 	_original(original),
@@ -78,12 +97,18 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	_layers(layers),
 	_swizzle(swizzle)
 {
-	auto parentLevelStart = _original->parentRelativeLevel();
+	// a view of a view starts where all of its ancestors start in the underlying image
+	size_t parentLevelStart = 0;
+	size_t parentLayerStart = 0;
+	for (std::shared_ptr<Texture> parent = _original; parent; parent = parent->parentTexture()) {
+		parentLevelStart += parent->parentRelativeLevel();
+		parentLayerStart += parent->parentRelativeSlice();
+	}
+
 	auto parentLevelEnd = parentLevelStart + _original->mipmapLevelCount() - 1;
 	auto levelStart = std::min(parentLevelStart + _levels.start, parentLevelEnd);
 	auto levelEnd = std::min(levelStart + _levels.length - 1, parentLevelEnd);
 
-	auto parentLayerStart = _original->parentRelativeSlice();
 	auto parentLayerEnd = parentLayerStart + _original->arrayLength() - 1;
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
@@ -109,10 +134,20 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 		// TODO
 		abort();
 	}
+
+	_sampledImageView = createSampledImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), info);
 };
 
 Indium::TextureView::~TextureView() {
-	DynamicVK::vkDestroyImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), _imageView, nullptr);
+	auto device = std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device();
+	if (_sampledImageView) {
+		DynamicVK::vkDestroyImageView(device, _sampledImageView, nullptr);
+	}
+	DynamicVK::vkDestroyImageView(device, _imageView, nullptr);
+};
+
+VkImageView Indium::TextureView::sampledImageView() {
+	return _sampledImageView ? _sampledImageView : _imageView;
 };
 
 Indium::PixelFormat Indium::TextureView::pixelFormat() const {
@@ -215,6 +250,28 @@ void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLeve
 	throw std::runtime_error("TODO: support replaceRegion on texture views");
 };
 
+void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	throw std::runtime_error("TODO: support getBytes on texture views");
+};
+
+void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	throw std::runtime_error("TODO: support getBytes on texture views");
+};
+
+// PrivateTexture declares these to complete its vtable; the readback that has an
+// image to copy from is ConcreteTexture's, which overrides both. Without a
+// definition here the vtable slot is unresolved, so every class deriving from
+// PrivateTexture without its own override stays abstract -- which is how
+// IndiumKit::PrivateDrawable, inheriting PrivateTexture, stopped being
+// constructible and took indium_kit and its tests with it.
+void Indium::PrivateTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	throw std::runtime_error("TODO: support getBytes on a texture that owns no image");
+};
+
+void Indium::PrivateTexture::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	throw std::runtime_error("TODO: support getBytes on a texture that owns no image");
+};
+
 void Indium::TextureView::precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) {
 	return _original->precommit(cmdbuf);
 };
@@ -300,9 +357,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.extent.depth = _descriptor.depth;
 	info.mipLevels = _descriptor.mipmapLevelCount;
 	info.arrayLayers = _descriptor.arrayLength * (isCube ? 6 : 1);
-	// TODO
-	//info.samples = _descriptor.sampleCount;
-	info.samples = VK_SAMPLE_COUNT_1_BIT;
+	info.samples = sampleCountToVk(_descriptor.sampleCount);
 
 	if (_descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray) {
 		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -312,6 +367,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	bool isColor = (imageAspect & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
 	bool isDepthStencil = (imageAspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
 
+	if (_descriptor.sampleCount > 1 && (info.imageType != VK_IMAGE_TYPE_2D || info.mipLevels != 1 || _storageMode != StorageMode::Private)) {
+		throw std::runtime_error("Multisample textures require private 2D storage with one mip level");
+	}
+
 	bool canBeLinear = true;
 
 	if (
@@ -319,24 +378,54 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		isDepthStencil ||
 
 		// linear textures only support a single mip level
-		_descriptor.mipmapLevelCount > 1
+		_descriptor.mipmapLevelCount > 1 || _descriptor.sampleCount > 1
 	) {
 		canBeLinear = false;
 	}
 
 	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
-	// we don't know ahead of time how the image is going to be used, so specify everything we support
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	if (isColor) {
-		info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	} else if (isDepthStencil) {
-		info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	constexpr auto knownUsage = TextureUsage::ShaderRead | TextureUsage::ShaderWrite | TextureUsage::RenderTarget;
+	if ((static_cast<uint32_t>(descriptor.usage) & ~static_cast<uint32_t>(knownUsage)) != 0) {
+		throw std::runtime_error("Unsupported texture usage flags");
+	}
+	VkFormatProperties formatProperties {};
+	DynamicVK::vkGetPhysicalDeviceFormatProperties(_device->physicalDevice(), info.format, &formatProperties);
+	auto features = info.tiling == VK_IMAGE_TILING_LINEAR ? formatProperties.linearTilingFeatures : formatProperties.optimalTilingFeatures;
+	bool unknownUsage = descriptor.usage == TextureUsage::Unknown;
+	info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	if ((descriptor.usage & TextureUsage::ShaderRead) != TextureUsage::Unknown ||
+		(unknownUsage && (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))) {
+		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	}
+	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown) {
+		if (_descriptor.sampleCount > 1) {
+			throw std::runtime_error("Multisample shader-write textures are unsupported");
+		}
+		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	} else if (unknownUsage && _descriptor.sampleCount == 1 && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	}
+	if ((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) {
+		if (isColor && (!unknownUsage || (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))) {
+			info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		} else if (isDepthStencil && (!unknownUsage || (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+			info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		}
 	}
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO: check if this should be "concurrent" instead. i think we're good, though.
 	info.queueFamilyIndexCount = 0;
 	info.pQueueFamilyIndices = nullptr;
 	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	{
+		VkImageFormatProperties properties {};
+		auto status = DynamicVK::vkGetPhysicalDeviceImageFormatProperties(_device->physicalDevice(), info.format,
+			info.imageType, info.tiling, info.usage, info.flags, &properties);
+		if (status != VK_SUCCESS || !(properties.sampleCounts & info.samples)) {
+			throw std::runtime_error("Texture format, usage or sample count is unsupported by the device");
+		}
+	}
 
 	if (DynamicVK::vkCreateImage(_device->device(), &info, nullptr, &_image) != VK_SUCCESS) {
 		// TODO
@@ -347,27 +436,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
-	size_t targetIndex = SIZE_MAX;
-
-	for (size_t i = 0; i < _device->memoryProperties().memoryTypeCount; ++i) {
-		const auto& type = _device->memoryProperties().memoryTypes[i];
-
-		if ((reqs.memoryTypeBits & (1 << i)) == 0) {
-			continue;
-		}
-
-		if ((_storageMode == StorageMode::Managed || _storageMode == StorageMode::Shared) && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
-			continue;
-		}
-
-		if (_storageMode == StorageMode::Shared && (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0) {
-			continue;
-		}
-
-		// okay, this is good enough
-		targetIndex = i;
-		break;
-	}
+	size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
 
 	if (targetIndex == SIZE_MAX) {
 		throw std::runtime_error("No suitable memory region found for image with requested storage mode");
@@ -386,6 +455,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, 0);
 
 	// transition the image into the general layout
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
 	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -438,7 +509,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
 	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -447,6 +521,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
 
 	VkImageViewCreateInfo info2 {};
 	info2.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -463,9 +538,18 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		// TODO
 		abort();
 	}
+
+	_sampledImageView = createSampledImageView(_device->device(), info2);
+};
+
+VkImageView Indium::ConcreteTexture::sampledImageView() {
+	return _sampledImageView ? _sampledImageView : _imageView;
 };
 
 Indium::ConcreteTexture::~ConcreteTexture() {
+	if (_sampledImageView) {
+		DynamicVK::vkDestroyImageView(_device->device(), _sampledImageView, nullptr);
+	}
 	DynamicVK::vkDestroyImageView(_device->device(), _imageView, nullptr);
 	DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
 	DynamicVK::vkFreeMemory(_device->device(), _memory, nullptr);
@@ -565,6 +649,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	// FIXME: handle compressed formats
 	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
 
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
 	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
 	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -604,8 +690,8 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = bytesPerRow / bytesPerPixel;
-	copyInfo.bufferImageHeight = bytesPerImage / bytesPerRow;
+	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = mipmapLevel;
 	copyInfo.imageSubresource.baseArrayLayer = slice;
@@ -642,7 +728,10 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	submitInfo.commandBufferCount = 1;
 	submitInfo.pCommandBuffers = &cmdBuf;
 
-	DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
 	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -651,4 +740,136 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
+};
+
+void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
+	return getBytes(region, mipmapLevel, 0, bytes, bytesPerRow, 0);
+};
+
+void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	if (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared) {
+		throw std::runtime_error("Invalid usage of getBytes on non-managed and non-shared texture");
+	}
+
+	// FIXME: handle compressed formats
+	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+	if (bytesPerPixel == 0) {
+		throw std::runtime_error("Invalid usage of getBytes on a format with no known texel size");
+	}
+
+	// VkBufferImageCopy expresses the buffer's row stride in texels, so a
+	// bytesPerRow that is not a whole number of texels cannot be honoured here.
+	// Rounding it down would hand back a buffer laid out at a different stride
+	// than the caller asked for, so refuse it instead.
+	if (bytesPerRow % bytesPerPixel != 0) {
+		throw std::runtime_error("Invalid bytesPerRow for getBytes: not a whole number of texels");
+	}
+
+	if (bytesPerImage != 0 && bytesPerImage % bytesPerRow != 0) {
+		throw std::runtime_error("Invalid bytesPerImage for getBytes: not a whole number of rows");
+	}
+
+	// The read direction of replaceRegion: the image goes the other way, into a
+	// temporary host-visible buffer we then read the answer out of. replaceRegion
+	// says why a command buffer is needed here at all rather than a host write.
+	auto aspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
+
+	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
+	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
+
+	// the one-shot command pool is shared by every thread that uploads or reads back
+	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
+	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
+	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	cmdBufAllocInfo.commandPool = _device->oneshotCommandPool();
+	cmdBufAllocInfo.commandBufferCount = 1;
+
+	VkCommandBuffer cmdBuf;
+	if (DynamicVK::vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	VkCommandBufferBeginInfo cmdBufBeginInfo {};
+	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
+
+	// first, transition the image to the optimal layout for transfer sources
+	VkImageMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_NONE;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _image;
+	barrier.subresourceRange.aspectMask = aspect;
+	barrier.subresourceRange.baseMipLevel = mipmapLevel;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.baseArrayLayer = slice;
+	barrier.subresourceRange.layerCount = 1;
+
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	// now encode the copy
+	VkBufferImageCopy copyInfo {};
+	copyInfo.bufferOffset = 0;
+	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
+	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
+	copyInfo.imageSubresource.aspectMask = aspect;
+	copyInfo.imageSubresource.mipLevel = mipmapLevel;
+	copyInfo.imageSubresource.baseArrayLayer = slice;
+	copyInfo.imageSubresource.layerCount = 1;
+	copyInfo.imageOffset.x = region.origin.x;
+	copyInfo.imageOffset.y = region.origin.y;
+	copyInfo.imageOffset.z = region.origin.z;
+	copyInfo.imageExtent.width = region.size.width;
+	copyInfo.imageExtent.height = region.size.height;
+	copyInfo.imageExtent.depth = region.size.depth;
+	DynamicVK::vkCmdCopyImageToBuffer(cmdBuf, _image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmpBuf->buffer(), 1, &copyInfo);
+
+	// finally, transition the image back to the general layout
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	DynamicVK::vkEndCommandBuffer(cmdBuf);
+
+	VkFenceCreateInfo fenceCreateInfo {};
+	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+
+	VkFence theFence = VK_NULL_HANDLE;
+
+	if (DynamicVK::vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	VkSubmitInfo submitInfo {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &cmdBuf;
+
+	{
+		std::lock_guard queueLock(_device->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
+	}
+	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
+		// TODO
+		abort();
+	}
+
+	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
+
+	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
+	oneshotLock.unlock();
+
+	memcpy(bytes, tmpBuf->contents(), byteSize);
 };

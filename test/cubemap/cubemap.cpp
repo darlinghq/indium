@@ -703,41 +703,47 @@ int main(int argc, char** argv) {
 		renderer.render(frameDuration);
 #endif
 
-		while (true) {
-			if (glfwWindowShouldClose(window)) {
-				break;
-			}
-			glfwPollEvents();
+		// Bounded: nothing closes a window for a test runner, so an
+		// unbounded loop never returns and ctest hangs on it forever. Render
+		// a few frames and finish, still honouring a close request so the
+		// binary stays usable interactively.
+		constexpr int frameBudget = 10;
 
-			RotationDirection roll = RotationDirection::None;
-			RotationDirection pitch = RotationDirection::None;
-			RotationDirection yaw = RotationDirection::None;
+		for (int frame = 0; frame < frameBudget; ++frame) {
+				if (glfwWindowShouldClose(window)) {
+					break;
+				}
+				glfwPollEvents();
 
-			if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-				roll = RotationDirection::Negative;
-			} else if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-				roll = RotationDirection::Positive;
-			}
+				RotationDirection roll = RotationDirection::None;
+				RotationDirection pitch = RotationDirection::None;
+				RotationDirection yaw = RotationDirection::None;
 
-			if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-				pitch = RotationDirection::Positive;
-			} else if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-				pitch = RotationDirection::Negative;
-			}
+				if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+					roll = RotationDirection::Negative;
+				} else if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+					roll = RotationDirection::Positive;
+				}
 
-			if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-				yaw = RotationDirection::Negative;
-			} else if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-				yaw = RotationDirection::Positive;
-			}
+				if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+					pitch = RotationDirection::Positive;
+				} else if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+					pitch = RotationDirection::Negative;
+				}
 
-			if (roll != RotationDirection::None || pitch != RotationDirection::None || yaw != RotationDirection::None) {
-				renderer.rotate(frameDuration, roll, pitch, yaw);
-			}
+				if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
+					yaw = RotationDirection::Negative;
+				} else if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
+					yaw = RotationDirection::Positive;
+				}
 
-#if !SINGLE_FRAME
-			renderer.render(frameDuration);
-#endif
+				if (roll != RotationDirection::None || pitch != RotationDirection::None || yaw != RotationDirection::None) {
+					renderer.rotate(frameDuration, roll, pitch, yaw);
+				}
+
+	#if !SINGLE_FRAME
+				renderer.render(frameDuration);
+	#endif
 		}
 
 		globalRenderer = nullptr;

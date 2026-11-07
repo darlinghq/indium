@@ -1,0 +1,11 @@
+{
+	"reflection_version": 1,
+	"stage": "kernel",
+	"entry_point": "add_arrays",
+	"local_size": [1, 1, 1],
+	"bindings": [
+		{ "kind": "Buffer", "metal_index": 0, "descriptor": { "set": 0, "binding": 0 }, "member": 0, "param_index": 0, "name": "inA" },
+		{ "kind": "Buffer", "metal_index": 1, "descriptor": { "set": 0, "binding": 0 }, "member": 1, "param_index": 1, "name": "inB" },
+		{ "kind": "Buffer", "metal_index": 2, "descriptor": { "set": 0, "binding": 0 }, "member": 2, "param_index": 2, "name": "result" },
+	]
+}

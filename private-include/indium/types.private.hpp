@@ -13,6 +13,19 @@ namespace Indium {
 	class BadEnumValue: public std::exception {};
 	class UnsupportedEnumValue: public std::exception {};
 
+	static constexpr VkSampleCountFlagBits sampleCountToVk(size_t count) {
+		switch (count) {
+			case 1: return VK_SAMPLE_COUNT_1_BIT;
+			case 2: return VK_SAMPLE_COUNT_2_BIT;
+			case 4: return VK_SAMPLE_COUNT_4_BIT;
+			case 8: return VK_SAMPLE_COUNT_8_BIT;
+			case 16: return VK_SAMPLE_COUNT_16_BIT;
+			case 32: return VK_SAMPLE_COUNT_32_BIT;
+			case 64: return VK_SAMPLE_COUNT_64_BIT;
+		}
+		throw BadEnumValue();
+	}
+
 	struct TimelineSemaphore {
 		std::shared_ptr<PrivateDevice> device;
 		VkSemaphore semaphore;
@@ -242,6 +255,145 @@ namespace Indium {
 			default:
 				return 0;
 		}
+	};
+
+	// VkBufferImageCopy's rowLength and imageHeight are in texels, and Vulkan
+	// infers a 0 in either from imageExtent, i.e. reads it as "tightly packed".
+	// pixelFormatToByteCount is 0 for every format whose texel is not a known byte
+	// count: the depth formats, the stencil-only ones and all the compressed ones.
+	// Dividing by that 0 is undefined behaviour, and 0 is the answer those formats
+	// want anyway, so keep the unknown out of the division.
+	static constexpr VkDeviceSize texelsPerRow(size_t bytesPerRow, size_t bytesPerPixel) {
+		return (bytesPerPixel == 0) ? 0 : (bytesPerRow / bytesPerPixel);
+	};
+
+	static constexpr VkDeviceSize texelRowsPerImage(size_t bytesPerImage, size_t bytesPerRow, size_t bytesPerPixel) {
+		return (bytesPerPixel == 0) ? 0 : (bytesPerImage / bytesPerRow);
+	};
+
+	struct TexelBlock {
+		uint32_t width;
+		uint32_t height;
+		size_t bytes;
+	};
+
+	/**
+	 * The size of the smallest unit a buffer row of the format is made of: one texel, or for a
+	 * block-compressed or subsampled format one block. `bytes` is 0 when that is not known
+	 * (e.g. depth and stencil formats).
+	 */
+	static constexpr TexelBlock pixelFormatTexelBlock(PixelFormat pixelFormat) {
+		switch (pixelFormat) {
+			case PixelFormat::BC1_RGBA:
+			case PixelFormat::BC1_RGBA_sRGB:
+			case PixelFormat::BC4_RUnorm:
+			case PixelFormat::BC4_RSnorm:
+			case PixelFormat::EAC_R11Unorm:
+			case PixelFormat::EAC_R11Snorm:
+			case PixelFormat::ETC2_RGB8:
+			case PixelFormat::ETC2_RGB8_sRGB:
+			case PixelFormat::ETC2_RGB8A1:
+			case PixelFormat::ETC2_RGB8A1_sRGB:
+				return { 4, 4, 8 };
+			case PixelFormat::BC2_RGBA:
+			case PixelFormat::BC2_RGBA_sRGB:
+			case PixelFormat::BC3_RGBA:
+			case PixelFormat::BC3_RGBA_sRGB:
+			case PixelFormat::BC5_RGUnorm:
+			case PixelFormat::BC5_RGSnorm:
+			case PixelFormat::BC6H_RGBFloat:
+			case PixelFormat::BC6H_RGBUfloat:
+			case PixelFormat::BC7_RGBAUnorm:
+			case PixelFormat::BC7_RGBAUnorm_sRGB:
+			case PixelFormat::EAC_RG11Unorm:
+			case PixelFormat::EAC_RG11Snorm:
+			case PixelFormat::EAC_RGBA8:
+			case PixelFormat::EAC_RGBA8_sRGB:
+				return { 4, 4, 16 };
+			case PixelFormat::ASTC_4x4_sRGB:
+			case PixelFormat::ASTC_4x4_LDR:
+			case PixelFormat::ASTC_4x4_HDR:
+				return { 4, 4, 16 };
+			case PixelFormat::ASTC_5x4_sRGB:
+			case PixelFormat::ASTC_5x4_LDR:
+			case PixelFormat::ASTC_5x4_HDR:
+				return { 5, 4, 16 };
+			case PixelFormat::ASTC_5x5_sRGB:
+			case PixelFormat::ASTC_5x5_LDR:
+			case PixelFormat::ASTC_5x5_HDR:
+				return { 5, 5, 16 };
+			case PixelFormat::ASTC_6x5_sRGB:
+			case PixelFormat::ASTC_6x5_LDR:
+			case PixelFormat::ASTC_6x5_HDR:
+				return { 6, 5, 16 };
+			case PixelFormat::ASTC_6x6_sRGB:
+			case PixelFormat::ASTC_6x6_LDR:
+			case PixelFormat::ASTC_6x6_HDR:
+				return { 6, 6, 16 };
+			case PixelFormat::ASTC_8x5_sRGB:
+			case PixelFormat::ASTC_8x5_LDR:
+			case PixelFormat::ASTC_8x5_HDR:
+				return { 8, 5, 16 };
+			case PixelFormat::ASTC_8x6_sRGB:
+			case PixelFormat::ASTC_8x6_LDR:
+			case PixelFormat::ASTC_8x6_HDR:
+				return { 8, 6, 16 };
+			case PixelFormat::ASTC_8x8_sRGB:
+			case PixelFormat::ASTC_8x8_LDR:
+			case PixelFormat::ASTC_8x8_HDR:
+				return { 8, 8, 16 };
+			case PixelFormat::ASTC_10x5_sRGB:
+			case PixelFormat::ASTC_10x5_LDR:
+			case PixelFormat::ASTC_10x5_HDR:
+				return { 10, 5, 16 };
+			case PixelFormat::ASTC_10x6_sRGB:
+			case PixelFormat::ASTC_10x6_LDR:
+			case PixelFormat::ASTC_10x6_HDR:
+				return { 10, 6, 16 };
+			case PixelFormat::ASTC_10x8_sRGB:
+			case PixelFormat::ASTC_10x8_LDR:
+			case PixelFormat::ASTC_10x8_HDR:
+				return { 10, 8, 16 };
+			case PixelFormat::ASTC_10x10_sRGB:
+			case PixelFormat::ASTC_10x10_LDR:
+			case PixelFormat::ASTC_10x10_HDR:
+				return { 10, 10, 16 };
+			case PixelFormat::ASTC_12x10_sRGB:
+			case PixelFormat::ASTC_12x10_LDR:
+			case PixelFormat::ASTC_12x10_HDR:
+				return { 12, 10, 16 };
+			case PixelFormat::ASTC_12x12_sRGB:
+			case PixelFormat::ASTC_12x12_LDR:
+			case PixelFormat::ASTC_12x12_HDR:
+				return { 12, 12, 16 };
+			case PixelFormat::GBGR422:
+			case PixelFormat::BGRG422:
+				return { 2, 1, 4 };
+			default:
+				return { 1, 1, pixelFormatToByteCount(pixelFormat) };
+		}
+	};
+
+	struct BufferTexelPitch {
+		uint32_t rowLength;
+		uint32_t imageHeight;
+	};
+
+	/**
+	 * Converts the byte pitches Metal takes for the buffer side of a buffer/texture copy (bytes
+	 * from one row of texels, or of blocks, to the next, and from one image to the next) into
+	 * the texel pitches VkBufferImageCopy takes. 0 stays 0, which Vulkan reads as tightly
+	 * packed, and so does a format whose block size is unknown.
+	 */
+	static constexpr BufferTexelPitch bufferTexelPitch(PixelFormat pixelFormat, size_t bytesPerRow, size_t bytesPerImage) {
+		auto block = pixelFormatTexelBlock(pixelFormat);
+		if (block.bytes == 0 || bytesPerRow == 0) {
+			return { 0, 0 };
+		}
+		return {
+			static_cast<uint32_t>(bytesPerRow / block.bytes * block.width),
+			static_cast<uint32_t>(bytesPerImage / bytesPerRow * block.height),
+		};
 	};
 
 	static constexpr bool pixelFormatIsCompressed(PixelFormat pixelFormat) {
@@ -528,7 +680,7 @@ namespace Indium {
 			case StoreAction::DontCare:                   return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::Store:                      return VK_ATTACHMENT_STORE_OP_STORE;
 			case StoreAction::MultisampleResolve:         return VK_ATTACHMENT_STORE_OP_DONT_CARE;
-			case StoreAction::StoreAndMultisampleResolve: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+			case StoreAction::StoreAndMultisampleResolve: return VK_ATTACHMENT_STORE_OP_STORE;
 			case StoreAction::Unknown:                    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::CustomSampleDepthStore:     return VK_ATTACHMENT_STORE_OP_DONT_CARE;
 			case StoreAction::Default:                    return isColorAttachment ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -734,6 +886,8 @@ namespace Indium {
 
 	static constexpr VkShaderStageFlags functionTypeToVkShaderStageFlags(FunctionType functionType) {
 		switch (functionType) {
+			case FunctionType::Invalid:      throw BadEnumValue();
+
 			case FunctionType::Vertex:       return VK_SHADER_STAGE_VERTEX_BIT;
 			case FunctionType::Fragment:     return VK_SHADER_STAGE_FRAGMENT_BIT;
 			case FunctionType::Kernel:       return VK_SHADER_STAGE_COMPUTE_BIT;

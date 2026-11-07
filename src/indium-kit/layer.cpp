@@ -105,6 +105,7 @@ void IndiumKit::PrivateDrawable::present() {
 	info.pImageIndices = &_swapchainImageIndex;
 	info.pResults = nullptr;
 
+	std::lock_guard queueLock(privateDevice->graphicsQueueMutex());
 	if (DynamicVK::vkQueuePresentKHR(privateDevice->graphicsQueue(), &info) != VK_SUCCESS) {
 		// TODO
 		abort();

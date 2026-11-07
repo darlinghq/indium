@@ -19,6 +19,7 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	_colorAttachments = descriptor.colorAttachments;
 	_vertexDescriptor = descriptor.vertexDescriptor;
 	_primitiveTopology = descriptor.inputPrimitiveTopology;
+	_rasterSampleCount = sampleCountToVk(descriptor.rasterSampleCount);
 
 	_vertexFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.vertexFunction);
 	_fragmentFunction = std::dynamic_pointer_cast<PrivateFunction>(descriptor.fragmentFunction);
@@ -155,7 +156,7 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	VkPipelineMultisampleStateCreateInfo multisampleState {};
 	multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-	multisampleState.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisampleState.rasterizationSamples = _rasterSampleCount;
 	multisampleState.minSampleShading = 1.0f;
 
 	VkPipelineDepthStencilStateCreateInfo depthStencilState {};
@@ -172,6 +173,10 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		tmp.dstAlphaBlendFactor = blendFactorToVkBlendFactor(colorInfo.destinationAlphaBlendFactor);
 		tmp.alphaBlendOp = blendOperationToVkBlendOp(colorInfo.alphaBlendOperation);
 		tmp.colorWriteMask = colorWriteMaskToVkColorComponentFlags(colorInfo.writeMask);
+		// an attachment slot without a format has nothing to write to
+		if (colorInfo.pixelFormat == PixelFormat::Invalid) {
+			tmp.colorWriteMask = 0;
+		}
 		colorBlendStates.push_back(tmp);
 	}
 	VkPipelineColorBlendStateCreateInfo colorBlendState {};

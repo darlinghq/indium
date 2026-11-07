@@ -2,6 +2,8 @@
 #include <indium/device.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
+
 Indium::SamplerState::~SamplerState() {};
 
 Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> device, const SamplerDescriptor& descriptor):
@@ -16,13 +18,37 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 	info.addressModeU = samplerAddressModeToVkSamplerAddressMode(descriptor.sAddressMode);
 	info.addressModeV = samplerAddressModeToVkSamplerAddressMode(descriptor.tAddressMode);
 	info.addressModeW = samplerAddressModeToVkSamplerAddressMode(descriptor.rAddressMode);
+	// Metal clamps the descriptor's maxAnisotropy to what the device supports,
+	// and Vulkan requires maxAnisotropy to be no greater than the device's limit
+	// whenever anisotropyEnable is set. A value past the limit is not clamped by
+	// the driver: on asahi maxAnisotropy=1024 against a limit of 16 silently
+	// falls back to isotropic filtering, which is worse than either answer.
+	auto maxAnisotropy = std::max<size_t>(1, std::min<size_t>(
+		descriptor.maxAnisotropy, _privateDevice->properties().limits.maxSamplerAnisotropy));
+
 	info.mipLodBias = 0; // not sure where to get this from
-	info.anisotropyEnable = (descriptor.maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
-	info.maxAnisotropy = descriptor.maxAnisotropy;
-	info.compareEnable = descriptor.normalizedCoordinates ? VK_TRUE : VK_FALSE; // FIXME: this assumes that the implementation defers to whatever the shader state specifies
+	info.anisotropyEnable = (maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
+	info.maxAnisotropy = maxAnisotropy;
+	// Metal applies the compare function only to comparison sampling (sample_compare on a depth
+	// texture), which Iridium now emits as OpImageSample*Dref*; those need a comparison sampler.
+	// Never, the default, is what a sampler for ordinary reads has, and those must not get one.
+	// Vulkan does not allow comparison with unnormalized coordinates.
+	info.compareEnable = (descriptor.normalizedCoordinates && descriptor.compareFunction != CompareFunction::Never) ? VK_TRUE : VK_FALSE;
 	info.compareOp = compareFunctionToVkCompareOp(descriptor.compareFunction);
-	info.minLod = descriptor.normalizedCoordinates ? descriptor.lodMinClamp : 0;
-	info.maxLod = descriptor.normalizedCoordinates ? descriptor.lodMaxClamp : 0;
+	if (!descriptor.normalizedCoordinates) {
+		// required by Vulkan for unnormalized coordinates
+		info.minLod = 0;
+		info.maxLod = 0;
+	} else if (descriptor.mipFilter == SamplerMipFilter::NotMipmapped) {
+		// Metal samples only the base level without a mip filter. Vulkan has no such mode; clamping
+		// the LOD to [0, 0.25] reads level 0 and still selects between the min and mag filters, as
+		// the Vulkan specification suggests for this case.
+		info.minLod = 0;
+		info.maxLod = 0.25f;
+	} else {
+		info.minLod = descriptor.lodMinClamp;
+		info.maxLod = descriptor.lodMaxClamp;
+	}
 	info.borderColor = samplerBorderColorToVkBorderColor(descriptor.borderColor);
 	info.unnormalizedCoordinates = descriptor.normalizedCoordinates ? VK_FALSE : VK_TRUE;
 
