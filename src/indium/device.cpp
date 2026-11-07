@@ -460,7 +460,13 @@ void Indium::PrivateDevice::createLogicalDevice() {
 
 Indium::PrivateDevice::~PrivateDevice() {
 	if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+		// nothing was created: render passes and memory blocks only exist once the device does
 		return;
+	}
+	// every buffer and texture holds a reference to the device, so none is left
+	_memoryPool.releaseAll(_device);
+	for (const auto& [key, renderPass]: _renderPasses) {
+		DynamicVK::vkDestroyRenderPass(_device, renderPass, nullptr);
 	}
 	if (_oneshotCommandPool) {
 		DynamicVK::vkDestroyCommandPool(_device, _oneshotCommandPool, nullptr);
@@ -692,6 +698,36 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* poi
 
 size_t Indium::PrivateDevice::findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const {
 	return chooseMemoryType(memoryProperties(), memoryTypeBits, storageMode);
+};
+
+VkRenderPass Indium::PrivateDevice::acquireRenderPass(const VkRenderPassCreateInfo& info, bool& deviceOwned) {
+	auto key = renderPassKey(info);
+	std::unique_lock lock(_renderPassMutex, std::defer_lock);
+
+	if (key) {
+		lock.lock();
+		auto found = _renderPasses.find(*key);
+		if (found != _renderPasses.end()) {
+			deviceOwned = true;
+			return found->second;
+		}
+		// bound the cache; further distinct descriptions get render passes of their own
+		if (_renderPasses.size() >= maxCachedRenderPasses) {
+			key.reset();
+			lock.unlock();
+		}
+	}
+
+	VkRenderPass renderPass = VK_NULL_HANDLE;
+	if (DynamicVK::vkCreateRenderPass(device(), &info, nullptr, &renderPass) != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create a render pass");
+	}
+
+	deviceOwned = key.has_value();
+	if (key) {
+		_renderPasses.emplace(*key, renderPass);
+	}
+	return renderPass;
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::fallbackBuffer() {

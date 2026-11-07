@@ -231,10 +231,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassInfo.dependencyCount = dependencies.size();
 	renderPassInfo.pDependencies = dependencies.data();
 
-	if (DynamicVK::vkCreateRenderPass(vkDevice, &renderPassInfo, nullptr, &_renderPass) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
+	_renderPass = _privateDevice->acquireRenderPass(renderPassInfo, _renderPassDeviceOwned);
 
 	std::vector<VkImageView> framebufferAttachments;
 
@@ -300,7 +297,7 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	if (_framebuffer) {
 		DynamicVK::vkDestroyFramebuffer(_privateDevice->device(), _framebuffer, nullptr);
 	}
-	if (_renderPass) {
+	if (_renderPass && !_renderPassDeviceOwned) {
 		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
 	}
 };
@@ -403,7 +400,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
+	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers, _scratch);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
@@ -493,7 +490,7 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 
 void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size_t length, size_t index) {
 	auto cmdBuf = _privateCommandBuffer.lock();
-	_functionResources[0].setBytes(cmdBuf->device(), bytes, length, index);
+	_functionResources[0].setBytes(cmdBuf->device(), _scratch, _keepAliveBuffers, bytes, length, index);
 };
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
@@ -548,7 +545,7 @@ void Indium::PrivateRenderCommandEncoder::setVertexTextures(const std::vector<st
 
 void Indium::PrivateRenderCommandEncoder::setFragmentBytes(const void* bytes, size_t length, size_t index) {
 	auto cmdBuf = _privateCommandBuffer.lock();
-	_functionResources[1].setBytes(cmdBuf->device(), bytes, length, index);
+	_functionResources[1].setBytes(cmdBuf->device(), _scratch, _keepAliveBuffers, bytes, length, index);
 };
 
 void Indium::PrivateRenderCommandEncoder::setFragmentBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {

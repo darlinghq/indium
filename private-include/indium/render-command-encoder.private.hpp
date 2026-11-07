@@ -28,12 +28,15 @@ namespace Indium {
 		std::shared_ptr<PrivateRenderPipelineState> _privatePSO;
 		VkFramebuffer _framebuffer = VK_NULL_HANDLE;
 		VkRenderPass _renderPass = VK_NULL_HANDLE;
+		// whether _renderPass is shared through the device's render pass cache
+		bool _renderPassDeviceOwned = false;
 		DescriptorPoolChain _descriptorPools;
 
 		std::vector<FunctionResources> _savedFunctionResources;
 
 		std::array<FunctionResources, 2> _functionResources {};
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
+		ScratchArena _scratch;
 
 		void updateBindings();
 

@@ -236,7 +236,7 @@ static bool testManyDispatches(Indium::Device* device) {
 	};
 
 	Indium::DynamicVK::vkAllocateDescriptorSets.resolve();
-	originalAllocateDescriptorSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(Indium::DynamicVK::vkAllocateDescriptorSets.pointer.load());
+	originalAllocateDescriptorSets = reinterpret_cast<PFN_vkAllocateDescriptorSets>(Indium::DynamicVK::vkAllocateDescriptorSets.pointer);
 	Indium::DynamicVK::vkAllocateDescriptorSets.pointer = reinterpret_cast<void*>(allocateWithinMaxSets);
 	bool many = encodeAndCheck(300);
 	Indium::DynamicVK::vkAllocateDescriptorSets.pointer = reinterpret_cast<void*>(originalAllocateDescriptorSets);

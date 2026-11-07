@@ -7,6 +7,7 @@
 #include <optional>
 #include <array>
 #include <forward_list>
+#include <cstring>
 
 #include <indium/command-encoder.hpp>
 #include <indium/device.private.hpp>
@@ -29,20 +30,58 @@ namespace Indium {
 		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 	}
 
+	/**
+	 * Bump allocation of small, short-lived GPU data (setBytes constants and the per-draw buffer
+	 * address tables) from shared 256 KiB chunks, instead of one buffer, and so one device memory
+	 * allocation, per draw or dispatch. Every chunk goes into the encoder's keep-alive list, so it
+	 * lives until the command buffer has completed; allocations never overlap, so data written for
+	 * one draw is never overwritten by a later one.
+	 */
+	struct ScratchArena {
+		static constexpr size_t chunkSize = 256 * 1024;
+		// at least Vulkan's largest permitted minUniformBufferOffsetAlignment, so an allocation can
+		// be the offset of a uniform buffer descriptor
+		static constexpr size_t alignment = 256;
+		// larger requests get a buffer of their own
+		static constexpr size_t maxScratchAllocation = chunkSize / 8;
+
+		std::shared_ptr<Buffer> chunk;
+		size_t used = 0;
+
+		std::pair<std::shared_ptr<Buffer>, size_t> allocate(const std::shared_ptr<Device>& device, const void* bytes, size_t length, std::vector<std::shared_ptr<Buffer>>& keepAlive) {
+			if (length > maxScratchAllocation) {
+				auto buffer = device->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
+				keepAlive.push_back(buffer);
+				return { buffer, 0 };
+			}
+
+			size_t offset = (used + alignment - 1) & ~(alignment - 1);
+			if (!chunk || offset + length > chunkSize) {
+				chunk = device->newBuffer(chunkSize, ResourceOptions::StorageModeShared);
+				keepAlive.push_back(chunk);
+				offset = 0;
+			}
+
+			std::memcpy(static_cast<char*>(chunk->contents()) + offset, bytes, length);
+			used = offset + length;
+			return { chunk, offset };
+		};
+	};
+
 	struct FunctionResources {
 		std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
 		std::vector<std::shared_ptr<Texture>> textures;
 		std::vector<std::shared_ptr<SamplerState>> samplers;
 
-		void setBytes(std::shared_ptr<Device> device, const void* bytes, size_t length, size_t index) {
-			// TODO: we can make this "Private" instead
-			auto buf = device->newBuffer(bytes, length, ResourceOptions::StorageModeShared);
+		void setBytes(const std::shared_ptr<Device>& device, ScratchArena& scratch, std::vector<std::shared_ptr<Buffer>>& keepAlive, const void* bytes, size_t length, size_t index) {
+			// Metal copies the bytes at the time of the call
+			auto allocation = scratch.allocate(device, bytes, length, keepAlive);
 
 			if (buffers.size() <= index) {
 				buffers.resize(index + 1);
 			}
 
-			buffers[index] = std::make_pair(buf, 0);
+			buffers[index] = std::move(allocation);
 		};
 
 		void setBuffer(std::shared_ptr<Buffer> buffer, size_t offset, size_t index) {
@@ -147,7 +186,7 @@ namespace Indium {
 	};
 
 	template<size_t setCount>
-	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, DescriptorPoolChain& pools, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers) {
+	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, DescriptorPoolChain& pools, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers, ScratchArena& scratch) {
 		std::array<VkDescriptorSet, setCount> descriptorSets {};
 
 		pools.allocate(setLayouts.data(), descriptorSets.size(), descriptorSets.data());
@@ -186,16 +225,14 @@ namespace Indium {
 					addresses.push_back(privateBuf->gpuAddress() + functionResources.buffers[bindingInfo.index].second);
 				}
 
-				auto addressBuffer = privateDevice->newBuffer(addresses.data(), addresses.size() * sizeof(uint64_t), ResourceOptions::StorageModeShared);
-				auto privateAddrBuf = std::dynamic_pointer_cast<PrivateBuffer>(addressBuffer);
-
-				// we need to keep this buffer alive until the operation is completed
-				keepAliveBuffers.push_back(addressBuffer);
+				// the arena keeps the table alive until the operation is completed
+				auto table = scratch.allocate(privateDevice, addresses.data(), addresses.size() * sizeof(uint64_t), keepAliveBuffers);
+				auto privateAddrBuf = static_cast<PrivateBuffer*>(table.first.get());
 
 				auto& info = bufInfos.emplace_front();
 				info.buffer = privateAddrBuf->buffer();
-				info.offset = 0;
-				info.range = VK_WHOLE_SIZE;
+				info.offset = table.second;
+				info.range = addresses.size() * sizeof(uint64_t);
 
 				auto& descSet = writeDescSet.emplace_back();
 				descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -4,6 +4,7 @@
 
 #include <indium/texture.hpp>
 #include <indium/types.private.hpp>
+#include <indium/memory-pool.private.hpp>
 
 #include <mutex>
 #include <unordered_map>
@@ -167,6 +168,7 @@ namespace Indium {
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		VkDeviceMemory _memory;
 		StorageMode _storageMode;
+		MemoryPool::Allocation _allocation;
 
 	public:
 		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor);

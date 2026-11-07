@@ -49,23 +49,15 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 		throw std::runtime_error("No suitable memory region found for buffer with requested storage mode");
 	}
 
-	VkMemoryAllocateInfo allocateInfo {};
-	allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocateInfo.allocationSize = requirements.size;
-	allocateInfo.memoryTypeIndex = targetIndex;
-
-	VkMemoryAllocateFlagsInfo allocateFlags {};
-	allocateFlags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-	allocateFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-
-	allocateInfo.pNext = &allocateFlags;
-
-	if (DynamicVK::vkAllocateMemory(_privateDevice->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
-		// TODO
-		abort();
+	try {
+		_allocation = _privateDevice->memoryPool().allocate(_privateDevice->device(), targetIndex, requirements, MemoryPool::Kind::Buffer);
+	} catch (...) {
+		DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+		throw;
 	}
+	_memory = _allocation.memory;
 
-	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, 0);
+	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, _allocation.offset);
 };
 
 Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, const void* pointer, size_t length, ResourceOptions options):
@@ -81,12 +73,9 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 	memcpy(ptr, pointer, length);
 
 	if (_storageMode == StorageMode::Managed) {
-		VkMappedMemoryRange range {};
-		range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-		range.memory = _memory;
-		range.size = VK_WHOLE_SIZE;
-		range.offset = 0;
-		if (DynamicVK::vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &range) != VK_SUCCESS) {
+		// the memory may hold other resources too, so flush only this buffer's part of it
+		auto range = MemoryPool::flushRange(_allocation, 0, length, _privateDevice->properties().limits.nonCoherentAtomSize);
+		if (range.size != 0 && DynamicVK::vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &range) != VK_SUCCESS) {
 			// TODO
 			abort();
 		}
@@ -94,12 +83,9 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 };
 
 Indium::PrivateBuffer::~PrivateBuffer() {
-	if (_mapped) {
-		DynamicVK::vkUnmapMemory(_privateDevice->device(), _memory);
-	}
-
+	// the mapping belongs to the memory block and goes away with it
 	DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
-	DynamicVK::vkFreeMemory(_privateDevice->device(), _memory, nullptr);
+	_privateDevice->memoryPool().free(_privateDevice->device(), _allocation);
 };
 
 std::shared_ptr<Indium::Device> Indium::PrivateBuffer::device() {
@@ -116,7 +102,8 @@ void* Indium::PrivateBuffer::contents() {
 	}
 
 	if (!_mapped) {
-		if (DynamicVK::vkMapMemory(_privateDevice->device(), _memory, 0, VK_WHOLE_SIZE, 0, &_mapped) != VK_SUCCESS) {
+		_mapped = _privateDevice->memoryPool().map(_privateDevice->device(), _allocation);
+		if (!_mapped) {
 			// TODO
 			abort();
 		}
@@ -126,11 +113,11 @@ void* Indium::PrivateBuffer::contents() {
 };
 
 void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
-	VkMappedMemoryRange vulkanRange {};
-	vulkanRange.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-	vulkanRange.memory = _memory;
-	vulkanRange.size = range.length;
-	vulkanRange.offset = range.start;
+	// Vulkan only flushes whole multiples of nonCoherentAtomSize (or up to the end of the memory)
+	auto vulkanRange = MemoryPool::flushRange(_allocation, range.start, range.length, _privateDevice->properties().limits.nonCoherentAtomSize);
+	if (vulkanRange.size == 0) {
+		return;
+	}
 	if (DynamicVK::vkFlushMappedMemoryRanges(_privateDevice->device(), 1, &vulkanRange) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -138,8 +125,13 @@ void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
 };
 
 uint64_t Indium::PrivateBuffer::gpuAddress() {
+	// a buffer's device address never changes, and every draw asks for it once per bound buffer
+	if (_gpuAddress) {
+		return _gpuAddress;
+	}
 	VkBufferDeviceAddressInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	info.buffer = _buffer;
-	return DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	_gpuAddress = DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	return _gpuAddress;
 };
