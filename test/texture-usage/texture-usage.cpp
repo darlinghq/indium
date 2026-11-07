@@ -13,7 +13,7 @@ int main() {
  Indium::init(nullptr,0,false);auto device=Indium::createSystemDefaultDevice();if(!device)return 2;
  std::printf("device %s\n",device->name().c_str());
  if(!Indium::DynamicVK::vkCreateImage.resolve())return 3;
- original=reinterpret_cast<PFN_vkCreateImage>(Indium::DynamicVK::vkCreateImage.pointer.load());
+ original=reinterpret_cast<PFN_vkCreateImage>(Indium::DynamicVK::vkCreateImage.pointer);
  Indium::DynamicVK::vkCreateImage.pointer=reinterpret_cast<void*>(create);
  unsigned failures=0;
  struct Case { Indium::PixelFormat format;Indium::TextureUsage usage;VkImageUsageFlags expected;const char *name; };
