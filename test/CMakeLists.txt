@@ -17,6 +17,7 @@ add_subdirectory(encoder-barriers)
 add_subdirectory(texture-view-sync)
 add_subdirectory(encoder-interface)
 add_subdirectory(device-info)
+add_subdirectory(lazy-device)
 add_subdirectory(texture-readback)
 add_subdirectory(multisample-resolve)
 

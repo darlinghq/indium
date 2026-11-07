@@ -24,6 +24,7 @@
 #include <unordered_set>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -286,23 +287,75 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	// TODO: we should try to ensure that the same queue is used for graphics and compute
 	//       to make it to create CommandBuffers that can do either one.
 
-	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-	std::set<uint32_t> queueFamilyIndices;
-	std::vector<float> queuePriorities = { 1.0f };
-
 	if (_graphicsQueueFamilyIndex) {
-		queueFamilyIndices.insert(*_graphicsQueueFamilyIndex);
+		_queueFamilyIndices.insert(*_graphicsQueueFamilyIndex);
 	}
 
 	if (_computeQueueFamilyIndex) {
-		queueFamilyIndices.insert(*_computeQueueFamilyIndex);
+		_queueFamilyIndices.insert(*_computeQueueFamilyIndex);
 	}
 
 	if (_transferQueueFamilyIndex) {
-		queueFamilyIndices.insert(*_transferQueueFamilyIndex);
+		_queueFamilyIndices.insert(*_transferQueueFamilyIndex);
 	}
 
-	for (const auto& index: queueFamilyIndices) {
+	std::vector<VkExtensionProperties> extProps;
+	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, nullptr);
+	extProps.resize(count);
+	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
+
+	// put required extensions in _enabledExtensions here
+	auto indiumFeatures = static_cast<Feature>(0);
+
+	std::vector<std::pair<const char*, Feature>> optionalExtensions {
+		// put optional extensions here
+		{ VK_KHR_SWAPCHAIN_EXTENSION_NAME, Feature::Swapchain },
+		{ VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, Feature::ExternalMemoryFD },
+		{ VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, Feature::ExternalSemaphoreFD },
+		{ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, Feature::NonSemanticInfo },
+		{ VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, Feature::MemoryBudget },
+	};
+
+	for (const auto& prop: extProps) {
+		for (const auto& [name, feature]: optionalExtensions) {
+			if (strcmp(prop.extensionName, name) == 0) {
+				_enabledExtensions.push_back(name);
+				indiumFeatures = indiumFeatures | feature;
+			}
+		}
+	}
+
+	// Enable only nullDescriptor from VK_EXT_robustness2, not its costlier robust access features: it
+	// lets an unbound vertex buffer or texture be bound as VK_NULL_HANDLE, which reads as zero.
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) == 0;
+	})) {
+		VkPhysicalDeviceRobustness2FeaturesEXT robustness2 {};
+		robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &robustness2;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		if (robustness2.nullDescriptor) {
+			_enabledExtensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+			_nullDescriptor = true;
+		}
+	}
+
+	_features = indiumFeatures;
+};
+
+void Indium::PrivateDevice::createLogicalDevice() {
+	std::unique_lock creationLock(_logicalDeviceMutex);
+
+	if (_logicalDeviceCreated.load(std::memory_order_relaxed)) {
+		return;
+	}
+
+	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+	std::vector<float> queuePriorities = { 1.0f };
+
+	for (const auto& index: _queueFamilyIndices) {
 		VkDeviceQueueCreateInfo createInfo {};
 		createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 		createInfo.queueFamilyIndex = index;
@@ -329,53 +382,11 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 
 	DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &features);
 
-	std::vector<VkExtensionProperties> extProps;
-	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, nullptr);
-	extProps.resize(count);
-	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
-
-	std::vector<const char*> extensions {
-		// put required extensions here
-	};
-	auto indiumFeatures = static_cast<Feature>(0);
-
-	std::vector<std::pair<const char*, Feature>> optionalExtensions {
-		// put optional extensions here
-		{ VK_KHR_SWAPCHAIN_EXTENSION_NAME, Feature::Swapchain },
-		{ VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, Feature::ExternalMemoryFD },
-		{ VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, Feature::ExternalSemaphoreFD },
-		{ VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME, Feature::NonSemanticInfo },
-		{ VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, Feature::MemoryBudget },
-	};
-
-	for (const auto& prop: extProps) {
-		for (const auto& [name, feature]: optionalExtensions) {
-			if (strcmp(prop.extensionName, name) == 0) {
-				extensions.push_back(name);
-				indiumFeatures = indiumFeatures | feature;
-			}
-		}
-	}
-
-	// Enable only nullDescriptor from VK_EXT_robustness2, not its costlier robust access features: it
-	// lets an unbound vertex buffer or texture be bound as VK_NULL_HANDLE, which reads as zero.
 	VkPhysicalDeviceRobustness2FeaturesEXT robustness2 {};
-	robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
-		return strcmp(prop.extensionName, VK_EXT_ROBUSTNESS_2_EXTENSION_NAME) == 0;
-	})) {
-		VkPhysicalDeviceFeatures2 query {};
-		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-		query.pNext = &robustness2;
-		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
-		if (robustness2.nullDescriptor) {
-			robustness2.robustBufferAccess2 = VK_FALSE;
-			robustness2.robustImageAccess2 = VK_FALSE;
-			robustness2.pNext = features13.pNext;
-			features13.pNext = &robustness2;
-			extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
-			_nullDescriptor = true;
-		}
+	if (_nullDescriptor) {
+		robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+		robustness2.nullDescriptor = VK_TRUE;
+		features13.pNext = &robustness2;
 	}
 
 	VkDeviceCreateInfo deviceCreateInfo {};
@@ -383,16 +394,14 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
 	deviceCreateInfo.queueCreateInfoCount = queueCreateInfos.size();
 	deviceCreateInfo.pNext = &features; // enable all features
-	deviceCreateInfo.enabledExtensionCount = extensions.size();
-	deviceCreateInfo.ppEnabledExtensionNames = extensions.data();
+	deviceCreateInfo.enabledExtensionCount = _enabledExtensions.size();
+	deviceCreateInfo.ppEnabledExtensionNames = _enabledExtensions.data();
 	if (DynamicVK::vkCreateDevice(_physicalDevice, &deviceCreateInfo, nullptr, &_device) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
 
-	_features = indiumFeatures;
-
-	for (const auto& index: queueFamilyIndices) {
+	for (const auto& index: _queueFamilyIndices) {
 		VkQueue queue;
 		DynamicVK::vkGetDeviceQueue(_device, index, 0, &queue);
 
@@ -425,9 +434,12 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		abort();
 	}
 
-	_eventLoopSemaphores.push_back(wakeupSemaphore);
-	_eventLoopWaitValues.push_back(1);
-	_eventLoopCallbacks.push_back(nullptr);
+	{
+		std::unique_lock lock(_eventLoopMutex);
+		_eventLoopSemaphores.push_back(wakeupSemaphore);
+		_eventLoopWaitValues.push_back(1);
+		_eventLoopCallbacks.push_back(nullptr);
+	}
 
 	if (_graphicsQueueFamilyIndex || _computeQueueFamilyIndex) {
 		VkCommandPoolCreateInfo createInfo {};
@@ -439,9 +451,17 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 			abort();
 		}
 	}
+
+	_logicalDeviceCreated.store(true, std::memory_order_release);
+
+	// a poller that started before the device existed is waiting for it
+	_logicalDeviceCondition.notify_all();
 };
 
 Indium::PrivateDevice::~PrivateDevice() {
+	if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+		return;
+	}
 	if (_oneshotCommandPool) {
 		DynamicVK::vkDestroyCommandPool(_device, _oneshotCommandPool, nullptr);
 	}
@@ -627,14 +647,17 @@ uint64_t Indium::PrivateDevice::recommendedMaxWorkingSetSize() const {
 }
 
 std::shared_ptr<Indium::CommandQueue> Indium::PrivateDevice::newCommandQueue() {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateCommandQueue>(shared_from_this());
 };
 
 std::shared_ptr<Indium::RenderPipelineState> Indium::PrivateDevice::newRenderPipelineState(const RenderPipelineDescriptor& descriptor) {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateRenderPipelineState>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::newComputePipelineState(const ComputePipelineDescriptor& descriptor, PipelineOption options, std::shared_ptr<ComputePipelineReflection> reflection) {
+	ensureLogicalDevice();
 	// The reflection options only ask for argument information, which every function carries
 	// (Function::argumentInfo); they do not change the pipeline.
 	constexpr auto reflectionOptions = static_cast<size_t>(PipelineOption::ArgumentInfo | PipelineOption::BufferTypeInfo);
@@ -649,10 +672,12 @@ std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::newComputeP
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, ResourceOptions options) {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateBuffer>(shared_from_this(), length, options);
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
 };
 
@@ -678,6 +703,7 @@ std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::fallbackSampler() {
 };
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
+	ensureLogicalDevice();
 	// TODO: cache translated libraries
 	size_t translatedSize = 0;
 	Iridium::OutputInfo outputInfo;
@@ -698,6 +724,7 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 };
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage) {
+	ensureLogicalDevice();
 	// TODO: cache translated libraries
 	std::string ignored;
 
@@ -848,14 +875,17 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 };
 
 std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const TextureDescriptor& descriptor) {
+	ensureLogicalDevice();
 	return std::make_shared<ConcreteTexture>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::newSamplerState(const SamplerDescriptor& descriptor) {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateSamplerState>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::DepthStencilState> Indium::PrivateDevice::newDepthStencilState(const DepthStencilDescriptor& descriptor) {
+	ensureLogicalDevice();
 	return std::make_shared<PrivateDepthStencilState>(shared_from_this(), descriptor);
 };
 
@@ -901,6 +931,28 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	// ensure we're the only one polling, which allows us to avoid
 	// some extra logic to handle the case of multiple thread polling simultaneously
 	std::unique_lock pollingLock(_pollingMutex);
+
+	if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+		// nothing can complete before the Vulkan device exists, so wait for it to be created (by
+		// someone else: polling alone does not create it), for wakeupEventLoop() or for the timeout
+		std::unique_lock creationLock(_logicalDeviceMutex);
+		auto ready = [this]() {
+			return _logicalDeviceCreated.load(std::memory_order_acquire) || _wakeupBeforeCreation;
+		};
+		// a timeout too long to add to the current time is waited out like an infinite one
+		if (timeoutNanoseconds > static_cast<uint64_t>(std::numeric_limits<int64_t>::max() / 2)) {
+			_logicalDeviceCondition.wait(creationLock, ready);
+		} else {
+			_logicalDeviceCondition.wait_for(creationLock, std::chrono::nanoseconds(timeoutNanoseconds), ready);
+		}
+		if (_wakeupBeforeCreation) {
+			_wakeupBeforeCreation = false;
+			return;
+		}
+		if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+			return;
+		}
+	}
 
 	std::unique_lock lock(_eventLoopMutex);
 
@@ -986,6 +1038,16 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 };
 
 void Indium::PrivateDevice::wakeupEventLoop() {
+	if (!_logicalDeviceCreated.load(std::memory_order_acquire)) {
+		std::unique_lock creationLock(_logicalDeviceMutex);
+		if (!_logicalDeviceCreated.load(std::memory_order_relaxed)) {
+			// there is no wakeup semaphore yet; wake a poller waiting for the device instead
+			_wakeupBeforeCreation = true;
+			_logicalDeviceCondition.notify_all();
+			return;
+		}
+	}
+
 	std::unique_lock lock(_eventLoopMutex);
 
 	auto oldVal = _eventLoopWaitValues[0]++;
@@ -1026,7 +1088,7 @@ Indium::TimelineSemaphore Indium::PrivateDevice::getTimelineSemaphore() {
 	createInfo.pNext = &typeInfo;
 
 	VkSemaphore semaphore;
-	if (DynamicVK::vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSemaphore(device(), &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -1039,7 +1101,7 @@ Indium::TimelineSemaphore Indium::PrivateDevice::getTimelineSemaphore() {
 };
 
 void Indium::PrivateDevice::putTimelineSemaphore(const TimelineSemaphore& semaphore) {
-	DynamicVK::vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
+	DynamicVK::vkDestroySemaphore(device(), semaphore.semaphore, nullptr);
 };
 
 std::shared_ptr<Indium::TimelineSemaphore> Indium::PrivateDevice::getWrappedTimelineSemaphore() {
@@ -1067,7 +1129,7 @@ Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportabl
 	}
 
 	VkSemaphore semaphore;
-	if (DynamicVK::vkCreateSemaphore(_device, &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
+	if (DynamicVK::vkCreateSemaphore(device(), &createInfo, nullptr, &semaphore) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
@@ -1076,7 +1138,7 @@ Indium::BinarySemaphore Indium::PrivateDevice::getBinarySemaphore(bool exportabl
 };
 
 void Indium::PrivateDevice::putBinarySemaphore(const BinarySemaphore& semaphore) {
-	DynamicVK::vkDestroySemaphore(_device, semaphore.semaphore, nullptr);
+	DynamicVK::vkDestroySemaphore(device(), semaphore.semaphore, nullptr);
 };
 
 std::shared_ptr<Indium::BinarySemaphore> Indium::PrivateDevice::getWrappedBinarySemaphore(bool exportable) {
