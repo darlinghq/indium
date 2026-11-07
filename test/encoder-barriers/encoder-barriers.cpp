@@ -59,7 +59,7 @@ int main() {
 			}
 		});
 
-		original = reinterpret_cast<PFN_vkCmdPipelineBarrier>(Indium::DynamicVK::vkCmdPipelineBarrier.pointer.load());
+		original = reinterpret_cast<PFN_vkCmdPipelineBarrier>(Indium::DynamicVK::vkCmdPipelineBarrier.pointer);
 		Indium::DynamicVK::vkCmdPipelineBarrier.pointer = reinterpret_cast<void*>(recordBarrier);
 
 		auto queue = device->newCommandQueue();
