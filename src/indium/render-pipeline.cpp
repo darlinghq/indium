@@ -3,6 +3,7 @@
 #include <indium/library.private.hpp>
 #include <indium/types.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/vertex-plan.private.hpp>
 
 #include <stdexcept>
 
@@ -87,49 +88,44 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
 	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
 
+	_vertexInputBindings.clear();
+	_vertexInputFallbackSafe.clear();
+
 	if (_vertexDescriptor) {
-		const auto& desc = *_vertexDescriptor;
+		// the locations the vertex function reads; a function that lists none (reflection from a
+		// producer that does not report inputs) keeps every described attribute
+		std::optional<std::unordered_set<size_t>> consumedLocations;
+		for (const auto& binding: _vertexFunction->functionInfo().bindings) {
+			if (binding.type == BindingType::VertexInput) {
+				if (!consumedLocations) {
+					consumedLocations.emplace();
+				}
+				consumedLocations->insert(binding.index);
+			}
+		}
 
-		// used to get rid of holes between binding indices (i.e. to compact them and make them easier to bind on our side)
-		std::unordered_map<size_t, size_t> metalToVulkanBindingIndices;
-		size_t currIndex = 0;
+		auto plan = planVertexInput(*_vertexDescriptor, consumedLocations, PrivateDevice::fallbackBufferSize);
 
-		for (const auto& [index, layout]: desc.layouts) {
+		for (size_t vulkanIndex = 0; vulkanIndex < plan.bindings.size(); ++vulkanIndex) {
+			const auto& binding = plan.bindings[vulkanIndex];
+
 			VkVertexInputBindingDescription bindingDesc {};
-
-			if (layout.stepRate != 1) {
-				throw std::runtime_error("TODO: support step rates other than 1");
-			}
-			if (layout.stepFunction != VertexStepFunction::PerVertex && layout.stepFunction != VertexStepFunction::PerInstance) {
-				throw std::runtime_error("TODO: support step functions other than per-vertex and per-instance");
-			}
-
-			auto vulkanIndex = currIndex;
-			metalToVulkanBindingIndices[index] = vulkanIndex;
-			++currIndex;
-
 			bindingDesc.binding = vulkanIndex;
-			bindingDesc.stride = layout.stride;
-			bindingDesc.inputRate = (layout.stepFunction == VertexStepFunction::PerVertex) ? VK_VERTEX_INPUT_RATE_VERTEX : VK_VERTEX_INPUT_RATE_INSTANCE;
-
+			bindingDesc.stride = binding.stride;
+			bindingDesc.inputRate = binding.perInstance ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
 			vertexBindingDescs.push_back(bindingDesc);
+
+			_vertexInputBindings.push_back(binding.metalIndex);
+			_vertexInputFallbackSafe.push_back(binding.fallbackSafe);
 		}
 
-		for (const auto& [index, attr]: desc.attributes) {
+		for (const auto& attribute: plan.attributes) {
 			VkVertexInputAttributeDescription attrDesc {};
-
-			attrDesc.location = index;
-			attrDesc.binding = metalToVulkanBindingIndices[attr.bufferIndex];
-			attrDesc.format = vertexFormatToVkFormat(attr.format);
-			attrDesc.offset = attr.offset;
-
+			attrDesc.location = attribute.location;
+			attrDesc.binding = attribute.binding;
+			attrDesc.format = vertexFormatToVkFormat(attribute.format);
+			attrDesc.offset = attribute.offset;
 			vertexAttrDescs.push_back(attrDesc);
-		}
-
-		_vertexInputBindings.resize(currIndex);
-
-		for (const auto& [metal, vulkan]: metalToVulkanBindingIndices) {
-			_vertexInputBindings[vulkan] = metal;
 		}
 	}
 

@@ -51,6 +51,11 @@ namespace Indium {
 
 			INDIUM_PROPERTY_REF(DescriptorSetLayouts<2>, d, D,escriptorSetLayouts);
 
+			// the Metal buffer index of each vertex buffer binding, in binding order
 			INDIUM_PROPERTY_READONLY_REF(std::vector<size_t>, v,V,ertexInputBindings);
+
+			// for each binding: whether the device's zero-filled buffer can stand in for it when the
+			// application binds nothing (see VertexInputPlan::Binding::fallbackSafe)
+			INDIUM_PROPERTY_READONLY_REF(std::vector<bool>, v,V,ertexInputFallbackSafe);
 	};
 };
