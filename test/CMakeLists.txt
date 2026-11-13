@@ -24,6 +24,7 @@ add_subdirectory(render-pass-key)
 add_subdirectory(encoder-scratch)
 add_subdirectory(memory-pool)
 add_subdirectory(dmabuf-import)
+add_subdirectory(pixel-format-sampling)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header

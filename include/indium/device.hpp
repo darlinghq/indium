@@ -101,6 +101,12 @@ namespace Indium {
 		virtual bool supportsDepth24Stencil8PixelFormat() const = 0;
 
 		/**
+		 * Whether textures of `format` can be sampled in shaders, and, with `filtered`, sampled with
+		 * linear filtering. False for a format the device cannot create textures of.
+		 */
+		virtual bool supportsPixelFormatSampling(PixelFormat format, bool filtered) const = 0;
+
+		/**
 		 * Whether color and depth render targets with `sampleCount` samples per pixel can be created.
 		 */
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const = 0;
