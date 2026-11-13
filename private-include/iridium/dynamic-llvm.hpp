@@ -89,6 +89,9 @@ namespace Iridium {
 			_macro(LLVMGetGEPSourceElementType) \
 			_macro(LLVMGetICmpPredicate) \
 			_macro(LLVMGetFirstBasicBlock) \
+			_macro(LLVMGetFirstFunction) \
+			_macro(LLVMGetNextFunction) \
+			_macro(LLVMGetSection) \
 			_macro(LLVMGetFirstInstruction) \
 			_macro(LLVMGetFirstNamedMetadata) \
 			_macro(LLVMGetIncomingBlock) \

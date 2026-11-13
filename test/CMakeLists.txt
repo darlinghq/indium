@@ -24,6 +24,7 @@ add_subdirectory(render-pass-key)
 add_subdirectory(encoder-scratch)
 add_subdirectory(memory-pool)
 add_subdirectory(dmabuf-import)
+add_subdirectory(function-constants)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
@@ -60,6 +61,8 @@ add_iridium_check(indium-test-vector-splat vector-splat/vector-splat.cpp)
 add_test(NAME vector-splat COMMAND indium-test-vector-splat)
 add_iridium_check(indium-test-interface-locations interface-locations/interface-locations.cpp)
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
+add_iridium_check(indium-test-function-constants function-constants/function-constants.cpp)
+add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
 
 # init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
 # from a library constructor); the library the test loads claims to be LLVM 1.

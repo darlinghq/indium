@@ -74,11 +74,13 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	shaderStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
 	shaderStage.module = _vertexFunction->library()->shaderModule();
 	shaderStage.pName = vertexFunctionName.c_str();
+	shaderStage.pSpecializationInfo = _vertexFunction->specializationInfo();
 	stages.push_back(shaderStage);
 
 	shaderStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 	shaderStage.module = _fragmentFunction->library()->shaderModule();
 	shaderStage.pName = fragmentFunctionName.c_str();
+	shaderStage.pSpecializationInfo = _fragmentFunction->specializationInfo();
 	stages.push_back(shaderStage);
 
 	VkPipelineVertexInputStateCreateInfo vertexInputState {};

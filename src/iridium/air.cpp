@@ -232,6 +232,19 @@ static std::string_view llvmMDStringToStringView(LLVMValueRef llvmMDString) {
 	return std::string_view(rawStr, length);
 };
 
+// The operands of an AIR argument descriptor: index, kind, then the kind's own entries. A parameter that
+// is only present when a function constant holds is described with the wrapper `air.function_constant,
+// <predicate>` between the index and the kind; the argument is still declared, so it is described as
+// the argument it would be.
+static std::vector<LLVMValueRef> airParameterOperands(LLVMValueRef parameterOperand) {
+	std::vector<LLVMValueRef> info(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
+	DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, info.data());
+	if (info.size() >= 4 && info[1] && DynamicLLVM::LLVMIsAMDString(info[1]) && llvmMDStringToStringView(info[1]) == "air.function_constant") {
+		info.erase(info.begin() + 1, info.begin() + 3);
+	}
+	return info;
+}
+
 // Returns the operand that follows the given MDString key in an AIR argument
 // descriptor, or nullptr if the key is absent.
 static LLVMValueRef findAIMDValue(LLVMValueRef mdNode, std::string_view key) {
@@ -1211,8 +1224,7 @@ static std::vector<Iridium::StructMemberInfo> airStructMembers(LLVMValueRef node
 // The reflection information for a buffer, texture or sampler parameter; other parameters (stage
 // inputs and built-ins) have none.
 static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef parameterOperand) {
-	std::vector<LLVMValueRef> info(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-	DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, info.data());
+	auto info = airParameterOperands(parameterOperand);
 	if (info.size() < 2 || !DynamicLLVM::LLVMIsAMDString(info[1])) {
 		return std::nullopt;
 	}
@@ -1259,6 +1271,11 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 
 	return argument;
 }
+
+// Specialization IDs 0 to 2 are the threadgroup size of a kernel. The constant with Metal index N has SpecId
+// firstFunctionConstantSpecializationID + N, and its "defined" flag the SpecId one range further.
+static constexpr uint32_t firstFunctionConstantSpecializationID = 3;
+static constexpr size_t maxFunctionConstantIndex = 65535;
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
@@ -1505,6 +1522,87 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	}
 
 	//
+	// function constants
+	//
+	// Each constant becomes a specialization constant, with a second boolean one telling whether the
+	// application gave it a value. The module's static initializer, which copies the constants into the
+	// globals the function reads and derives the constants built from them, is translated as a prefix of
+	// the function (see `initializerInstructions`), so reads of those globals see ordinary values.
+	std::unordered_map<LLVMValueRef, SPIRV::ResultID> functionConstantDefined;
+	// the instructions of the module's static initializer (everything before its return), which only
+	// exists when the module has function constants
+	std::vector<LLVMValueRef> initializerInstructions;
+	for (auto function = DynamicLLVM::LLVMGetFirstFunction(_module.get()); function; function = DynamicLLVM::LLVMGetNextFunction(function)) {
+		auto section = DynamicLLVM::LLVMGetSection(function);
+		if (!section || std::string_view(section) != "air.static_init") {
+			continue;
+		}
+		auto block = DynamicLLVM::LLVMGetFirstBasicBlock(function);
+		if (!block || DynamicLLVM::LLVMGetNextBasicBlock(block)) {
+			throw ImpossibleResultID("the static initializer does not consist of one basic block");
+		}
+		for (auto inst = DynamicLLVM::LLVMGetFirstInstruction(block); inst; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+			if (DynamicLLVM::LLVMGetInstructionOpcode(inst) == LLVMRet) {
+				break;
+			}
+			initializerInstructions.push_back(inst);
+		}
+	}
+	{
+		auto constantCount = DynamicLLVM::LLVMGetNamedMetadataNumOperands(_module.get(), "air.function_constants");
+		std::vector<LLVMValueRef> constantEntries(constantCount);
+		DynamicLLVM::LLVMGetNamedMetadataOperands(_module.get(), "air.function_constants", constantEntries.data());
+		for (auto entry: constantEntries) {
+			std::vector<LLVMValueRef> fields(DynamicLLVM::LLVMGetMDNodeNumOperands(entry));
+			DynamicLLVM::LLVMGetMDNodeOperands(entry, fields.data());
+			if (fields.size() < 4 || !DynamicLLVM::LLVMIsAMDString(fields[1]) || !DynamicLLVM::LLVMIsAMDString(fields[2]) || !DynamicLLVM::LLVMIsAConstantInt(fields[3])) {
+				throw ImpossibleResultID("malformed air.function_constants entry");
+			}
+
+			FunctionConstantInfo info;
+			auto typeName = llvmMDStringToStringView(fields[1]);
+			info.name = std::string(llvmMDStringToStringView(fields[2]));
+			info.index = DynamicLLVM::LLVMConstIntGetZExtValue(fields[3]);
+			if (info.index > maxFunctionConstantIndex) {
+				throw ImpossibleResultID("function constant index out of range");
+			}
+			info.specializationID = firstFunctionConstantSpecializationID + info.index;
+			info.definedSpecializationID = firstFunctionConstantSpecializationID + maxFunctionConstantIndex + 1 + info.index;
+
+			auto global = fields[0];
+			auto storageType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGlobalGetValueType(global));
+			SPIRV::ResultID value = SPIRV::ResultIDInvalid;
+			if (typeName == "bool") {
+				info.type = FunctionConstantInfo::Type::Bool;
+				value = builder.declareConstantScalar<bool>(false, info.specializationID);
+			} else if (typeName == "int" || typeName == "uint") {
+				// the 32 bits are the same whichever way they are read, and LLVM has no unsigned integers
+				info.type = typeName == "int" ? FunctionConstantInfo::Type::Int : FunctionConstantInfo::Type::UInt;
+				value = builder.declareConstantScalar<int32_t>(0, info.specializationID);
+			} else if (typeName == "float") {
+				info.type = FunctionConstantInfo::Type::Float;
+				value = builder.declareConstantScalar<float>(0, info.specializationID);
+			} else {
+				throw ImpossibleResultID("unsupported function constant type " + std::string(typeName));
+			}
+
+			auto pointerType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Private, storageType, 8));
+			auto variable = builder.addGlobalVariable(pointerType, SPIRV::StorageClass::Private);
+			builder.setResultType(variable, pointerType);
+			builder.associateExistingResultID(variable, reinterpret_cast<uintptr_t>(global));
+			functionConstantDefined[global] = builder.declareConstantScalar<bool>(false, info.definedSpecializationID);
+
+			if (info.type == FunctionConstantInfo::Type::Bool) {
+				// LLVM keeps a bool in a byte
+				value = builder.encodeOp(SPIRV::Opcode::Select, storageType, { value, builder.declareConstantScalar<int8_t>(1), builder.declareConstantScalar<int8_t>(0) });
+			}
+			builder.encodeStore(variable, value);
+
+			funcInfo.functionConstants.push_back(std::move(info));
+		}
+	}
+
+	//
 	// analyze parameters and mark special values (like the vertex ID)
 	//
 
@@ -1516,8 +1614,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		auto parameterInfo = airParameterOperands(parameterOperand);
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -1537,8 +1634,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// info[0] is the parameter index
 			// info[1] is the kind
 			// everything after that depends on the kind
-			std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-			DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+			auto parameterInfo = airParameterOperands(parameterOperand);
 
 			auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -1599,8 +1695,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		auto parameterInfo = airParameterOperands(parameterOperand);
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 		auto llparam = DynamicLLVM::LLVMGetParam(_function, i);
@@ -1774,8 +1869,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		auto parameterInfo = airParameterOperands(parameterOperand);
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -1897,8 +1991,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// info[0] is the parameter index
 		// info[1] is the kind
 		// everything after that depends on the kind
-		std::vector<LLVMValueRef> parameterInfo(DynamicLLVM::LLVMGetMDNodeNumOperands(parameterOperand));
-		DynamicLLVM::LLVMGetMDNodeOperands(parameterOperand, parameterInfo.data());
+		auto parameterInfo = airParameterOperands(parameterOperand);
 
 		auto kind = llvmMDStringToStringView(parameterInfo[1]);
 
@@ -2359,6 +2452,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	//
 	isFirst = true;
 	for (auto bb: blocks) {
+		const bool entryBlock = isFirst;
 		if (isFirst) {
 			isFirst = false;
 
@@ -2371,7 +2465,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// set once an instruction ends the SPIR-V block (OpKill); the rest of the AIR block is dead
 		bool blockTerminated = false;
 
-		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr && !blockTerminated; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+		std::vector<LLVMValueRef> blockInstructions;
+		if (entryBlock) {
+			blockInstructions = initializerInstructions;
+		}
+		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+			blockInstructions.push_back(inst);
+		}
+
+		for (LLVMValueRef inst: blockInstructions) {
+			if (blockTerminated) {
+				break;
+			}
 			auto opcode = DynamicLLVM::LLVMGetInstructionOpcode(inst);
 
 			switch (opcode) {
@@ -2587,7 +2692,21 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					if (name == "air.convert.f.v2f32.u.v2i32") {
+					if (name == "air.is_function_constant_defined") {
+						// the argument is the constant's variable, possibly through a pointer cast
+						auto constant = DynamicLLVM::LLVMGetOperand(inst, 0);
+						if (DynamicLLVM::LLVMGetValueKind(constant) == LLVMConstantExprValueKind) {
+							constant = DynamicLLVM::LLVMGetOperand(constant, 0);
+						}
+						auto defined = functionConstantDefined.find(constant);
+						if (defined == functionConstantDefined.end()) {
+							throw ImpossibleResultID("air.is_function_constant_defined of something that is not a function constant");
+						}
+						resID = defined->second;
+					} else if (name.compare(0, 41, "air.normalize_function_constant_predicate") == 0) {
+						// a predicate is any non-zero byte; the constants this function reads are 0 or 1 already
+						resID = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0));
+					} else if (name == "air.convert.f.v2f32.u.v2i32") {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
