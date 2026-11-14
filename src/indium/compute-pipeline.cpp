@@ -60,9 +60,9 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 	auto func = std::dynamic_pointer_cast<PrivateFunction>(_descriptor.computeFunction);
 	auto funcName = func->name();
 
-	std::array<uint32_t, 3> threadsPerThreadgroupData = { static_cast<uint32_t>(threadsPerThreadgroup.width), static_cast<uint32_t>(threadsPerThreadgroup.height), static_cast<uint32_t>(threadsPerThreadgroup.depth) };
-
-	std::array<VkSpecializationMapEntry, 3> mapEntries {};
+	// SpecIds 0 to 2 are the threadgroup size; the function's own function constants follow
+	std::vector<uint32_t> specializationData = { static_cast<uint32_t>(threadsPerThreadgroup.width), static_cast<uint32_t>(threadsPerThreadgroup.height), static_cast<uint32_t>(threadsPerThreadgroup.depth) };
+	std::vector<VkSpecializationMapEntry> mapEntries(3);
 
 	for (size_t i = 0; i < mapEntries.size(); ++i) {
 		mapEntries[i].constantID = i;
@@ -70,11 +70,23 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 		mapEntries[i].size = sizeof(uint32_t);
 	}
 
+	if (auto functionSpecialization = func->specializationInfo()) {
+		auto base = specializationData.size() * sizeof(uint32_t);
+		auto entries = reinterpret_cast<const VkSpecializationMapEntry*>(functionSpecialization->pMapEntries);
+		for (uint32_t i = 0; i < functionSpecialization->mapEntryCount; ++i) {
+			auto entry = entries[i];
+			entry.offset += base;
+			mapEntries.push_back(entry);
+		}
+		auto words = static_cast<const uint32_t*>(functionSpecialization->pData);
+		specializationData.insert(specializationData.end(), words, words + functionSpecialization->dataSize / sizeof(uint32_t));
+	}
+
 	VkSpecializationInfo specInfo {};
 	specInfo.mapEntryCount = mapEntries.size();
 	specInfo.pMapEntries = mapEntries.data();
-	specInfo.dataSize = threadsPerThreadgroupData.size() * sizeof(*threadsPerThreadgroupData.data());
-	specInfo.pData = threadsPerThreadgroupData.data();
+	specInfo.dataSize = specializationData.size() * sizeof(uint32_t);
+	specInfo.pData = specializationData.data();
 
 	VkComputePipelineCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;

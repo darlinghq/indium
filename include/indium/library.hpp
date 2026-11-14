@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -159,6 +160,64 @@ namespace Indium {
 	};
 
 	/**
+	 * The scalar types a function constant can have. Each is passed to the pipeline as 32 bits.
+	 */
+	enum class FunctionConstantType: uint8_t {
+		Bool = 0,
+		Int = 1,
+		UInt = 2,
+		Float = 3,
+	};
+
+	/**
+	 * A function constant ([[function_constant(n)]]) of a function, as the module declares it.
+	 * The module declares two specialization constants for it, and indium sets them when a pipeline
+	 * is created from a function made with values.
+	 */
+	struct FunctionConstantInfo {
+		std::string name;
+		FunctionConstantType type = FunctionConstantType::Int;
+
+		/** The Metal function constant index. */
+		size_t index = 0;
+
+		/**
+		 * The SpecId of the constant's value: a 32-bit scalar of `type` (a VkBool32 for Bool).
+		 */
+		uint32_t specializationID = 0;
+
+		/**
+		 * The SpecId of a VkBool32 that must be true for the module to treat the constant as defined
+		 * (is_function_constant_defined); indium sets it for every constant that was given a value.
+		 */
+		uint32_t definedSpecializationID = 0;
+	};
+
+	/**
+	 * Values for the function constants of a function, by index or by name.
+	 */
+	class FunctionConstantValues {
+	public:
+		struct Value {
+			FunctionConstantType type = FunctionConstantType::Int;
+
+			/** The value's 32 bits: 0 or 1 for Bool, the bit pattern of an int32, uint32 or float. */
+			uint32_t bits = 0;
+		};
+
+		void setValue(size_t index, FunctionConstantType type, uint32_t bits) { _byIndex[index] = Value { type, bits }; }
+		void setValue(const std::string& name, FunctionConstantType type, uint32_t bits) { _byName[name] = Value { type, bits }; }
+		void reset() { _byIndex.clear(); _byName.clear(); }
+
+		const std::map<size_t, Value>& byIndex() const { return _byIndex; }
+		const std::map<std::string, Value>& byName() const { return _byName; }
+
+	private:
+		std::map<size_t, Value> _byIndex;
+		std::map<std::string, Value> _byName;
+	};
+
+	/**
 	 * What a producer knows about one function of a module it has already
 	 * compiled.
 	 */
@@ -183,6 +242,12 @@ namespace Indium {
 		 * `index` of `SIZE_MAX` and a `type` of Sampler refer into this list.
 		 */
 		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
+
+		/**
+		 * The function constants the module declares for this function. Their SpecIds must be distinct
+		 * and, for a kernel, not 0 to 2, which carry its threadgroup size.
+		 */
+		std::vector<FunctionConstantInfo> functionConstants;
 	};
 
 	/**
@@ -217,6 +282,9 @@ namespace Indium {
 		// the buffer, texture and sampler arguments the function declares, for pipeline reflection
 		virtual const std::vector<ArgumentInfo>& argumentInfo() const = 0;
 
+		/** The function constants the function declares, in no particular order. */
+		virtual const std::vector<FunctionConstantInfo>& functionConstants() const = 0;
+
 		INDIUM_PROPERTY_READONLY(std::string, n, N,ame);
 	};
 
@@ -225,6 +293,18 @@ namespace Indium {
 		virtual ~Library() = 0;
 
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) = 0;
+
+		/**
+		 * A function specialized with `values`: pipelines made from it run the shader with those function
+		 * constants. A constant without a value is undefined, which a shader may test for.
+		 *
+		 * Values for constants the function does not declare are ignored, so one set of values can serve
+		 * several functions.
+		 *
+		 * @returns nullptr if the library has no such function, or, with `errorMessage` set, if a value
+		 *          has another type than the constant it names.
+		 */
+		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) = 0;
 
 		virtual std::shared_ptr<Device> device() = 0;
 	};

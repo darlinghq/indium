@@ -25,6 +25,7 @@ namespace Indium {
 		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
 		std::vector<ArgumentInfo> arguments;
+		std::vector<FunctionConstantInfo> functionConstants;
 	};
 
 	class PrivateFunction: public Function {
@@ -34,11 +35,31 @@ namespace Indium {
 		virtual std::shared_ptr<Device> device() override;
 		virtual FunctionType functionType() const override;
 		virtual const std::vector<ArgumentInfo>& argumentInfo() const override;
+		virtual const std::vector<FunctionConstantInfo>& functionConstants() const override;
+
+		/**
+		 * Gives the function the values of its function constants. Every declared constant gets its
+		 * value (zero when it was given none) and its defined flag.
+		 *
+		 * @returns false, with `errorMessage` set, if a value names no constant or has the wrong type.
+		 */
+		bool specialize(const FunctionConstantValues& values, std::string& errorMessage);
+
+		/**
+		 * The specialization constants to create a pipeline stage with, or nullptr when the function
+		 * declares none. Valid for the lifetime of the function.
+		 */
+		const VkSpecializationInfo* specializationInfo() const;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
 		INDIUM_PROPERTY_OBJECT(PrivateLibrary, l, L,ibrary);
 		INDIUM_PROPERTY_READONLY(const FunctionInfo&, f, F,unctionInfo);
+
+	private:
+		std::vector<VkSpecializationMapEntry> _specializationEntries;
+		std::vector<uint32_t> _specializationData;
+		VkSpecializationInfo _specializationInfo {};
 	};
 
 	class PrivateLibrary: public Library, public std::enable_shared_from_this<PrivateLibrary> {
@@ -57,6 +78,7 @@ namespace Indium {
 		~PrivateLibrary();
 
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) override;
+		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Device> device() override;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);

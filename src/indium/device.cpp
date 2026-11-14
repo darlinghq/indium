@@ -119,6 +119,16 @@ namespace {
 			for (const auto& argument: info.arguments) {
 				functionInfo.arguments.push_back(argumentInfoFromIridium(argument));
 			}
+
+			for (const auto& constant: info.functionConstants) {
+				Indium::FunctionConstantInfo converted;
+				converted.name = constant.name;
+				converted.type = static_cast<Indium::FunctionConstantType>(constant.type);
+				converted.index = constant.index;
+				converted.specializationID = constant.specializationID;
+				converted.definedSpecializationID = constant.definedSpecializationID;
+				functionInfo.functionConstants.push_back(std::move(converted));
+			}
 		}
 
 		return functionInfos;
@@ -907,6 +917,29 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 		}
 
 		functionInfo.embeddedSamplers = functionReflection.embeddedSamplers;
+
+		{
+			std::unordered_set<size_t> indices;
+			std::unordered_set<std::string> names;
+			std::unordered_set<uint32_t> specializationIDs;
+			for (const auto& constant: functionReflection.functionConstants) {
+				if (static_cast<size_t>(constant.type) > static_cast<size_t>(FunctionConstantType::Float)) {
+					return fail("function '" + name + "' has a function constant of an unknown type");
+				}
+				if (!indices.insert(constant.index).second || !names.insert(constant.name).second) {
+					return fail("function '" + name + "' has two function constants with index " + std::to_string(constant.index) + " or name '" + constant.name + "'");
+				}
+				for (auto id: { constant.specializationID, constant.definedSpecializationID }) {
+					if (!specializationIDs.insert(id).second) {
+						return fail("function '" + name + "' uses specialization ID " + std::to_string(id) + " for two function constants");
+					}
+					if (functionReflection.functionType == FunctionType::Kernel && id < 3) {
+						return fail("function '" + name + "' uses specialization ID " + std::to_string(id) + ", which carries the threadgroup size, for a function constant");
+					}
+				}
+			}
+			functionInfo.functionConstants = functionReflection.functionConstants;
+		}
 
 		// The translation in library.cpp turns an unrecognised enum value into a
 		// sampler state that works but is not the one that was asked for, so

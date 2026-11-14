@@ -24,6 +24,7 @@ add_subdirectory(render-pass-key)
 add_subdirectory(encoder-scratch)
 add_subdirectory(memory-pool)
 add_subdirectory(dmabuf-import)
+add_subdirectory(function-constants)
 add_subdirectory(pixel-format-sampling)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
@@ -61,6 +62,8 @@ add_iridium_check(indium-test-vector-splat vector-splat/vector-splat.cpp)
 add_test(NAME vector-splat COMMAND indium-test-vector-splat)
 add_iridium_check(indium-test-interface-locations interface-locations/interface-locations.cpp)
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
+add_iridium_check(indium-test-function-constants function-constants/function-constants.cpp)
+add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
 add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
 add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 

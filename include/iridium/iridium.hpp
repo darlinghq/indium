@@ -111,8 +111,29 @@ namespace Iridium {
 		std::vector<StructMemberInfo> members;
 	};
 
+	/**
+	 * A function constant ([[function_constant(n)]]) of a function, which the translated module exposes
+	 * as a SPIR-V specialization constant.
+	 */
+	struct FunctionConstantInfo {
+		enum class Type { Bool, Int, UInt, Float };
+
+		std::string name;
+		Type type = Type::Int;
+
+		/** The Metal function constant index. */
+		size_t index = 0;
+
+		/** The SpecId of the constant's value (a 32-bit VkBool32, int32, uint32 or float32). */
+		uint32_t specializationID = 0;
+
+		/** The SpecId of a VkBool32 that is true when the application provided a value. */
+		uint32_t definedSpecializationID = 0;
+	};
+
 	struct FunctionInfo {
 		FunctionType type;
+		std::vector<FunctionConstantInfo> functionConstants;
 		std::vector<BindingInfo> bindings;
 		std::vector<EmbeddedSampler> embeddedSamplers;
 		std::vector<ArgumentInfo> arguments;
