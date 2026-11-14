@@ -46,6 +46,7 @@ namespace {
 		switch (argument.type) {
 			case Iridium::BindingType::Texture: result.kind = Indium::ArgumentKind::Texture; break;
 			case Iridium::BindingType::Sampler: result.kind = Indium::ArgumentKind::Sampler; break;
+			case Iridium::BindingType::VertexInput: result.kind = Indium::ArgumentKind::VertexInput; break;
 			default: result.kind = Indium::ArgumentKind::Buffer; break;
 		}
 		result.index = argument.index;

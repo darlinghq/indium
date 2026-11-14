@@ -60,6 +60,8 @@ add_iridium_check(indium-test-vector-splat vector-splat/vector-splat.cpp)
 add_test(NAME vector-splat COMMAND indium-test-vector-splat)
 add_iridium_check(indium-test-interface-locations interface-locations/interface-locations.cpp)
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
+add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
+add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 
 # init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
 # from a library constructor); the library the test loads claims to be LLVM 1.
