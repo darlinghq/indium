@@ -1221,8 +1221,8 @@ static std::vector<Iridium::StructMemberInfo> airStructMembers(LLVMValueRef node
 	return members;
 }
 
-// The reflection information for a buffer, texture or sampler parameter; other parameters (stage
-// inputs and built-ins) have none.
+// The reflection information for a buffer, texture, sampler or vertex input parameter; other parameters
+// (fragment stage inputs and built-ins) have none.
 static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef parameterOperand) {
 	auto info = airParameterOperands(parameterOperand);
 	if (info.size() < 2 || !DynamicLLVM::LLVMIsAMDString(info[1])) {
@@ -1237,6 +1237,8 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 		argument.type = Iridium::BindingType::Texture;
 	} else if (kind == "air.sampler") {
 		argument.type = Iridium::BindingType::Sampler;
+	} else if (kind == "air.vertex_input") {
+		argument.type = Iridium::BindingType::VertexInput;
 	} else {
 		return std::nullopt;
 	}
@@ -1248,6 +1250,7 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 		return DynamicLLVM::LLVMIsAMDString(value) ? std::string(llvmMDStringToStringView(value)) : std::string();
 	};
 
+	bool hasLocationIndex = false;
 	for (size_t i = 2; i + 1 < info.size(); ++i) {
 		if (!info[i] || !DynamicLLVM::LLVMIsAMDString(info[i])) {
 			continue;
@@ -1256,6 +1259,7 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 		auto value = info[i + 1];
 		if (key == "air.location_index") {
 			argument.index = integer(value);
+			hasLocationIndex = true;
 		} else if (key == "air.arg_name") {
 			argument.name = string(value);
 		} else if (key == "air.arg_type_name") {
@@ -1267,6 +1271,11 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 		} else if (key == "air.struct_type_info" && value && !DynamicLLVM::LLVMIsAMDString(value)) {
 			argument.members = airStructMembers(value);
 		}
+	}
+
+	// A vertex attribute is identified by its location; there is no other index to fall back on.
+	if (argument.type == Iridium::BindingType::VertexInput && !hasLocationIndex) {
+		return std::nullopt;
 	}
 
 	return argument;
@@ -1729,8 +1738,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 
 			if (infoIdx >= parameterInfo.size()) {
-				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				// a vertex attribute is identified by its location, there is nothing to fall back on
+				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
 			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
@@ -1818,8 +1827,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 
 			if (infoIdx >= parameterInfo.size()) {
-				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				// a vertex attribute is identified by its location, there is nothing to fall back on
+				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
 			uint32_t locationIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);

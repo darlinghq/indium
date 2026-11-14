@@ -29,12 +29,15 @@ namespace Indium {
 		Buffer,
 		Texture,
 		Sampler,
+		/** A vertex function's per-vertex input (a [[attribute(n)]] stage-in member); `index` is the attribute index. */
+		VertexInput,
 	};
 
 	/**
-	 * A buffer, texture or sampler argument of a function, as the shader declares it. `index` is the
-	 * Metal argument table index; `size` and `alignment` describe a buffer's pointee type and are zero
-	 * for textures and samplers.
+	 * A buffer, texture, sampler or vertex input argument of a function, as the shader declares it. For
+	 * buffers, textures and samplers `index` is the Metal argument table index; for a vertex input it is
+	 * the attribute index. `size` and `alignment` describe a buffer's pointee type and are zero for the
+	 * other kinds.
 	 */
 	struct ArgumentInfo {
 		ArgumentKind kind = ArgumentKind::Buffer;

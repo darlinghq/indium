@@ -46,6 +46,7 @@ namespace {
 		switch (argument.type) {
 			case Iridium::BindingType::Texture: result.kind = Indium::ArgumentKind::Texture; break;
 			case Iridium::BindingType::Sampler: result.kind = Indium::ArgumentKind::Sampler; break;
+			case Iridium::BindingType::VertexInput: result.kind = Indium::ArgumentKind::VertexInput; break;
 			default: result.kind = Indium::ArgumentKind::Buffer; break;
 		}
 		result.index = argument.index;
@@ -533,6 +534,25 @@ bool Indium::PrivateDevice::supportsDepth24Stencil8PixelFormat() const {
 	VkFormatProperties properties {};
 	DynamicVK::vkGetPhysicalDeviceFormatProperties(_physicalDevice, VK_FORMAT_D24_UNORM_S8_UINT, &properties);
 	return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0;
+};
+
+bool Indium::PrivateDevice::supportsPixelFormatSampling(PixelFormat format, bool filtered) const {
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	try {
+		vkFormat = pixelFormatToVkFormat(format);
+	} catch (const BadEnumValue&) {
+		return false;
+	}
+	if (vkFormat == VK_FORMAT_UNDEFINED) {
+		return false;
+	}
+	VkFormatProperties properties {};
+	DynamicVK::vkGetPhysicalDeviceFormatProperties(_physicalDevice, vkFormat, &properties);
+	VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+	if (filtered) {
+		required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+	}
+	return (properties.optimalTilingFeatures & required) == required;
 };
 
 bool Indium::PrivateDevice::supportsTextureSampleCount(uint32_t sampleCount) const {

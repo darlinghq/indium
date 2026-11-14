@@ -25,6 +25,7 @@ add_subdirectory(encoder-scratch)
 add_subdirectory(memory-pool)
 add_subdirectory(dmabuf-import)
 add_subdirectory(function-constants)
+add_subdirectory(pixel-format-sampling)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
@@ -63,6 +64,14 @@ add_iridium_check(indium-test-interface-locations interface-locations/interface-
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
 add_iridium_check(indium-test-function-constants function-constants/function-constants.cpp)
 add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
+add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
+add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
+
+# The vertex input plan is plain C++ over the descriptor types: no libLLVM, Vulkan or device needed.
+add_executable(indium-test-vertex-plan vertex-plan/vertex-plan.cpp)
+target_include_directories(indium-test-vertex-plan PRIVATE "${INDIUM_ROOT}/include" "${INDIUM_ROOT}/private-include")
+set_target_properties(indium-test-vertex-plan PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME vertex-plan COMMAND indium-test-vertex-plan)
 
 # init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
 # from a library constructor); the library the test loads claims to be LLVM 1.

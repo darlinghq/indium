@@ -395,7 +395,7 @@ void Indium::PrivateRenderCommandEncoder::setBlendColor(float red, float green, 
 	DynamicVK::vkCmdSetBlendConstants(buf->commandBuffer(), tmp);
 };
 
-void Indium::PrivateRenderCommandEncoder::updateBindings() {
+bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 	// TODO: better descriptor set resource management
 
 	auto buf = _privateCommandBuffer.lock();
@@ -405,6 +405,7 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
 	const auto& vertexInputBindings = _privatePSO->vertexInputBindings();
+	const auto& fallbackSafe = _privatePSO->vertexInputFallbackSafe();
 	if (vertexInputBindings.size() > 0) {
 		std::vector<VkBuffer> buffers;
 		std::vector<VkDeviceSize> offsets;
@@ -425,20 +426,27 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 			if (privateBuffer) {
 				buffers[vulkanIndex] = privateBuffer->buffer();
 				offsets[vulkanIndex] = offset;
-			} else {
+			} else if (_privateDevice->nullDescriptorEnabled()) {
 				// The pipeline fetches vertices from a buffer index that was never bound. A null buffer
-				// (which reads as zero) needs nullDescriptor; otherwise read the zero-filled fallback.
-				if (_privateDevice->nullDescriptorEnabled()) {
-					buffers[vulkanIndex] = VK_NULL_HANDLE;
-				} else {
-					buffers[vulkanIndex] = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->fallbackBuffer())->buffer();
-				}
+				// reads as zero at any index, so nullDescriptor makes this safe for every layout.
+				buffers[vulkanIndex] = VK_NULL_HANDLE;
 				offsets[vulkanIndex] = 0;
+			} else if (fallbackSafe[vulkanIndex]) {
+				// Without nullDescriptor the zero-filled fallback buffer stands in, which is
+				// only correct when every fetch reads the same bytes inside it.
+				buffers[vulkanIndex] = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->fallbackBuffer())->buffer();
+				offsets[vulkanIndex] = 0;
+			} else {
+				// A fetch that advances through a buffer nobody bound would read past the end of the
+				// zero buffer, which the GPU may fault on. Nothing valid can be drawn: skip the draw.
+				return false;
 			}
 		}
 
 		DynamicVK::vkCmdBindVertexBuffers(buf->commandBuffer(), 0, vertexInputBindings.size(), buffers.data(), offsets.data());
 	}
+
+	return true;
 };
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
@@ -469,9 +477,11 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
 
 	// TODO: avoid re-binding descriptors on every draw.
-	updateBindings();
+	bool drawable = updateBindings();
 
-	DynamicVK::vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
+	if (drawable) {
+		DynamicVK::vkCmdDraw(buf->commandBuffer(), vertexCount, instanceCount, vertexStart, baseInstance);
+	}
 
 	// when we emit a draw call, we save the current function resources so that they stay alive until the command buffer is done.
 	// TODO: do this more efficiently by essentially doing COW: after a draw call, we only save additional references to resources
@@ -620,15 +630,17 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
 
 	// TODO: avoid re-binding descriptors on every draw.
-	updateBindings();
+	bool drawable = updateBindings();
 
 	// we need to keep this buffer alive until we complete the render
 	_keepAliveBuffers.push_back(indexBuffer);
 
 	auto privateIndexBuffer = std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer);
 
-	DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
-	DynamicVK::vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
+	if (drawable) {
+		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
+		DynamicVK::vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
+	}
 
 	// see drawPrimitives() to know why we do this
 	_savedFunctionResources.push_back(_functionResources[0]);

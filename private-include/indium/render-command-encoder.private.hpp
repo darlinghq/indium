@@ -38,7 +38,13 @@ namespace Indium {
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
 		ScratchArena _scratch;
 
-		void updateBindings();
+		/**
+		 * Binds the descriptor sets and vertex buffers for the next draw.
+		 *
+		 * @returns false when the draw cannot be encoded: a vertex buffer the pipeline reads is not bound
+		 *          and the device has no valid stand-in for it.
+		 */
+		bool updateBindings();
 
 	public:
 		PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor);
