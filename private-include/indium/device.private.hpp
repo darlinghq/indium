@@ -116,6 +116,7 @@ namespace Indium {
 		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
 		virtual bool supportsPixelFormatSampling(PixelFormat format, bool filtered) const override;
+		virtual size_t minimumLinearTextureAlignment(PixelFormat format) const override;
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;

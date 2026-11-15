@@ -5,6 +5,7 @@
 #include <indium/texture.hpp>
 #include <indium/types.private.hpp>
 #include <indium/memory-pool.private.hpp>
+#include <indium/buffer.private.hpp>
 
 #include <mutex>
 #include <unordered_map>
@@ -169,6 +170,9 @@ namespace Indium {
 		VkDeviceMemory _memory = VK_NULL_HANDLE;
 		StorageMode _storageMode;
 		MemoryPool::Allocation _allocation;
+		std::shared_ptr<PrivateBuffer> _backingBuffer;
+		size_t _backingOffset = 0;
+		size_t _backingBytesPerRow = 0;
 
 	public:
 		// A linear image in a Linux DMA-BUF to use as the texture's storage.
@@ -178,9 +182,16 @@ namespace Indium {
 			uint64_t bytesPerRow;
 		};
 
-		// With `import`, the texture's storage is imported instead of allocated, and every failure
-		// to create it throws std::runtime_error.
-		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr);
+		// The rows of a buffer as the pixels of a texture (see Buffer::newTexture()).
+		struct BufferBacking {
+			std::shared_ptr<PrivateBuffer> buffer;
+			size_t offset;
+			size_t bytesPerRow;
+		};
+
+		// With `import`, the texture's storage is imported instead of allocated, and with `backing` it is the
+		// memory of a buffer; every failure to create it throws std::runtime_error.
+		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr, const BufferBacking* backing = nullptr);
 		virtual ~ConcreteTexture();
 
 	private:
@@ -206,6 +217,10 @@ namespace Indium {
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
 		virtual size_t vulkanArrayLength() const override;
+
+		virtual std::shared_ptr<Buffer> buffer() const override;
+		virtual size_t bufferOffset() const override;
+		virtual size_t bufferBytesPerRow() const override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
