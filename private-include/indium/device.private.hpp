@@ -78,6 +78,8 @@ namespace Indium {
 		std::shared_ptr<Buffer> _fallbackBuffer;
 		std::shared_ptr<SamplerState> _fallbackSampler;
 		bool _nullDescriptor = false;
+		bool _fillModeNonSolid = false;
+		bool _depthClamp = false;
 
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
@@ -170,6 +172,18 @@ namespace Indium {
 		 * image view or vertex buffer that reads as zero.
 		 */
 		bool nullDescriptorEnabled() const { return _nullDescriptor; }
+
+		/**
+		 * Whether the device can rasterize triangles as lines (Vulkan's fillModeNonSolid, which is enabled
+		 * when the device has it).
+		 */
+		bool fillModeNonSolidEnabled() const { return _fillModeNonSolid; }
+
+		/**
+		 * Whether the device can clamp fragment depth to the viewport range instead of clipping it (Vulkan's
+		 * depthClamp, which is enabled when the device has it).
+		 */
+		bool depthClampEnabled() const { return _depthClamp; }
 
 		/**
 		 * Held around every submission to and presentation on `graphicsQueue()`.

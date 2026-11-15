@@ -315,6 +315,15 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	extProps.resize(count);
 	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
 
+	// createLogicalDevice() enables every feature the device has; remember the two that a per-draw state needs
+	{
+		VkPhysicalDeviceFeatures2 supported {};
+		supported.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &supported);
+		_fillModeNonSolid = supported.features.fillModeNonSolid;
+		_depthClamp = supported.features.depthClamp;
+	}
+
 	// put required extensions in _enabledExtensions here
 	auto indiumFeatures = static_cast<Feature>(0);
 

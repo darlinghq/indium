@@ -27,6 +27,7 @@ add_subdirectory(dmabuf-import)
 add_subdirectory(function-constants)
 add_subdirectory(pixel-format-sampling)
 add_subdirectory(indirect-draw-dispatch)
+add_subdirectory(fill-mode-depth-clip)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
