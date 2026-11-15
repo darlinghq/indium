@@ -46,6 +46,12 @@ namespace Indium {
 		 */
 		bool updateBindings();
 
+		/**
+		 * Binds the pipeline of the topology class `primitiveType` belongs to and sets the topology.
+		 * A pipeline state must be set.
+		 */
+		void bindPipeline(VkCommandBuffer commandBuffer, PrimitiveType primitiveType);
+
 	public:
 		PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor);
 		~PrivateRenderCommandEncoder();
@@ -75,6 +81,9 @@ namespace Indium {
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) override;
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount) override;
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset) override;
+
+		virtual void drawPrimitives(PrimitiveType primitiveType, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) override;
+		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) override;
 
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) override;
 		virtual void setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) override;
