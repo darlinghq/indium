@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <optional>
+
 #include <indium/library.hpp>
 
 #include <vulkan/vulkan.h>
@@ -26,6 +29,8 @@ namespace Indium {
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
 		std::vector<ArgumentInfo> arguments;
 		std::vector<FunctionConstantInfo> functionConstants;
+		// see FunctionReflection::gridSizeSpecializationIDs
+		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
 	};
 
 	class PrivateFunction: public Function {

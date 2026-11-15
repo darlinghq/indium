@@ -939,6 +939,21 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				}
 			}
 			functionInfo.functionConstants = functionReflection.functionConstants;
+
+			if (functionReflection.gridSizeSpecializationIDs) {
+				if (functionReflection.functionType != FunctionType::Kernel) {
+					return fail("function '" + name + "' is not a kernel and has grid size specialization IDs");
+				}
+				for (auto id: *functionReflection.gridSizeSpecializationIDs) {
+					if (id < 3) {
+						return fail("function '" + name + "' uses specialization ID " + std::to_string(id) + ", which carries the threadgroup size, for the grid size");
+					}
+					if (!specializationIDs.insert(id).second) {
+						return fail("function '" + name + "' uses specialization ID " + std::to_string(id) + " for the grid size and for another constant");
+					}
+				}
+				functionInfo.gridSizeSpecializationIDs = functionReflection.gridSizeSpecializationIDs;
+			}
 		}
 
 		// The translation in library.cpp turns an unrecognised enum value into a

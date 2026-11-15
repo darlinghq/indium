@@ -1,5 +1,7 @@
 #include <indium/compute-pipeline.private.hpp>
 #include <indium/device.private.hpp>
+#include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <indium/dynamic-vk.hpp>
 
@@ -50,7 +52,7 @@ Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {
 	}
 };
 
-VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerThreadgroup) {
+VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerThreadgroup, const std::optional<Size>& gridSize) {
 	// TODO: optimize this by using pipeline caches.
 	//       also, we can store the most recent pipeline and, if the number of threads per threadgroup stays the same,
 	//       we can just return that instead (wrapped in a reference counting object).
@@ -68,6 +70,23 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 		mapEntries[i].constantID = i;
 		mapEntries[i].offset = i * sizeof(uint32_t);
 		mapEntries[i].size = sizeof(uint32_t);
+	}
+
+	if (gridSize) {
+		auto ids = func->functionInfo().gridSizeSpecializationIDs;
+		if (!ids) {
+			throw std::runtime_error("The function cannot skip the threads beyond a grid size");
+		}
+		const size_t dimensions[3] = { gridSize->width, gridSize->height, gridSize->depth };
+		for (size_t i = 0; i < 3; ++i) {
+			VkSpecializationMapEntry entry {};
+			entry.constantID = (*ids)[i];
+			entry.offset = specializationData.size() * sizeof(uint32_t);
+			entry.size = sizeof(uint32_t);
+			mapEntries.push_back(entry);
+			// a dimension that does not fit in 32 bits cannot exclude any thread of a Vulkan dispatch
+			specializationData.push_back(static_cast<uint32_t>(std::min<size_t>(dimensions[i], UINT32_MAX)));
+		}
 	}
 
 	if (auto functionSpecialization = func->specializationInfo()) {
@@ -103,6 +122,10 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 	}
 
 	return pipeline;
+};
+
+bool Indium::PrivateComputePipelineState::supportsPartialThreadgroups() const {
+	return functionInfo().gridSizeSpecializationIDs.has_value();
 };
 
 const Indium::FunctionInfo& Indium::PrivateComputePipelineState::functionInfo() const {

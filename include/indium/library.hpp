@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -248,6 +250,17 @@ namespace Indium {
 		 * and, for a kernel, not 0 to 2, which carry its threadgroup size.
 		 */
 		std::vector<FunctionConstantInfo> functionConstants;
+
+		/**
+		 * For a kernel only: the specialization constants, one per dimension, that hold the grid size the kernel
+		 * keeps its threads inside. A kernel that has them skips every thread whose position in the grid is
+		 * beyond them, and they default to a value that keeps every thread, so a dispatch of whole
+		 * threadgroups sets none. A dispatch of a grid that is not a multiple of the threadgroup size
+		 * (Metal's dispatchThreads:) runs whole threadgroups and sets them to the grid size; a kernel without
+		 * them cannot be dispatched that way. The ids must be distinct from each other and from the ids of the
+		 * function constants, and not 0 to 2.
+		 */
+		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
 	};
 
 	/**

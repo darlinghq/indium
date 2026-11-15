@@ -77,13 +77,20 @@ void Indium::PrivateComputeCommandEncoder::setTextures(const std::vector<std::sh
 };
 
 void Indium::PrivateComputeCommandEncoder::setThreadgroupMemoryLength(size_t length, size_t index) {
-	throw std::runtime_error("TODO");
+	// The length sizes the kernel argument in the threadgroup address space at `index`. The kernels that exist
+	// here keep their threadgroup memory in variables of their own (a threadgroup argument is not lowered by the
+	// shader compilers yet), so there is no argument to size; the length is recorded and nothing reads it.
+	_threadgroupMemoryLengths[index] = length;
 };
 
 void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) {
+	dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup, std::nullopt);
+};
+
+void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize) {
 	auto buf = _privateCommandBuffer.lock();
 
-	auto pipeline = _pso->createPipeline(threadsPerThreadgroup);
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, gridSize);
 	_savedPipelines.push_back(pipeline);
 
 	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -98,21 +105,35 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 };
 
 void Indium::PrivateComputeCommandEncoder::dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) {
-	Size threadgroupsPerGrid {
-		threadsPerGrid.width / threadsPerThreadgroup.width,
-		threadsPerGrid.height / threadsPerThreadgroup.height,
-		threadsPerGrid.depth / threadsPerThreadgroup.depth,
-	};
-
-	if (
-		(threadgroupsPerGrid.width * threadsPerThreadgroup.width != threadsPerGrid.width) ||
-		(threadgroupsPerGrid.height * threadsPerThreadgroup.height != threadsPerGrid.height) ||
-		(threadgroupsPerGrid.depth * threadsPerThreadgroup.depth != threadsPerGrid.depth)
-	) {
-		throw std::runtime_error("TODO: support partial threadgroups");
+	if (!_pso || threadsPerThreadgroup.width == 0 || threadsPerThreadgroup.height == 0 || threadsPerThreadgroup.depth == 0) {
+		return;
 	}
 
-	return dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup);
+	// whole threadgroups that cover the grid
+	auto roundedUp = [](size_t threads, size_t perGroup) { return threads / perGroup + (threads % perGroup != 0); };
+	Size threadgroupsPerGrid {
+		roundedUp(threadsPerGrid.width, threadsPerThreadgroup.width),
+		roundedUp(threadsPerGrid.height, threadsPerThreadgroup.height),
+		roundedUp(threadsPerGrid.depth, threadsPerThreadgroup.depth),
+	};
+
+	bool partial =
+		(threadgroupsPerGrid.width * threadsPerThreadgroup.width != threadsPerGrid.width) ||
+		(threadgroupsPerGrid.height * threadsPerThreadgroup.height != threadsPerGrid.height) ||
+		(threadgroupsPerGrid.depth * threadsPerThreadgroup.depth != threadsPerGrid.depth);
+
+	if (!partial) {
+		return dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup);
+	}
+
+	// Vulkan only dispatches whole threadgroups, so the threads past the end of the grid run too, unless the
+	// kernel skips them. Running them anyway would write past what the application made room for.
+	if (!_pso->supportsPartialThreadgroups()) {
+		throw std::runtime_error("This function cannot be dispatched over a grid that is not a multiple of the threadgroup size: it has no way to skip the threads beyond the grid");
+	}
+	// In the threadgroups that the grid edge cuts, [[threads_per_threadgroup]] is the
+	// size the dispatch was given, not the size of the cut threadgroup.
+	return dispatchThreadgroups(threadgroupsPerGrid, threadsPerThreadgroup, threadsPerGrid);
 };
 
 void Indium::PrivateComputeCommandEncoder::setImageblockSize(size_t width, size_t height) {
