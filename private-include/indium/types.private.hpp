@@ -52,7 +52,8 @@ namespace Indium {
 	static constexpr VkFormat pixelFormatToVkFormat(PixelFormat pixelFormat) {
 		switch (pixelFormat) {
 			case PixelFormat::Invalid:               return VK_FORMAT_UNDEFINED;
-			case PixelFormat::A8Unorm:               return VK_FORMAT_UNDEFINED;
+			// A8Unorm is stored as R8 and read through the swizzle pixelFormatImplicitSwizzle() names.
+			case PixelFormat::A8Unorm:               return VK_FORMAT_R8_UNORM;
 			case PixelFormat::R8Unorm:               return VK_FORMAT_R8_UNORM;
 			case PixelFormat::R8Unorm_sRGB:          return VK_FORMAT_R8_SRGB;
 			case PixelFormat::R8Snorm:               return VK_FORMAT_R8_SNORM;
@@ -200,7 +201,7 @@ namespace Indium {
 	static constexpr size_t pixelFormatToByteCount(PixelFormat pixelFormat) {
 		switch (pixelFormat) {
 			case PixelFormat::Invalid:               return 0;
-			case PixelFormat::A8Unorm:               return 0;
+			case PixelFormat::A8Unorm:               return 1;
 			case PixelFormat::R8Unorm:               return 1;
 			case PixelFormat::R8Unorm_sRGB:          return 1;
 			case PixelFormat::R8Snorm:               return 1;
@@ -398,6 +399,7 @@ namespace Indium {
 
 	static constexpr bool pixelFormatIsCompressed(PixelFormat pixelFormat) {
 		switch (pixelFormat) {
+			case PixelFormat::A8Unorm:
 			case PixelFormat::R8Unorm:
 			case PixelFormat::R8Unorm_sRGB:
 			case PixelFormat::R8Snorm:
@@ -610,6 +612,79 @@ namespace Indium {
 				//return VK_IMAGE_ASPECT_NONE;
 				return VK_IMAGE_ASPECT_NONE_KHR;
 		}
+	};
+
+	// The two stencil-only views of a combined depth/stencil texture. They have no format of their own in
+	// Vulkan: the view uses the combined texture's format with only the stencil aspect.
+	static constexpr bool pixelFormatIsStencilView(PixelFormat pixelFormat) {
+		return pixelFormat == PixelFormat::X32_Stencil8 || pixelFormat == PixelFormat::X24_Stencil8;
+	};
+
+	// The combined format a stencil view reads the stencil of, or Invalid for any other format.
+	static constexpr PixelFormat stencilViewParentFormat(PixelFormat pixelFormat) {
+		switch (pixelFormat) {
+			case PixelFormat::X32_Stencil8: return PixelFormat::Depth32Float_Stencil8;
+			case PixelFormat::X24_Stencil8: return PixelFormat::Depth24Unorm_Stencil8;
+			default:                        return PixelFormat::Invalid;
+		}
+	};
+
+	// What a shader sees of a format whose Vulkan format has other channels than the Metal one: A8Unorm
+	// has only an alpha channel, so it reads as (0, 0, 0, a) although Vulkan stores it as the red of R8.
+	static constexpr TextureSwizzleChannels pixelFormatImplicitSwizzle(PixelFormat pixelFormat) {
+		if (pixelFormat == PixelFormat::A8Unorm) {
+			return { TextureSwizzle::Zero, TextureSwizzle::Zero, TextureSwizzle::Zero, TextureSwizzle::Red };
+		}
+		return {};
+	};
+
+	static constexpr bool pixelFormatNeedsImplicitSwizzle(PixelFormat pixelFormat) {
+		return pixelFormat == PixelFormat::A8Unorm;
+	};
+
+	// Applies `user` (a swizzle written in terms of the channels the shader sees) on top of `base` (what
+	// the format makes of the stored channels): each channel that `user` takes from a texture channel is
+	// replaced by what `base` puts in that channel.
+	static constexpr TextureSwizzleChannels composeTextureSwizzle(const TextureSwizzleChannels& base, const TextureSwizzleChannels& user) {
+		auto pick = [&](TextureSwizzle channel) {
+			switch (channel) {
+				case TextureSwizzle::Red:   return base.red;
+				case TextureSwizzle::Green: return base.green;
+				case TextureSwizzle::Blue:  return base.blue;
+				case TextureSwizzle::Alpha: return base.alpha;
+				default:                    return channel;
+			}
+		};
+		return { pick(user.red), pick(user.green), pick(user.blue), pick(user.alpha) };
+	};
+
+	// Whether a texture created as `image` can be viewed as `view`: the same format always, a stencil view of
+	// the combined format it reads, and otherwise two formats whose texels have the same size (Vulkan's
+	// format compatibility classes). Block-compressed formats are limited to the same block shape and size.
+	static constexpr bool pixelFormatsViewCompatible(PixelFormat image, PixelFormat view) {
+		if (image == view) {
+			return true;
+		}
+		if (pixelFormatIsStencilView(view)) {
+			return image == stencilViewParentFormat(view);
+		}
+		if (pixelFormatToVkImageAspectFlags(image) != VK_IMAGE_ASPECT_COLOR_BIT
+			|| pixelFormatToVkImageAspectFlags(view) != VK_IMAGE_ASPECT_COLOR_BIT) {
+			return false;
+		}
+		if (pixelFormatIsCompressed(image) != pixelFormatIsCompressed(view)) {
+			return false;
+		}
+		auto imageBlock = pixelFormatTexelBlock(image);
+		auto viewBlock = pixelFormatTexelBlock(view);
+		return imageBlock.bytes != 0 && imageBlock.bytes == viewBlock.bytes
+			&& imageBlock.width == viewBlock.width && imageBlock.height == viewBlock.height;
+	};
+
+	// The Vulkan format of a view of a pixel format on an image created with `imageFormat`: the stencil views
+	// keep the image's combined format and select the stencil aspect, every other format has its own.
+	static constexpr VkFormat viewVkFormat(PixelFormat view, VkFormat imageFormat) {
+		return pixelFormatIsStencilView(view) ? imageFormat : pixelFormatToVkFormat(view);
 	};
 
 	static constexpr VkColorComponentFlags colorWriteMaskToVkColorComponentFlags(ColorWriteMask mask) {
