@@ -267,7 +267,9 @@ namespace Indium {
 					}
 
 					auto& info = imageInfos.emplace_front();
-					info.imageView = privateTexture ? privateTexture->sampledImageView() : VK_NULL_HANDLE;
+					// a storage image may not be swizzled, so it never gets the view a sampler reads through
+					bool sampled = bindingInfo.textureAccessType == TextureAccessType::Sample;
+					info.imageView = privateTexture ? (sampled ? privateTexture->sampledImageView() : privateTexture->imageView()) : VK_NULL_HANDLE;
 					info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
 
 					auto& descSet = writeDescSet.emplace_back();
