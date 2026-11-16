@@ -132,6 +132,9 @@ namespace Indium {
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;
+		virtual std::shared_ptr<Heap> newHeap(const HeapDescriptor& descriptor) override;
+		virtual SizeAndAlign heapBufferSizeAndAlign(size_t length, ResourceOptions options) override;
+		virtual SizeAndAlign heapTextureSizeAndAlign(const TextureDescriptor& descriptor) override;
 		virtual bool supportsDMABufImport() const override;
 		virtual std::shared_ptr<Texture> newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) override;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;

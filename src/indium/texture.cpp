@@ -443,7 +443,7 @@ namespace {
 	}
 }
 
-Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import, const BufferBacking* backing):
+Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import, const BufferBacking* backing, const HeapBacking* heapBacking):
 	PrivateTexture(device),
 	_descriptor(descriptor)
 {
@@ -562,6 +562,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		&& ((descriptor.usage & TextureUsage::PixelFormatView) != TextureUsage::Unknown || descriptor.usage == TextureUsage::Unknown)) {
 		info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 		_mutableFormat = true;
+	}
+	if (heapBacking) {
+		// a heap's memory may be given to several resources at once (placement heaps, makeAliasable())
+		info.flags |= VK_IMAGE_CREATE_ALIAS_BIT;
 	}
 	VkFormatProperties formatProperties {};
 	DynamicVK::vkGetPhysicalDeviceFormatProperties(_device->physicalDevice(), info.format, &formatProperties);
@@ -693,8 +697,25 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
+	if (heapBacking && heapBacking->query) {
+		// only the requirements were wanted; the destructor destroys the image
+		*heapBacking->query = reqs;
+		return;
+	}
+
+	_requiredSize = reqs.size;
+
 	VkDeviceSize memoryOffset = 0;
-	if (direct) {
+	if (heapBacking) {
+		_heapAllocation = heapBacking->heap->reserve(reqs, heapBacking->offset);
+		if (!_heapAllocation) {
+			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+			_image = VK_NULL_HANDLE;
+			throw std::runtime_error("The heap cannot place the texture");
+		}
+		_requiredSize = _heapAllocation->size();
+		DynamicVK::vkBindImageMemory(_device->device(), _image, heapBacking->heap->memory(), heapBacking->heap->memoryOffset(_heapAllocation->offset()));
+	} else if (direct) {
 		// The image has to lie where the buffer's rows are: at the pitch the buffer was laid out with, at an
 		// offset the image can be bound at, in a memory type it can use, and inside the buffer's memory.
 		VkImageSubresource subresource {};
@@ -755,7 +776,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		memoryOffset = _allocation.offset;
 	}
 
-	if (!direct) {
+	if (!direct && !heapBacking) {
 		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
 	}
 
@@ -1375,4 +1396,50 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	oneshotLock.unlock();
 
 	memcpy(bytes, tmpBuf->contents(), byteSize);
+};
+
+std::shared_ptr<Indium::Heap> Indium::ConcreteTexture::heap() {
+	return _heapAllocation ? _heapAllocation->heap() : nullptr;
+};
+
+size_t Indium::ConcreteTexture::heapOffset() {
+	// only a placement heap's resources have an offset the caller chose
+	if (_heapAllocation && _heapAllocation->heap()->type() == HeapType::Placement) {
+		return _heapAllocation->offset();
+	}
+	return 0;
+};
+
+size_t Indium::ConcreteTexture::allocatedSize() {
+	return _requiredSize;
+};
+
+void Indium::ConcreteTexture::makeAliasable() {
+	if (_heapAllocation) {
+		_heapAllocation->makeAliasable();
+	}
+};
+
+bool Indium::ConcreteTexture::isAliasable() {
+	return _heapAllocation && _heapAllocation->isAliasable();
+};
+
+std::shared_ptr<Indium::Heap> Indium::TextureView::heap() {
+	return _original->heap();
+};
+
+size_t Indium::TextureView::heapOffset() {
+	return _original->heapOffset();
+};
+
+size_t Indium::TextureView::allocatedSize() {
+	return _original->allocatedSize();
+};
+
+void Indium::TextureView::makeAliasable() {
+	_original->makeAliasable();
+};
+
+bool Indium::TextureView::isAliasable() {
+	return _original->isAliasable();
 };
