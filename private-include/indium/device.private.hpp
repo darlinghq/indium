@@ -81,6 +81,7 @@ namespace Indium {
 		bool _fillModeNonSolid = false;
 		bool _depthClamp = false;
 		std::atomic<bool> _bufferShadowTextures { false };
+		bool _nativeA8Unorm = false;
 
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
@@ -94,6 +95,7 @@ namespace Indium {
 			MemoryBudget        = 1 << 4,
 			ExternalMemoryDMABuf = 1 << 5,
 			ImageDRMFormatModifier = 1 << 6,
+			Maintenance5        = 1 << 7,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -194,6 +196,24 @@ namespace Indium {
 		 */
 		void noteBufferShadowTexture() { _bufferShadowTextures.store(true, std::memory_order_relaxed); }
 		bool hasBufferShadowTextures() const { return _bufferShadowTextures.load(std::memory_order_relaxed); }
+		 * Whether A8Unorm textures use VK_FORMAT_A8_UNORM_KHR, which a shader can sample, write and render to
+		 * like any other format. Without it (no VK_KHR_maintenance5, or the format lacks a feature) A8Unorm is
+		 * R8 read through a swizzle, which only supports reads.
+		 */
+		bool nativeA8UnormEnabled() const { return _nativeA8Unorm; }
+
+		/** The Vulkan format a texture of `pixelFormat` has on this device. */
+		VkFormat textureVkFormat(PixelFormat pixelFormat) const {
+			if (pixelFormat == PixelFormat::A8Unorm && _nativeA8Unorm) {
+				return VK_FORMAT_A8_UNORM_KHR;
+			}
+			return pixelFormatToVkFormat(pixelFormat);
+		};
+
+		/** What a shader sees of the stored channels of `pixelFormat` on this device. */
+		bool needsImplicitSwizzle(PixelFormat pixelFormat) const {
+			return pixelFormatNeedsImplicitSwizzle(pixelFormat) && !_nativeA8Unorm;
+		};
 
 		/**
 		 * Held around every submission to and presentation on `graphicsQueue()`.

@@ -120,7 +120,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
 		bool clear = loadActionToVkAttachmentLoadOp(color.loadAction, true) == VK_ATTACHMENT_LOAD_OP_CLEAR;
 		VkAttachmentDescription desc {};
-		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
+		desc.format = _privateDevice->textureVkFormat(color.texture->pixelFormat());
 		desc.samples = sampleCountToVk(color.texture->sampleCount());
 		desc.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
 		desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -180,7 +180,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 			auto texture = std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture);
 			ref.attachment = renderPassAttachments.size();
 			VkAttachmentDescription desc {};
-			desc.format = pixelFormatToVkFormat(texture->pixelFormat());
+			desc.format = _privateDevice->textureVkFormat(texture->pixelFormat());
 			desc.samples = VK_SAMPLE_COUNT_1_BIT;
 			desc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;

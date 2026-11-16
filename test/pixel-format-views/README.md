@@ -2,7 +2,7 @@
 
 Texture pixel formats that Vulkan does not have one-to-one, and views of textures as other formats:
 
-- A8Unorm: stored as R8, read as (0, 0, 0, a), upload and readback by the byte, no shader writes
+- A8Unorm: read as (0, 0, 0, a), upload and readback by the byte (shader writes and render targets: test/a8unorm-write)
 - X32_Stencil8 / X24_Stencil8: stencil-only views of the combined depth/stencil formats
 - views of the same texel size, such as RGBA8Unorm as RGBA8Unorm_sRGB, which need
   MTLTextureUsagePixelFormatView on the texture, and the formats that have no view
