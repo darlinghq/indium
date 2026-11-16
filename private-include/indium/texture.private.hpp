@@ -58,6 +58,20 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() = 0;
 
 		/**
+		 * The Vulkan format the underlying image was created with. Views of other pixel formats are made
+		 * from it, so it is what a new view's format is judged against. A texture that does not own its
+		 * image says what it was created as.
+		 */
+		virtual VkFormat imageFormat() { return pixelFormatToVkFormat(pixelFormat()); }
+
+		/**
+		 * Whether views of the image may use a Vulkan format other than `imageFormat()`
+		 * (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT). Only an image that indium creates can say no: an image that
+		 * comes from elsewhere, such as a swapchain image, is not second-guessed.
+		 */
+		virtual bool imageIsMutableFormat() { return true; }
+
+		/**
 		 * The view to bind in a descriptor. Descriptors may only name a single aspect, so for a
 		 * combined depth/stencil texture this is a depth-only view; otherwise it is `imageView()`.
 		 */
@@ -144,6 +158,8 @@ namespace Indium {
 		virtual VkImage image() override;
 		virtual std::shared_ptr<Device> device() override;
 		virtual VkImageLayout imageLayout() override;
+		virtual VkFormat imageFormat() override;
+		virtual bool imageIsMutableFormat() override;
 
 		virtual const TimelineSemaphore& acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) override;
 		virtual void beginUpdatingPresentationSemaphore(std::shared_ptr<BinarySemaphore> presentationSemaphore) override;
@@ -173,6 +189,7 @@ namespace Indium {
 		std::shared_ptr<PrivateBuffer> _backingBuffer;
 		size_t _backingOffset = 0;
 		size_t _backingBytesPerRow = 0;
+		bool _mutableFormat = false;
 
 	public:
 		// A linear image in a Linux DMA-BUF to use as the texture's storage.
@@ -216,6 +233,8 @@ namespace Indium {
 		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
+		virtual VkFormat imageFormat() override;
+		virtual bool imageIsMutableFormat() override;
 		virtual size_t vulkanArrayLength() const override;
 
 		virtual std::shared_ptr<Buffer> buffer() const override;

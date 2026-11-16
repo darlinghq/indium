@@ -22,6 +22,15 @@ namespace Indium {
 	// Metal tracks hazards between the encoders of a command buffer: what one encoder writes,
 	// the next one sees. Vulkan commands in one command buffer are not ordered that way, so
 	// every encoder ends with a full memory dependency on everything recorded before it.
+	/**
+	 * Whether `size` bytes of indirect arguments at `offset` can be read from `buffer`: a Vulkan indirect
+	 * command may only read inside the buffer, from an offset that is a multiple of 4 (which is also the
+	 * alignment Metal asks for). An indirect command that fails this is not recorded.
+	 */
+	inline bool indirectArgumentsFit(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t size) {
+		return buffer && offset % 4 == 0 && offset <= buffer->length() && size <= buffer->length() - offset;
+	}
+
 	inline void finishTrackedEncoder(VkCommandBuffer commandBuffer) {
 		VkMemoryBarrier barrier {};
 		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -258,7 +267,9 @@ namespace Indium {
 					}
 
 					auto& info = imageInfos.emplace_front();
-					info.imageView = privateTexture ? privateTexture->sampledImageView() : VK_NULL_HANDLE;
+					// a storage image may not be swizzled, so it never gets the view a sampler reads through
+					bool sampled = bindingInfo.textureAccessType == TextureAccessType::Sample;
+					info.imageView = privateTexture ? (sampled ? privateTexture->sampledImageView() : privateTexture->imageView()) : VK_NULL_HANDLE;
 					info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
 
 					auto& descSet = writeDescSet.emplace_back();

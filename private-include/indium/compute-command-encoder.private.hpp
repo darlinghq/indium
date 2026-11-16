@@ -48,6 +48,7 @@ namespace Indium {
 
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) override;
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) override;
+		virtual void dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) override;
 
 		virtual void setImageblockSize(size_t width, size_t height) override;
 

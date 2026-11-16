@@ -98,8 +98,11 @@ namespace Indium {
 			_macro(vkCmdCopyImage) \
 			_macro(vkCmdCopyImageToBuffer) \
 			_macro(vkCmdDispatch) \
+			_macro(vkCmdDispatchIndirect) \
 			_macro(vkCmdDraw) \
 			_macro(vkCmdDrawIndexed) \
+			_macro(vkCmdDrawIndexedIndirect) \
+			_macro(vkCmdDrawIndirect) \
 			_macro(vkCmdEndRenderPass) \
 			_macro(vkCmdFillBuffer) \
 			_macro(vkCmdPipelineBarrier) \

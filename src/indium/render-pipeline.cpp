@@ -33,7 +33,47 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	_descriptorSetLayouts.processFunction(_fragmentFunction, 1);
 };
 
+// Everything vkCreateGraphicsPipelines takes by pointer lives here, so that it outlives recreatePipeline() and a
+// variant can be created from it later. The members are only ever assigned to after construction, never moved.
+struct Indium::PrivateRenderPipelineState::PipelineRecipe {
+	std::string vertexFunctionName;
+	std::string fragmentFunctionName;
+	std::vector<VkPipelineShaderStageCreateInfo> stages;
+	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
+	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
+	VkPipelineVertexInputStateCreateInfo vertexInputState {};
+	VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {};
+	VkPipelineTessellationStateCreateInfo tesselationState {};
+	VkPipelineViewportStateCreateInfo viewportState {};
+	VkPipelineRasterizationStateCreateInfo rasterizationState {};
+	VkPipelineMultisampleStateCreateInfo multisampleState {};
+	VkPipelineDepthStencilStateCreateInfo depthStencilState {};
+	std::vector<VkPipelineColorBlendAttachmentState> colorBlendStates;
+	VkPipelineColorBlendStateCreateInfo colorBlendState {};
+	std::vector<VkDynamicState> dynamicStates;
+	VkPipelineDynamicStateCreateInfo dynamicState {};
+	VkGraphicsPipelineCreateInfo pipelineCreateInfo {};
+
+	// a topology class is 0 for points, 1 for lines and 2 for triangles
+	VkPipeline create(VkDevice device, size_t topologyClass, bool lines, bool clamp) {
+		static constexpr VkPrimitiveTopology topologies[3] = {
+			VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		};
+		inputAssemblyState.topology = topologies[topologyClass];
+		rasterizationState.polygonMode = lines ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
+		rasterizationState.depthClampEnable = clamp ? VK_TRUE : VK_FALSE;
+
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		if (Indium::DynamicVK::vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+			return VK_NULL_HANDLE;
+		}
+		return pipeline;
+	}
+};
+
 Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
+	destroyVariants();
+
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
 			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
@@ -53,6 +93,8 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		return;
 	}
 
+	destroyVariants();
+
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
 			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
@@ -65,9 +107,14 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		_pipelineLayout = VK_NULL_HANDLE;
 	}
 
-	auto vertexFunctionName = _vertexFunction->name();
-	auto fragmentFunctionName = _fragmentFunction->name();
-	std::vector<VkPipelineShaderStageCreateInfo> stages;
+	_recipe = std::make_shared<PipelineRecipe>();
+	auto& recipe = *_recipe;
+
+	auto& vertexFunctionName = recipe.vertexFunctionName;
+	auto& fragmentFunctionName = recipe.fragmentFunctionName;
+	vertexFunctionName = _vertexFunction->name();
+	fragmentFunctionName = _fragmentFunction->name();
+	auto& stages = recipe.stages;
 
 	VkPipelineShaderStageCreateInfo shaderStage {};
 	shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -84,11 +131,11 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	shaderStage.pSpecializationInfo = _fragmentFunction->specializationInfo();
 	stages.push_back(shaderStage);
 
-	VkPipelineVertexInputStateCreateInfo vertexInputState {};
+	auto& vertexInputState = recipe.vertexInputState;
 	vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
-	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
+	auto& vertexBindingDescs = recipe.vertexBindingDescs;
+	auto& vertexAttrDescs = recipe.vertexAttrDescs;
 
 	_vertexInputBindings.clear();
 	_vertexInputFallbackSafe.clear();
@@ -136,31 +183,30 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	vertexInputState.vertexAttributeDescriptionCount = vertexAttrDescs.size();
 	vertexInputState.pVertexAttributeDescriptions = vertexAttrDescs.data();
 
-	VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {};
+	auto& inputAssemblyState = recipe.inputAssemblyState;
 	inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 
-	VkPipelineTessellationStateCreateInfo tesselationState {};
+	auto& tesselationState = recipe.tesselationState;
 	tesselationState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
 
-	VkPipelineViewportStateCreateInfo viewportState {};
+	auto& viewportState = recipe.viewportState;
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 
-	VkPipelineRasterizationStateCreateInfo rasterizationState {};
+	auto& rasterizationState = recipe.rasterizationState;
 	rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-	// TODO: figure out how to set `depthClampEnable` and `polgygonMode` dynamically;
-	//       might have to just create multiple pipelines
-	rasterizationState.polygonMode = VK_POLYGON_MODE_FILL;
+	// polygonMode and depthClampEnable are set per pipeline in PipelineRecipe::create(): they have no core
+	// dynamic state, so a fill mode or depth clip mode other than the default is a variant of these pipelines
 	rasterizationState.lineWidth = 1.0f;
 
-	VkPipelineMultisampleStateCreateInfo multisampleState {};
+	auto& multisampleState = recipe.multisampleState;
 	multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampleState.rasterizationSamples = _rasterSampleCount;
 	multisampleState.minSampleShading = 1.0f;
 
-	VkPipelineDepthStencilStateCreateInfo depthStencilState {};
+	auto& depthStencilState = recipe.depthStencilState;
 	depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
-	std::vector<VkPipelineColorBlendAttachmentState> colorBlendStates;
+	auto& colorBlendStates = recipe.colorBlendStates;
 	for (const auto& colorInfo: _colorAttachments) {
 		VkPipelineColorBlendAttachmentState tmp;
 		tmp.blendEnable = colorInfo.blendingEnabled;
@@ -177,12 +223,13 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		}
 		colorBlendStates.push_back(tmp);
 	}
-	VkPipelineColorBlendStateCreateInfo colorBlendState {};
+	auto& colorBlendState = recipe.colorBlendState;
 	colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlendState.attachmentCount = colorBlendStates.size();
 	colorBlendState.pAttachments = colorBlendStates.data();
 
-	std::vector<VkDynamicState> dynamicStates {
+	auto& dynamicStates = recipe.dynamicStates;
+	dynamicStates = {
 		VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
 		VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
 		VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY,
@@ -206,7 +253,7 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		VK_DYNAMIC_STATE_BLEND_CONSTANTS,
 		VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
 	};
-	VkPipelineDynamicStateCreateInfo dynamicState {};
+	auto& dynamicState = recipe.dynamicState;
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamicState.dynamicStateCount = dynamicStates.size();
 	dynamicState.pDynamicStates = dynamicStates.data();
@@ -225,7 +272,7 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		abort();
 	}
 
-	VkGraphicsPipelineCreateInfo pipelineCreateInfo {};
+	auto& pipelineCreateInfo = recipe.pipelineCreateInfo;
 	pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineCreateInfo.stageCount = stages.size();
 	pipelineCreateInfo.pStages = stages.data();
@@ -245,25 +292,13 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	// in the same topology class that the pipeline was created for. this means we need to create 3 pipelines
 	// (one for each topology class) rather than 5 (one for each primitive topology).
 
-	// first, one for points
-	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[0]) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	// now, one for lines
-	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[1]) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	// finally, one for triangles
-	inputAssemblyState.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-	if (DynamicVK::vkCreateGraphicsPipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &_pipelines[2]) != VK_SUCCESS) {
-		// TODO
-		abort();
+	// the default fill mode and depth clip mode: the other combinations are created when a draw needs them
+	for (size_t topologyClass = 0; topologyClass < _pipelines.size(); ++topologyClass) {
+		_pipelines[topologyClass] = recipe.create(_privateDevice->device(), topologyClass, false, false);
+		if (_pipelines[topologyClass] == VK_NULL_HANDLE) {
+			// the default pipelines are the ones every draw can use, so there is nothing to fall back to
+			abort();
+		}
 	}
 };
 
@@ -273,4 +308,37 @@ const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::vertexFunctionIn
 
 const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::fragmentFunctionInfo() {
 	return _fragmentFunction->functionInfo();
+};
+
+void Indium::PrivateRenderPipelineState::destroyVariants() {
+	std::unique_lock lock(_variantMutex);
+	for (auto& [key, pipeline]: _variants) {
+		if (pipeline != VK_NULL_HANDLE) {
+			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
+		}
+	}
+	_variants.clear();
+};
+
+VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass, bool lines, bool clamp) {
+	// a mode the device cannot do is ignored, and so are the ones that mean nothing for the topology
+	lines = lines && topologyClass == 2 && _privateDevice->fillModeNonSolidEnabled();
+	clamp = clamp && _privateDevice->depthClampEnabled();
+
+	if (!lines && !clamp) {
+		return _pipelines[topologyClass];
+	}
+
+	uint32_t key = static_cast<uint32_t>(topologyClass) | (lines ? 4u : 0u) | (clamp ? 8u : 0u);
+
+	std::unique_lock lock(_variantMutex);
+	auto found = _variants.find(key);
+	if (found != _variants.end()) {
+		return found->second != VK_NULL_HANDLE ? found->second : _pipelines[topologyClass];
+	}
+
+	// a variant that cannot be made is remembered as such, and the draw uses the default pipeline
+	VkPipeline variant = _recipe->create(_privateDevice->device(), topologyClass, lines, clamp);
+	_variants.emplace(key, variant);
+	return variant != VK_NULL_HANDLE ? variant : _pipelines[topologyClass];
 };
