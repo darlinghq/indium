@@ -70,6 +70,7 @@ set(indium_sources
 	src/indium/resource.cpp
 	src/indium/sampler.cpp
 	src/indium/texture.cpp
+	src/indium/visibility-results.cpp
 )
 
 set(iridium_sources

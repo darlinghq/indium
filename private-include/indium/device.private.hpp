@@ -80,6 +80,10 @@ namespace Indium {
 		bool _nullDescriptor = false;
 		bool _fillModeNonSolid = false;
 		bool _depthClamp = false;
+		bool _occlusionQueryPrecise = false;
+		bool _hostQueryReset = false;
+		std::mutex _visibilityResolveMutex;
+		std::shared_ptr<ComputePipelineState> _visibilityResolvePipeline;
 		std::atomic<bool> _bufferShadowTextures { false };
 		bool _nativeA8Unorm = false;
 
@@ -195,6 +199,31 @@ namespace Indium {
 		 * depthClamp, which is enabled when the device has it).
 		 */
 		bool depthClampEnabled() const { return _depthClamp; }
+
+		/**
+		 * Whether occlusion queries can count samples (Vulkan's occlusionQueryPrecise, enabled when the device has
+		 * it). Without it a query only tells whether any sample passed.
+		 */
+		bool occlusionQueryPreciseEnabled() const { return _occlusionQueryPrecise; }
+
+		/**
+		 * Whether a query pool can be reset from the host (Vulkan's hostQueryReset, enabled when the device has
+		 * it). Visibility results need it: the number of queries a render pass uses is only known as it is
+		 * encoded, and a query pool cannot be reset inside a render pass.
+		 */
+		bool hostQueryResetEnabled() const { return _hostQueryReset; }
+
+		/**
+		 * The compute pipeline that folds the occlusion query results of a render pass into a visibility result
+		 * buffer (see VisibilityResults), made on first use.
+		 */
+		std::shared_ptr<ComputePipelineState> visibilityResolvePipeline();
+
+		/**
+		 * Drops the objects the device keeps for its own use (they hold a reference to the device). Called when the
+		 * device list is torn down.
+		 */
+		void releaseCachedObjects();
 
 		/**
 		 * Whether a texture was ever made that is an image of its own kept equal to a buffer's rows (see

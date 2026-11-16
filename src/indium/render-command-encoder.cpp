@@ -12,6 +12,7 @@
 #include <indium/sampler.private.hpp>
 #include <indium/depth-stencil.private.hpp>
 #include <indium/command-encoder.private.hpp>
+#include <indium/visibility-results.private.hpp>
 #include <indium/dynamic-vk.hpp>
 #include <vulkan/vulkan_core.h>
 
@@ -274,6 +275,10 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassBeginInfo.clearValueCount = clearValues.size();
 	renderPassBeginInfo.pClearValues = clearValues.data();
 	DynamicVK::vkCmdBeginRenderPass(vkCmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+	if (auto visibilityBuffer = std::dynamic_pointer_cast<PrivateBuffer>(descriptor.visibilityResultBuffer); visibilityBuffer && VisibilityResults::supported(_privateDevice)) {
+		_visibilityResults = std::make_unique<VisibilityResults>(_privateDevice, visibilityBuffer);
+	}
 
 	// set default values
 
@@ -538,8 +543,14 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
+	if (_visibilityResults) {
+		_visibilityResults->end(buf->commandBuffer());
+	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 	finishTrackedEncoder(buf->commandBuffer());
+	if (_visibilityResults) {
+		_visibilityResults->resolve(buf);
+	}
 
 	auto used = _functionResources[0].usedTextures;
 	used.insert(used.end(), _functionResources[1].usedTextures.begin(), _functionResources[1].usedTextures.end());
@@ -759,10 +770,10 @@ void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t fron
 };
 
 void Indium::PrivateRenderCommandEncoder::setVisibilityResultMode(VisibilityResultMode mode, size_t offset) {
-	auto buf = _privateCommandBuffer.lock();
-
-	// TODO: this can be implemented using Vulkan's occlusion queries
-	throw std::runtime_error("TODO: support visibility results");
+	// without a visibility result buffer there is nowhere to write the results to
+	if (_visibilityResults) {
+		_visibilityResults->setMode(_privateCommandBuffer.lock()->commandBuffer(), mode, offset);
+	}
 };
 
 void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage, RenderStages stages) {

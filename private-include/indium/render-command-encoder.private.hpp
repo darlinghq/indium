@@ -17,6 +17,7 @@ namespace Indium {
 	class PrivateRenderPipelineState;
 	class PrivateDevice;
 	class SamplerState;
+	class VisibilityResults;
 
 	class PrivateRenderCommandEncoder: public RenderCommandEncoder {
 	private:
@@ -36,6 +37,9 @@ namespace Indium {
 		// PrivateRenderPipelineState::pipelineFor()); the values Metal starts an encoder with
 		TriangleFillMode _triangleFillMode = TriangleFillMode::Fill;
 		DepthClipMode _depthClipMode = DepthClipMode::Clip;
+
+		// the occlusion queries behind the visibility results; null without a visibility result buffer
+		std::unique_ptr<VisibilityResults> _visibilityResults;
 
 		std::vector<FunctionResources> _savedFunctionResources;
 
