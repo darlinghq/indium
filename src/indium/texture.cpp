@@ -381,7 +381,7 @@ bool Indium::PrivateTexture::needsExportablePresentationSemaphore() const {
 // DRM_FORMAT_MOD_LINEAR from the Linux kernel's drm_fourcc.h: no tiling, rows one after another.
 static constexpr uint64_t drmFormatModifierLinear = 0;
 
-Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import):
+Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import, const BufferBacking* backing):
 	PrivateTexture(device),
 	_descriptor(descriptor)
 {
@@ -425,6 +425,15 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 
 	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+
+	// The rows of a buffer are a linear image: no tiling, one row after another at a pitch the buffer has to share.
+	if (backing) {
+		if (!canBeLinear || !isColor || _descriptor.textureType != TextureType::e2D || _descriptor.depth != 1 || _descriptor.arrayLength != 1
+			|| pixelFormatIsCompressed(_descriptor.pixelFormat) || pixelFormatToByteCount(_descriptor.pixelFormat) == 0 || import) {
+			throw std::runtime_error("A buffer can only back a 2D texture with one level, slice and sample in an uncompressed color format");
+		}
+		info.tiling = VK_IMAGE_TILING_LINEAR;
+	}
 
 	// An imported DMA-BUF holds one linear 2D color image, described to Vulkan through an explicit
 	// DRM format modifier layout (VK_EXT_image_drm_format_modifier).
@@ -501,7 +510,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO: check if this should be "concurrent" instead. i think we're good, though.
 	info.queueFamilyIndexCount = 0;
 	info.pQueueFamilyIndices = nullptr;
-	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	// the pixels of a buffer-backed texture are already in memory, which only the preinitialized layout keeps
+	info.initialLayout = backing ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
 
 	if (import) {
 		VkPhysicalDeviceImageDrmFormatModifierInfoEXT modifierQuery {};
@@ -559,7 +569,36 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
 	VkDeviceSize memoryOffset = 0;
-	if (import) {
+	if (backing) {
+		// The image has to lie where the buffer's rows are: at the pitch the buffer was laid out with, at an
+		// offset the image can be bound at, in a memory type it can use, and inside the buffer's memory.
+		VkImageSubresource subresource {};
+		subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		VkSubresourceLayout layout {};
+		DynamicVK::vkGetImageSubresourceLayout(_device->device(), _image, &subresource, &layout);
+
+		auto& buffer = backing->buffer;
+		size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+		size_t lastRowEnd = backing->offset + backing->bytesPerRow * (_descriptor.height - 1) + _descriptor.width * bytesPerPixel;
+		VkDeviceSize bindOffset = buffer->memoryOffset() + backing->offset;
+		bool fits = layout.offset == 0
+			&& layout.rowPitch == backing->bytesPerRow
+			&& (reqs.memoryTypeBits & (1u << buffer->memoryTypeIndex())) != 0
+			&& reqs.alignment != 0 && bindOffset % reqs.alignment == 0
+			&& lastRowEnd <= buffer->length()
+			&& backing->offset + reqs.size <= buffer->memorySize();
+		if (!fits) {
+			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+			throw std::runtime_error("The buffer cannot back a texture with this size, format and row pitch");
+		}
+
+		// the buffer's memory is not this texture's to free
+		_backingBuffer = buffer;
+		_backingOffset = backing->offset;
+		_backingBytesPerRow = backing->bytesPerRow;
+		_memory = VK_NULL_HANDLE;
+		DynamicVK::vkBindImageMemory(_device->device(), _image, buffer->memory(), bindOffset);
+	} else if (import) {
 		// An imported DMA-BUF is a dedicated allocation of its own, bound at offset 0 and freed
 		// directly; it never comes from or goes back to the memory pool.
 		if (!importMemory(*import, reqs)) {
@@ -591,7 +630,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		memoryOffset = _allocation.offset;
 	}
 
-	DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+	if (!backing) {
+		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+	}
 
 	// transition the image into the general layout
 	// the one-shot command pool is shared by every thread that uploads or reads back
@@ -618,7 +659,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	barrier.srcAccessMask = VK_ACCESS_NONE;
 	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	barrier.oldLayout = info.initialLayout;
 	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -821,6 +862,18 @@ VkImage Indium::ConcreteTexture::image() {
 
 VkImageLayout Indium::ConcreteTexture::imageLayout() {
 	return VK_IMAGE_LAYOUT_GENERAL;
+};
+
+std::shared_ptr<Indium::Buffer> Indium::ConcreteTexture::buffer() const {
+	return _backingBuffer;
+};
+
+size_t Indium::ConcreteTexture::bufferOffset() const {
+	return _backingOffset;
+};
+
+size_t Indium::ConcreteTexture::bufferBytesPerRow() const {
+	return _backingBytesPerRow;
 };
 
 VkFormat Indium::ConcreteTexture::imageFormat() {
