@@ -27,6 +27,7 @@ add_subdirectory(dmabuf-import)
 add_subdirectory(function-constants)
 add_subdirectory(pixel-format-sampling)
 add_subdirectory(indirect-draw-dispatch)
+add_subdirectory(fill-mode-depth-clip)
 add_subdirectory(pixel-format-views)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and

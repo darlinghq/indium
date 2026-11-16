@@ -328,9 +328,8 @@ void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float sl
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthClipMode(DepthClipMode depthClipMode) {
-	if (depthClipMode != DepthClipMode::Clip) {
-		throw std::runtime_error("TODO: support setting depth clip mode");
-	}
+	// takes effect with the pipeline bound by the next draw
+	_depthClipMode = depthClipMode;
 };
 
 void Indium::PrivateRenderCommandEncoder::setViewport(const Viewport& viewport) {
@@ -450,23 +449,25 @@ bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 };
 
 void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBuffer, PrimitiveType primitiveType) {
-	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = VK_NULL_HANDLE;
+	// bind the pipeline with the right topology class for this primitive; the fill mode only applies to
+	// triangles, the depth clip mode to every primitive
+	size_t topologyClass;
 	switch (primitiveType) {
 		case PrimitiveType::Point:
-			pipeline = _privatePSO->pipelines()[0];
+			topologyClass = 0;
 			break;
 		case PrimitiveType::Line:
 		case PrimitiveType::LineStrip:
-			pipeline = _privatePSO->pipelines()[1];
+			topologyClass = 1;
 			break;
 		case PrimitiveType::Triangle:
 		case PrimitiveType::TriangleStrip:
-			pipeline = _privatePSO->pipelines()[2];
+			topologyClass = 2;
 			break;
 		default:
 			throw BadEnumValue();
 	}
+	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp);
 	DynamicVK::vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 	DynamicVK::vkCmdSetPrimitiveTopology(commandBuffer, primitiveTypeToVkPrimitiveTopology(primitiveType));
@@ -736,13 +737,8 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared
 };
 
 void Indium::PrivateRenderCommandEncoder::setTriangleFillMode(TriangleFillMode triangleFillMode) {
-	if (triangleFillMode != TriangleFillMode::Fill) {
-		// we might have to just create duplicate pipelines for each possible fill mode;
-		// there's only 2 at the moment, but this has to multiplied by the number of pipelines required
-		// for other combinations. for example, we currently have to create a pipeline for each topology class
-		// and there's 3 of those, so we would need 6 pipelines total. yikes.
-		throw std::runtime_error("TODO: support changing fill mode");
-	}
+	// takes effect with the pipeline bound by the next draw
+	_triangleFillMode = triangleFillMode;
 };
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t value) {

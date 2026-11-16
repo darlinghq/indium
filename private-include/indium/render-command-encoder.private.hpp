@@ -32,6 +32,11 @@ namespace Indium {
 		bool _renderPassDeviceOwned = false;
 		DescriptorPoolChain _descriptorPools;
 
+		// per-draw rasterization state that is part of the pipeline in Vulkan (see
+		// PrivateRenderPipelineState::pipelineFor()); the values Metal starts an encoder with
+		TriangleFillMode _triangleFillMode = TriangleFillMode::Fill;
+		DepthClipMode _depthClipMode = DepthClipMode::Clip;
+
 		std::vector<FunctionResources> _savedFunctionResources;
 
 		std::array<FunctionResources, 2> _functionResources {};
