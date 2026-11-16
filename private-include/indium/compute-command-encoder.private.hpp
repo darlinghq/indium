@@ -5,6 +5,9 @@
 #include <indium/command-encoder.private.hpp>
 #include <indium/compute-pipeline.private.hpp>
 
+#include <optional>
+#include <unordered_map>
+
 namespace Indium {
 	class PrivateComputeCommandEncoder: public ComputeCommandEncoder {
 	private:
@@ -22,6 +25,8 @@ namespace Indium {
 		std::vector<FunctionResources> _savedFunctionResources;
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
 		ScratchArena _scratch;
+		// the length asked for each threadgroup memory argument index (see setThreadgroupMemoryLength())
+		std::unordered_map<size_t, size_t> _threadgroupMemoryLengths;
 
 		void updateBindings();
 
@@ -47,6 +52,7 @@ namespace Indium {
 		virtual void setThreadgroupMemoryLength(size_t length, size_t index) override;
 
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) override;
+		void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize);
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) override;
 		virtual void dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) override;
 
