@@ -522,6 +522,13 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	} else {
 		size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
 
+		// The memory of an optimally tiled image is never mapped: replaceRegion and getBytes go through a
+		// temporary buffer. Some drivers (NVIDIA) allow host-visible memory for linear images only, so a
+		// shared or managed image falls back to device-local memory instead of failing.
+		if (targetIndex == SIZE_MAX && info.tiling == VK_IMAGE_TILING_OPTIMAL && _storageMode != StorageMode::Private) {
+			targetIndex = _device->findMemoryType(reqs.memoryTypeBits, StorageMode::Private);
+		}
+
 		if (targetIndex == SIZE_MAX) {
 			throw std::runtime_error("No suitable memory region found for image with requested storage mode");
 		}
