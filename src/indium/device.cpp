@@ -212,6 +212,10 @@ auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, null
 };
 
 void Indium::finitGlobalDeviceList() {
+	// objects the devices keep for themselves hold a reference to the device, which would keep it from being destroyed
+	for (const auto& device: globalDeviceList) {
+		device->releaseCachedObjects();
+	}
 	globalDeviceList.clear();
 };
 
@@ -316,13 +320,19 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	extProps.resize(count);
 	DynamicVK::vkEnumerateDeviceExtensionProperties(_physicalDevice, nullptr, &count, extProps.data());
 
-	// createLogicalDevice() enables every feature the device has; remember the two that a per-draw state needs
+	// createLogicalDevice() enables every feature the device has; remember the ones that a per-draw state or
+	// visibility results need
 	{
+		VkPhysicalDeviceVulkan12Features supported12 {};
+		supported12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
 		VkPhysicalDeviceFeatures2 supported {};
 		supported.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		supported.pNext = &supported12;
 		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &supported);
 		_fillModeNonSolid = supported.features.fillModeNonSolid;
 		_depthClamp = supported.features.depthClamp;
+		_occlusionQueryPrecise = supported.features.occlusionQueryPrecise;
+		_hostQueryReset = supported12.hostQueryReset;
 	}
 
 	// put required extensions in _enabledExtensions here

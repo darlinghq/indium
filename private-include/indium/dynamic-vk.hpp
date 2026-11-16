@@ -87,6 +87,7 @@ namespace Indium {
 			_macro(vkBeginCommandBuffer) \
 			_macro(vkBindBufferMemory) \
 			_macro(vkBindImageMemory) \
+			_macro(vkCmdBeginQuery) \
 			_macro(vkCmdBeginRenderPass) \
 			_macro(vkCmdBindDescriptorSets) \
 			_macro(vkCmdBindIndexBuffer) \
@@ -97,12 +98,14 @@ namespace Indium {
 			_macro(vkCmdCopyBufferToImage) \
 			_macro(vkCmdCopyImage) \
 			_macro(vkCmdCopyImageToBuffer) \
+			_macro(vkCmdCopyQueryPoolResults) \
 			_macro(vkCmdDispatch) \
 			_macro(vkCmdDispatchIndirect) \
 			_macro(vkCmdDraw) \
 			_macro(vkCmdDrawIndexed) \
 			_macro(vkCmdDrawIndexedIndirect) \
 			_macro(vkCmdDrawIndirect) \
+			_macro(vkCmdEndQuery) \
 			_macro(vkCmdEndRenderPass) \
 			_macro(vkCmdFillBuffer) \
 			_macro(vkCmdPipelineBarrier) \
@@ -137,6 +140,7 @@ namespace Indium {
 			_macro(vkCreateImage) \
 			_macro(vkCreateImageView) \
 			_macro(vkCreatePipelineLayout) \
+			_macro(vkCreateQueryPool) \
 			_macro(vkCreateRenderPass) \
 			_macro(vkCreateSampler) \
 			_macro(vkCreateSemaphore) \
@@ -156,6 +160,7 @@ namespace Indium {
 			_macro(vkDestroyInstance) \
 			_macro(vkDestroyPipeline) \
 			_macro(vkDestroyPipelineLayout) \
+			_macro(vkDestroyQueryPool) \
 			_macro(vkDestroyRenderPass) \
 			_macro(vkDestroySampler) \
 			_macro(vkDestroySemaphore) \
@@ -192,6 +197,7 @@ namespace Indium {
 			_macro(vkQueuePresentKHR) \
 			_macro(vkQueueSubmit) \
 			_macro(vkQueueSubmit2) \
+			_macro(vkResetQueryPool) \
 			_macro(vkSignalSemaphore) \
 			_macro(vkUnmapMemory) \
 			_macro(vkUpdateDescriptorSets) \
