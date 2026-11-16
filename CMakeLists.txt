@@ -60,6 +60,7 @@ set(indium_sources
 	src/indium/device.cpp
 	src/indium/drawable.cpp
 	src/indium/dynamic-vk.cpp
+	src/indium/event.cpp
 	src/indium/indium.cpp
 	src/indium/library.cpp
 	src/indium/memory-pool.cpp

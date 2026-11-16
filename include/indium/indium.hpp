@@ -13,6 +13,7 @@
 #include <indium/depth-stencil.hpp>
 #include <indium/device.hpp>
 #include <indium/drawable.hpp>
+#include <indium/event.hpp>
 #include <indium/init.hpp>
 #include <indium/library.hpp>
 #include <indium/linked-functions.hpp>

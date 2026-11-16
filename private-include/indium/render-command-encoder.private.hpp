@@ -117,6 +117,8 @@ namespace Indium {
 		virtual void useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) override;
 		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) override;
 		virtual void memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) override;
+		virtual void updateFence(const std::shared_ptr<Fence>& fence, RenderStages after) override;
+		virtual void waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) override;
 
 		virtual void endEncoding() override;
 

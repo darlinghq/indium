@@ -1,6 +1,7 @@
 #pragma once
 
 #include <indium/command-encoder.hpp>
+#include <indium/event.hpp>
 #include <indium/counter.hpp>
 #include <indium/types.hpp>
 #include <indium/compute-pipeline.hpp>
@@ -60,5 +61,10 @@ namespace Indium {
 		virtual void setStageInRegion(Region region) = 0;
 
 		virtual DispatchType dispatchType() = 0;
+
+		/** See `BlitCommandEncoder::updateFence()`. */
+		virtual void updateFence(const std::shared_ptr<Fence>& fence) = 0;
+		/** See `BlitCommandEncoder::waitForFence()`. */
+		virtual void waitForFence(const std::shared_ptr<Fence>& fence) = 0;
 	};
 };

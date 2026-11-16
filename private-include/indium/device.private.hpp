@@ -136,6 +136,10 @@ namespace Indium {
 		virtual std::shared_ptr<Texture> newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) override;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) override;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) override;
+		virtual std::shared_ptr<Event> newEvent() override;
+		virtual std::shared_ptr<SharedEvent> newSharedEvent() override;
+		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) override;
+		virtual std::shared_ptr<Fence> newFence() override;
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;

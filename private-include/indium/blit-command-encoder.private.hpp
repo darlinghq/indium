@@ -35,6 +35,9 @@ namespace Indium {
 		virtual void fillBuffer(const std::shared_ptr<Buffer>& buffer, Range<size_t> range, uint8_t value) override;
 		virtual void generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) override;
 
+		virtual void updateFence(const std::shared_ptr<Fence>& fence) override;
+		virtual void waitForFence(const std::shared_ptr<Fence>& fence) override;
+
 		virtual void endEncoding() override;
 
 		INDIUM_PROPERTY_OBJECT_VECTOR(Texture, r, R,eadOnlyTextures);
