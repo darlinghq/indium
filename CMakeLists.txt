@@ -61,6 +61,7 @@ set(indium_sources
 	src/indium/drawable.cpp
 	src/indium/dynamic-vk.cpp
 	src/indium/event.cpp
+	src/indium/hazard-tracker.cpp
 	src/indium/heap.cpp
 	src/indium/indium.cpp
 	src/indium/library.cpp

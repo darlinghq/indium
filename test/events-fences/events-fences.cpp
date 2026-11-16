@@ -49,21 +49,18 @@ void settle() {
 }
 
 // the barriers recorded since the last reset that make every earlier write visible to every later access
-PFN_vkCmdPipelineBarrier originalBarrier;
+PFN_vkCmdPipelineBarrier2 originalBarrier;
 std::atomic<unsigned> globalBarriers { 0 };
 
-void VKAPI_CALL recordBarrier(VkCommandBuffer commandBuffer, VkPipelineStageFlags srcStages, VkPipelineStageFlags dstStages, VkDependencyFlags flags,
-	uint32_t memoryBarrierCount, const VkMemoryBarrier* memoryBarriers,
-	uint32_t bufferBarrierCount, const VkBufferMemoryBarrier* bufferBarriers,
-	uint32_t imageBarrierCount, const VkImageMemoryBarrier* imageBarriers)
-{
-	for (uint32_t i = 0; i < memoryBarrierCount; ++i) {
-		if ((memoryBarriers[i].srcAccessMask & VK_ACCESS_MEMORY_WRITE_BIT) && (memoryBarriers[i].dstAccessMask & VK_ACCESS_MEMORY_READ_BIT) &&
-			(srcStages & VK_PIPELINE_STAGE_ALL_COMMANDS_BIT) && (dstStages & VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
+void VKAPI_CALL recordBarrier(VkCommandBuffer commandBuffer, const VkDependencyInfo* info) {
+	for (uint32_t i = 0; i < info->memoryBarrierCount; ++i) {
+		const auto& barrier = info->pMemoryBarriers[i];
+		if ((barrier.srcAccessMask & VK_ACCESS_2_MEMORY_WRITE_BIT) && (barrier.dstAccessMask & VK_ACCESS_2_MEMORY_READ_BIT) &&
+			(barrier.srcStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT) && (barrier.dstStageMask & VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT)) {
 			++globalBarriers;
 		}
 	}
-	originalBarrier(commandBuffer, srcStages, dstStages, flags, memoryBarrierCount, memoryBarriers, bufferBarrierCount, bufferBarriers, imageBarrierCount, imageBarriers);
+	originalBarrier(commandBuffer, info);
 }
 
 template<class Exception, class Function>
@@ -500,28 +497,28 @@ int main() {
 			report(isMarked(copyOut), "a fence also orders encoders of different command buffers of a queue");
 
 			// what each encoder records for a fence
-			Indium::DynamicVK::vkCmdPipelineBarrier.resolve();
-			originalBarrier = reinterpret_cast<PFN_vkCmdPipelineBarrier>(Indium::DynamicVK::vkCmdPipelineBarrier.pointer);
-			Indium::DynamicVK::vkCmdPipelineBarrier.pointer = reinterpret_cast<void*>(recordBarrier);
+			Indium::DynamicVK::vkCmdPipelineBarrier2.resolve();
+			originalBarrier = reinterpret_cast<PFN_vkCmdPipelineBarrier2>(Indium::DynamicVK::vkCmdPipelineBarrier2.pointer);
+			Indium::DynamicVK::vkCmdPipelineBarrier2.pointer = reinterpret_cast<void*>(recordBarrier);
 
 			auto probe = rig.queueA->commandBuffer();
 			globalBarriers = 0;
 			auto updating = probe->computeCommandEncoder();
 			updating->updateFence(fence);
 			updating->endEncoding();
-			report(globalBarriers == 1, "updating a fence in a compute encoder records nothing besides the barrier that ends it");
+			report(globalBarriers == 0, "updating a fence in a compute encoder records nothing");
 
 			globalBarriers = 0;
 			auto waiting = probe->computeCommandEncoder();
 			waiting->waitForFence(fence);
 			waiting->endEncoding();
-			report(globalBarriers == 2, "waiting for a fence in a compute encoder records a memory dependency");
+			report(globalBarriers == 1, "waiting for a fence in a compute encoder records a memory dependency");
 
 			globalBarriers = 0;
 			auto blitWaiting = probe->blitCommandEncoder();
 			blitWaiting->waitForFence(fence);
 			blitWaiting->endEncoding();
-			report(globalBarriers == 2, "waiting for a fence in a blit encoder records a memory dependency");
+			report(globalBarriers == 1, "waiting for a fence in a blit encoder records a memory dependency");
 
 			auto descriptor = Indium::TextureDescriptor::texture2DDescriptor(Indium::PixelFormat::RGBA8Unorm, 4, 4, false);
 			descriptor.usage = Indium::TextureUsage::RenderTarget;
@@ -533,12 +530,13 @@ int main() {
 			auto render = probe->renderCommandEncoder(pass);
 			render->waitForFence(fence, Indium::RenderStages::Vertex);
 			render->updateFence(fence, Indium::RenderStages::Fragment);
+			report(globalBarriers == 0, "a render encoder takes fence calls without a barrier inside its pass");
 			render->endEncoding();
-			report(globalBarriers == 1, "a render encoder takes fence calls without a barrier inside its pass");
+			report(globalBarriers == 1, "a render encoder that waits for a fence has the memory dependency in front of its pass");
 
 			probe->commit();
 			probe->waitUntilCompleted();
-			Indium::DynamicVK::vkCmdPipelineBarrier.pointer = reinterpret_cast<void*>(originalBarrier);
+			Indium::DynamicVK::vkCmdPipelineBarrier2.pointer = reinterpret_cast<void*>(originalBarrier);
 
 			auto cb = rig.queueA->commandBuffer();
 			auto encoder = cb->computeCommandEncoder();

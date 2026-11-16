@@ -27,8 +27,21 @@ namespace Indium {
 		ScratchArena _scratch;
 		// the length asked for each threadgroup memory argument index (see setThreadgroupMemoryLength())
 		std::unordered_map<size_t, size_t> _threadgroupMemoryLengths;
+		// whether the commands of the encoder are ordered by what they access (see HazardTracker)
+		bool _tracked = true;
+		// resources declared with useResource() and useHeap(), which every later dispatch may access
+		HazardAccessSet _declared;
+		size_t _dispatchCount = 0;
+		// a dispatch or a declaration reached a resource that is not tracked
+		bool _usesUntracked = false;
 
 		void updateBindings();
+		/**
+		 * Records the barriers that make the dispatch about to be recorded safe. `indirectBuffer` is the buffer the
+		 * dispatch reads its arguments from, if any.
+		 */
+		void orderDispatch(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset);
+		void recordUntrackedBarrier();
 
 	public:
 		PrivateComputeCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const ComputePassDescriptor& descriptor);
@@ -57,6 +70,13 @@ namespace Indium {
 		virtual void dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) override;
 
 		virtual void setImageblockSize(size_t width, size_t height) override;
+
+		virtual void useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) override;
+		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) override;
+		virtual void useHeap(const std::shared_ptr<Heap>& heap) override;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) override;
+		virtual void memoryBarrier(BarrierScope scope) override;
+		virtual void memoryBarrier(const std::vector<std::shared_ptr<Resource>>& resources) override;
 
 		virtual void setStageInRegion(Region region) override;
 

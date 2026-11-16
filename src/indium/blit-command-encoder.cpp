@@ -7,6 +7,46 @@
 #include <indium/dynamic-vk.hpp>
 #include <algorithm>
 
+namespace {
+	// copies, fills and blits are transfer operations
+	constexpr VkPipelineStageFlags2 transferStage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+
+	bool isTracked(const std::shared_ptr<Indium::Resource>& resource) {
+		return resource && resource->hazardTrackingMode() == Indium::HazardTrackingMode::HazardTrackingModeTracked;
+	}
+
+	/** The next command reads or writes `length` bytes of the buffer from `offset`. */
+	void useBuffer(Indium::PrivateCommandBuffer& commandBuffer, const std::shared_ptr<Indium::PrivateBuffer>& buffer, size_t offset, size_t length, bool write) {
+		if (commandBuffer.hazardsTracked() && isTracked(buffer)) {
+			commandBuffer.hazards().use(buffer->hazardRange(offset, length), transferStage, write ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_TRANSFER_READ_BIT);
+		}
+	}
+
+	/** The next command reads or writes the texture (all of it: its subresources are not told apart). */
+	void useTexture(Indium::PrivateCommandBuffer& commandBuffer, const std::shared_ptr<Indium::PrivateTexture>& texture, bool write) {
+		if (commandBuffer.hazardsTracked() && isTracked(texture)) {
+			commandBuffer.hazards().use(texture->hazardRange(), transferStage, write ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_TRANSFER_READ_BIT);
+		}
+	}
+
+	/** Records what the uses before it need. */
+	void flushUses(Indium::PrivateCommandBuffer& commandBuffer) {
+		if (commandBuffer.hazardsTracked()) {
+			commandBuffer.hazards().flush(commandBuffer.commandBuffer());
+		}
+	}
+
+	/**
+	 * The transition back to the texture's own layout ends with a barrier to every later command (see the callers), which
+	 * orders everything that touched the texture before them: nothing is outstanding for it.
+	 */
+	void releaseTexture(Indium::PrivateCommandBuffer& commandBuffer, const std::shared_ptr<Indium::PrivateTexture>& texture) {
+		if (commandBuffer.hazardsTracked() && isTracked(texture)) {
+			commandBuffer.hazards().release(texture->hazardRange());
+		}
+	}
+}
+
 Indium::BlitCommandEncoder::~BlitCommandEncoder() {};
 
 Indium::PrivateBlitCommandEncoder::PrivateBlitCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer):
@@ -35,7 +75,9 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	info.dstOffset = destinationOffset;
 	info.size = size;
 
-	// TODO: maybe we need a pipeline barrier here?
+	useBuffer(*cmdbuf, privateSource, sourceOffset, size, false);
+	useBuffer(*cmdbuf, privateDest, destinationOffset, size, true);
+	flushUses(*cmdbuf);
 
 	DynamicVK::vkCmdCopyBuffer(cmdbuf->commandBuffer(), privateSource->buffer(), privateDest->buffer(), 1, &info);
 };
@@ -54,6 +96,10 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateDest->pixelFormat());
+
+	useBuffer(*cmdbuf, privateSource, sourceOffset, SIZE_MAX, false);
+	useTexture(*cmdbuf, privateDest, true);
+	flushUses(*cmdbuf);
 
 	// first, transition the image to the optimal layout for transfer destinations
 	VkImageMemoryBarrier barrier {};
@@ -98,7 +144,8 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 	// TODO: relax this mask if possible
 	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	releaseTexture(*cmdbuf, privateDest);
 };
 
 void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& source, size_t sourceSlice, size_t sourceLevel, Origin sourceOrigin, Size sourceSize, const std::shared_ptr<Buffer>& destination, size_t destinationOffset, size_t destinationBytesPerRow, size_t destinationBytesPerImage, BlitOption options) {
@@ -115,6 +162,10 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateSource->pixelFormat());
+
+	useTexture(*cmdbuf, privateSource, false);
+	useBuffer(*cmdbuf, privateDest, destinationOffset, SIZE_MAX, true);
+	flushUses(*cmdbuf);
 
 	// first, transition the image to the optimal layout for transfer sources
 	VkImageMemoryBarrier barrier {};
@@ -159,7 +210,8 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 	// TODO: relax this mask if possible
 	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	releaseTexture(*cmdbuf, privateSource);
 };
 
 void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& source, size_t sourceSlice, size_t sourceLevel, Origin sourceOrigin, const std::shared_ptr<Texture>& destination, size_t destinationSlice, size_t destinationLevel, Origin destinationOrigin, size_t sliceCount, size_t levelCount, Size size) {
@@ -175,6 +227,10 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateSource->pixelFormat());
+
+	useTexture(*cmdbuf, privateSource, false);
+	useTexture(*cmdbuf, privateDest, true);
+	flushUses(*cmdbuf);
 
 	// first, transition the images to the optimal layouts for transfers (one as the source, the other as the destination)
 
@@ -244,7 +300,9 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	// TODO: relax this mask if possible
 	barriers[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
 
-	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, sizeof(barriers) / sizeof(*barriers), barriers);
+	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, sizeof(barriers) / sizeof(*barriers), barriers);
+	releaseTexture(*cmdbuf, privateSource);
+	releaseTexture(*cmdbuf, privateDest);
 };
 
 void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& source, const std::shared_ptr<Texture>& destination) {
@@ -325,7 +383,8 @@ void Indium::PrivateBlitCommandEncoder::fillBuffer(const std::shared_ptr<Buffer>
 		throw std::runtime_error("Misaligned fillBuffer length");
 	}
 
-	// TODO: maybe we need a pipeline barrier here?
+	useBuffer(*cmdbuf, privateBuffer, range.start, range.length, true);
+	flushUses(*cmdbuf);
 
 	DynamicVK::vkCmdFillBuffer(cmdbuf->commandBuffer(), privateBuffer->buffer(), range.start, range.length, value32);
 };
@@ -344,6 +403,9 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	bool is1D = texType == TextureType::e1D || texType == TextureType::e1DArray;
 	bool is2D = texType == TextureType::e2D || texType == TextureType::e2DArray || texType == TextureType::e2DMultisample || texType == TextureType::e2DMultisampleArray || texType == TextureType::eCube || texType == TextureType::eCubeArray;
 	bool is3D = texType == TextureType::e3D;
+
+	useTexture(*cmdbuf, privateTexture, true);
+	flushUses(*cmdbuf);
 
 	//
 	// setup the common barrier info for the transitions and perform the initial transition
@@ -444,7 +506,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 		barrier.newLayout = privateTexture->imageLayout();
 
-		DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
 	// finally, transition the last level into the image's original layout
@@ -455,7 +517,8 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barrier.newLayout = privateTexture->imageLayout();
 
-	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	releaseTexture(*cmdbuf, privateTexture);
 };
 
 void Indium::PrivateBlitCommandEncoder::updateFence(const std::shared_ptr<Fence>& fence) {
@@ -466,13 +529,17 @@ void Indium::PrivateBlitCommandEncoder::updateFence(const std::shared_ptr<Fence>
 void Indium::PrivateBlitCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence) {
 	checkFence(fence, _privateDevice);
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
-		finishTrackedEncoder(commandBuffer->commandBuffer());
+		// everything the fence's encoders did, tracked resources or not, is ordered before what follows
+		commandBuffer->hazards().fullBarrier(commandBuffer->commandBuffer());
 	}
 };
 
 void Indium::PrivateBlitCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
-		finishTrackedEncoder(commandBuffer->commandBuffer());
+		// a tracked encoder leaves nothing to record: what follows waits for what it wrote when it uses it
+		if (!commandBuffer->hazardsTracked()) {
+			commandBuffer->endUntrackedEncoder();
+		}
 		commandBuffer->endEncoderSegment(_readOnlyTextures, _readWriteTextures);
 	}
 };

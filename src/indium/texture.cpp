@@ -473,6 +473,12 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	_descriptor(descriptor)
 {
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(_descriptor.resourceOptions) >> 4) & 0xf);
+	// a texture over a buffer's memory is ordered the way the buffer is, a heap's texture the way its heap is
+	if (backing) {
+		_hazardTrackingMode = backing->buffer->hazardTrackingMode();
+	} else {
+		_hazardTrackingMode = resolveHazardTrackingMode(_descriptor.resourceOptions, heapBacking && heapBacking->heap ? heapBacking->heap->hazardTrackingMode() : HazardTrackingMode::HazardTrackingModeDefault);
+	}
 
 	bool isCube = _descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray;
 
@@ -739,7 +745,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 			throw std::runtime_error("The heap cannot place the texture");
 		}
 		_requiredSize = _heapAllocation->size();
-		DynamicVK::vkBindImageMemory(_device->device(), _image, heapBacking->heap->memory(), heapBacking->heap->memoryOffset(_heapAllocation->offset()));
+		auto heapMemoryOffset = heapBacking->heap->memoryOffset(_heapAllocation->offset());
+		DynamicVK::vkBindImageMemory(_device->device(), _image, heapBacking->heap->memory(), heapMemoryOffset);
+		_hazardRange = HazardRange::memory(heapBacking->heap->memory(), heapMemoryOffset, heapMemoryOffset + reqs.size);
 	} else if (direct) {
 		// The image has to lie where the buffer's rows are: at the pitch the buffer was laid out with, at an
 		// offset the image can be bound at, in a memory type it can use, and inside the buffer's memory.
@@ -769,6 +777,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		_backingBytesPerRow = direct->bytesPerRow;
 		_memory = VK_NULL_HANDLE;
 		DynamicVK::vkBindImageMemory(_device->device(), _image, buffer->memory(), bindOffset);
+		_hazardRange = HazardRange::memory(buffer->memory(), bindOffset, bindOffset + reqs.size);
 	} else if (import) {
 		// An imported DMA-BUF is a dedicated allocation of its own, bound at offset 0 and freed
 		// directly; it never comes from or goes back to the memory pool.
@@ -803,6 +812,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	if (!direct && !heapBacking) {
 		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+		_hazardRange = HazardRange::memory(_memory, memoryOffset, memoryOffset + reqs.size);
 	}
 
 	if (shadow) {

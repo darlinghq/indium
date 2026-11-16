@@ -28,6 +28,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 	auto vkDevice = _privateDevice->device();
 	auto vkCmdBuf = buf->commandBuffer();
+	_tracked = buf->hazardsTracked();
 
 	// A pass may have no color attachments (a depth-only pass) and gaps between them; unused color
 	// attachments stay in the subpass as VK_ATTACHMENT_UNUSED so the pipeline's indices still match.
@@ -451,7 +452,80 @@ bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 		DynamicVK::vkCmdBindVertexBuffers(buf->commandBuffer(), 0, vertexInputBindings.size(), buffers.data(), offsets.data());
 	}
 
+	noteBindings();
 	return true;
+};
+
+void Indium::PrivateRenderCommandEncoder::noteBindings() {
+	if (!_tracked) {
+		return;
+	}
+
+	forEachBoundResource(_functionResources[0], _privatePSO->vertexFunctionInfo(), [&](const HazardRange& range, VkAccessFlags2 access) {
+		_accesses.add(range, VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, access);
+	});
+	forEachBoundResource(_functionResources[1], _privatePSO->fragmentFunctionInfo(), [&](const HazardRange& range, VkAccessFlags2 access) {
+		_accesses.add(range, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, access);
+	});
+
+	for (auto metalIndex: _privatePSO->vertexInputBindings()) {
+		if (metalIndex < _functionResources[0].buffers.size()) {
+			noteBuffer(_functionResources[0].buffers[metalIndex].first, _functionResources[0].buffers[metalIndex].second, SIZE_MAX,
+				VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+		}
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::noteBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t length, VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+	auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+	if (_tracked && privateBuffer && privateBuffer->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeTracked) {
+		_accesses.add(privateBuffer->hazardRange(offset, length), stages, access);
+	}
+};
+
+Indium::HazardTracker::Barriers Indium::PrivateRenderCommandEncoder::orderPass() {
+	auto buf = _privateCommandBuffer.lock();
+	auto& tracker = buf->hazards();
+	HazardTracker::Barriers barriers;
+
+	if (_waitsForFence) {
+		// the pass cannot take a barrier once it has begun, so everything it waits for is ordered before all of it
+		VkMemoryBarrier2 barrier {};
+		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+		barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+		barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+		barriers.push_back(barrier);
+		tracker.noteFullBarrier();
+	}
+
+	// the attachments: loaded, blended, tested and stored by the pass
+	const auto attachment = [&](const std::shared_ptr<Texture>& texture, VkPipelineStageFlags2 stages, VkAccessFlags2 access) {
+		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
+		if (privateTexture && privateTexture->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeTracked) {
+			_accesses.add(privateTexture->hazardRange(), stages, access);
+		}
+	};
+	constexpr VkPipelineStageFlags2 colorStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	constexpr VkAccessFlags2 colorAccess = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+	for (const auto& color: _descriptor.colorAttachments) {
+		attachment(color.texture, colorStage, colorAccess);
+		attachment(color.resolveTexture, colorStage, colorAccess);
+	}
+	constexpr VkPipelineStageFlags2 depthStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+	constexpr VkAccessFlags2 depthAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	if (_descriptor.depthAttachment) {
+		attachment(_descriptor.depthAttachment->texture, depthStage, depthAccess);
+	}
+	if (_descriptor.stencilAttachment) {
+		attachment(_descriptor.stencilAttachment->texture, depthStage, depthAccess);
+	}
+
+	_accesses.applyTo(tracker);
+	auto taken = tracker.take();
+	barriers.insert(barriers.end(), taken.begin(), taken.end());
+	return barriers;
 };
 
 void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBuffer, PrimitiveType primitiveType) {
@@ -520,6 +594,7 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	_keepAliveBuffers.push_back(indirectBuffer);
 
 	if (drawable) {
+		noteBuffer(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndirectCommand), VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
 		DynamicVK::vkCmdDrawIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndirectCommand));
 	}
 
@@ -547,7 +622,14 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 		_visibilityResults->end(buf->commandBuffer());
 	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
-	finishTrackedEncoder(buf->commandBuffer());
+	// What the pass reads has to be ordered after what came before, and a pass cannot take barriers once begun, so
+	// they are known only now and recorded in front of it.
+	HazardTracker::Barriers barriers;
+	if (_tracked) {
+		barriers = orderPass();
+	} else {
+		buf->endUntrackedEncoder();
+	}
 	if (_visibilityResults) {
 		_visibilityResults->resolve(buf);
 	}
@@ -555,7 +637,7 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto used = _functionResources[0].usedTextures;
 	used.insert(used.end(), _functionResources[1].usedTextures.begin(), _functionResources[1].usedTextures.end());
 	used.insert(used.end(), _readOnlyTextures.begin(), _readOnlyTextures.end());
-	buf->endEncoderSegment(used, _readWriteTextures);
+	buf->endEncoderSegment(used, _readWriteTextures, barriers);
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
@@ -668,6 +750,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	auto privateIndexBuffer = std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer);
 
 	if (drawable) {
+		noteBuffer(indexBuffer, indexBufferOffset, SIZE_MAX, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
 		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
 		DynamicVK::vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
 	}
@@ -699,6 +782,8 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	_keepAliveBuffers.push_back(indirectBuffer);
 
 	if (drawable) {
+		noteBuffer(indexBuffer, indexBufferOffset, SIZE_MAX, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+		noteBuffer(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndexedIndirectCommand), VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
 		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer)->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
 		DynamicVK::vkCmdDrawIndexedIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
 	}
@@ -780,95 +865,31 @@ void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> 
 	useResources({ resource }, usage, stages);
 };
 
+static VkPipelineStageFlags2 renderStagesToVk(Indium::RenderStages stages) {
+	VkPipelineStageFlags2 result = 0;
+	if (!!(stages & Indium::RenderStages::Vertex)) {
+		result |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+	}
+	if (!!(stages & Indium::RenderStages::Fragment)) {
+		result |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+	}
+	if (!!(stages & (Indium::RenderStages::Tile | Indium::RenderStages::Object | Indium::RenderStages::Mesh))) {
+		// stages indium has no shaders for: they are whatever graphics work there is
+		result |= VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+	}
+	return result;
+}
+
 void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage, RenderStages stages) {
-	// TODO: image layout transitions. maybe.
-	//       right now, we always keep images in the layout described by their imageLayout() method.
-	//       we only briefly transition them away for an operation and then transition them back.
-	//       however, these transitions are probably unnecessary in most cases, so we could optimize
-	//       performance by getting rid of them.
-
-	auto buf = _privateCommandBuffer.lock();
-
-	std::vector<VkBufferMemoryBarrier> bufferBarriers;
-	std::vector<VkImageMemoryBarrier> imageBarriers;
-
-	// TODO: relax this mask, maybe; it depends on what Metal does here.
-	VkAccessFlags source = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	VkAccessFlags dest = VK_ACCESS_NONE;
-
-	if (!!(usage & (ResourceUsage::Read | ResourceUsage::Sample))) {
-		dest |= VK_ACCESS_SHADER_READ_BIT;
+	// The resources are reached through memory the draws' bindings do not show, and the pass cannot take a
+	// barrier once it has begun: they are ordered in front of the pass, as the draws' own resources are.
+	if (!_tracked) {
+		return;
 	}
-
-	if (!!(usage & ResourceUsage::Write)) {
-		dest |= VK_ACCESS_SHADER_WRITE_BIT;
-	}
-
+	auto vkStages = renderStagesToVk(stages);
 	for (const auto& resource: resources) {
-		if (auto buffer = std::dynamic_pointer_cast<PrivateBuffer>(resource)) {
-			VkBufferMemoryBarrier barrier {};
-
-			barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-			barrier.srcAccessMask = source;
-			barrier.dstAccessMask = dest;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.buffer = buffer->buffer();
-			barrier.offset = 0;
-			barrier.size = VK_WHOLE_SIZE;
-
-			bufferBarriers.push_back(barrier);
-		} else if (auto texture = std::dynamic_pointer_cast<PrivateTexture>(resource)) {
-			VkImageMemoryBarrier barrier {};
-
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.srcAccessMask = source;
-			barrier.dstAccessMask = dest;
-			barrier.oldLayout = texture->imageLayout();
-			barrier.newLayout = barrier.oldLayout;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = texture->image();
-			barrier.subresourceRange.aspectMask = pixelFormatToVkImageAspectFlags(texture->pixelFormat());
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = texture->mipmapLevelCount();
-			barrier.subresourceRange.baseArrayLayer = 0;
-			barrier.subresourceRange.layerCount = texture->vulkanArrayLength();
-
-			imageBarriers.push_back(barrier);
-		} else {
-			throw std::runtime_error("Unsupported resource");
-		}
+		addDeclaredResource(_accesses, resource, usage, vkStages);
 	}
-
-	// TODO: relax this, maybe, depending on what Metal does.
-	VkPipelineStageFlags srcStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-	VkPipelineStageFlags dstStages = VK_PIPELINE_STAGE_NONE;
-
-	if (!!(stages & RenderStages::Vertex)) {
-		dstStages |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-	}
-
-	if (!!(stages & RenderStages::Fragment)) {
-		dstStages |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-	}
-
-	if (!!(stages & RenderStages::Tile)) {
-		// XXX: not sure about this one
-		dstStages |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
-	}
-
-	if (!!(stages & RenderStages::Object)) {
-		// ???
-	}
-
-	if (!!(stages & RenderStages::Mesh)) {
-		// not yet defined on all platforms as 'EXT' instead of 'NV'
-		//dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_EXT;
-		dstStages |= VK_PIPELINE_STAGE_MESH_SHADER_BIT_NV;
-	}
-
-	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, 0, 0, nullptr, bufferBarriers.size(), bufferBarriers.data(), imageBarriers.size(), imageBarriers.data());
 };
 
 void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) {
@@ -887,6 +908,8 @@ void Indium::PrivateRenderCommandEncoder::updateFence(const std::shared_ptr<Fenc
 
 void Indium::PrivateRenderCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) {
 	checkFence(fence, _privateDevice);
+	// the barrier cannot be recorded inside the pass: see orderPass()
+	_waitsForFence = true;
 };
 
 void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) {
@@ -936,4 +959,26 @@ void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, Rend
 
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), srcStages, dstStages, flags, 1, &barrier, 0, nullptr, 0, nullptr);
+};
+
+void Indium::PrivateRenderCommandEncoder::useHeap(const std::shared_ptr<Heap>& heap) {
+	useHeap(heap, RenderStages::Vertex | RenderStages::Fragment | RenderStages::Tile | RenderStages::Object | RenderStages::Mesh);
+};
+
+void Indium::PrivateRenderCommandEncoder::useHeap(const std::shared_ptr<Heap>& heap, RenderStages stages) {
+	if (_tracked) {
+		addDeclaredHeap(_accesses, heap, renderStagesToVk(stages));
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) {
+	for (const auto& heap: heaps) {
+		useHeap(heap);
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps, RenderStages stages) {
+	for (const auto& heap: heaps) {
+		useHeap(heap, stages);
+	}
 };

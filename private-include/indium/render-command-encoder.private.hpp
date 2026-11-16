@@ -47,6 +47,20 @@ namespace Indium {
 		std::vector<std::shared_ptr<Buffer>> _keepAliveBuffers;
 		ScratchArena _scratch;
 
+		// whether the pass is ordered against other commands by what it accesses (see HazardTracker)
+		bool _tracked = true;
+		// what the draws and the declarations of the pass access, ordered when the pass ends
+		HazardAccessSet _accesses;
+		// the pass waits for a fence: everything before it is ordered before the pass
+		bool _waitsForFence = false;
+
+		/** Notes the resources the next draw reaches through the bindings of the pipeline. */
+		void noteBindings();
+		/** Notes a buffer the draw reads outside the bindings: indices, indirect arguments. */
+		void noteBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t length, VkPipelineStageFlags2 stages, VkAccessFlags2 access);
+		/** Gives the tracker what the pass accessed, and returns the barriers that have to come before the pass. */
+		HazardTracker::Barriers orderPass();
+
 		/**
 		 * Binds the descriptor sets and vertex buffers for the next draw.
 		 *
@@ -120,6 +134,10 @@ namespace Indium {
 		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage, RenderStages stages) override;
 		virtual void useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) override;
 		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) override;
+		virtual void useHeap(const std::shared_ptr<Heap>& heap) override;
+		virtual void useHeap(const std::shared_ptr<Heap>& heap, RenderStages stages) override;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) override;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps, RenderStages stages) override;
 		virtual void memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) override;
 		virtual void updateFence(const std::shared_ptr<Fence>& fence, RenderStages after) override;
 		virtual void waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) override;

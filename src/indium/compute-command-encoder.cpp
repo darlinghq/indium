@@ -11,6 +11,11 @@ Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_p
 	_descriptor(descriptor),
 	_descriptorPools(_privateDevice->device())
 {
+	_tracked = commandBuffer->hazardsTracked();
+	if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
+		// the dispatches may run together: only what came before the encoder is waited for
+		commandBuffer->hazards().beginUnorderedGroup();
+	}
 };
 
 Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
@@ -21,7 +26,12 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
-		finishTrackedEncoder(commandBuffer->commandBuffer());
+		if (_tracked) {
+			// nothing is recorded: the next command that uses what this encoder wrote waits for it
+			commandBuffer->hazards().endUnorderedGroup();
+		} else {
+			commandBuffer->endUntrackedEncoder();
+		}
 		commandBuffer->endEncoderSegment(_functionResources.usedTextures, {});
 	}
 };
@@ -34,7 +44,11 @@ void Indium::PrivateComputeCommandEncoder::updateFence(const std::shared_ptr<Fen
 void Indium::PrivateComputeCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence) {
 	checkFence(fence, _privateDevice);
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
-		finishTrackedEncoder(commandBuffer->commandBuffer());
+		// everything the fence's encoders did, tracked resources or not, is ordered before what follows
+		commandBuffer->hazards().fullBarrier(commandBuffer->commandBuffer());
+		if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
+			commandBuffer->hazards().beginUnorderedGroup();
+		}
 	}
 };
 
@@ -112,6 +126,8 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 	// TODO: avoid re-binding descriptors on every dispatch
 	updateBindings();
 
+	orderDispatch(nullptr, 0);
+
 	DynamicVK::vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
@@ -135,13 +151,8 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 
 	updateBindings();
 
-	// An earlier dispatch of this encoder may have written the arguments, and Vulkan does not order that
-	// against the GPU's read of them the way Metal does for the dispatches of a serial encoder.
-	VkMemoryBarrier barrier {};
-	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
-	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+	// the arguments may have been written by the encoders before, or by an earlier dispatch of this one
+	orderDispatch(indirectBuffer, indirectBufferOffset);
 
 	// the buffer has to stay alive until the command buffer has completed
 	_keepAliveBuffers.push_back(indirectBuffer);
@@ -202,4 +213,102 @@ void Indium::PrivateComputeCommandEncoder::updateBindings() {
 	std::array<VkDescriptorSet, 1> descriptorSets = createDescriptorSets(_pso->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources }, { _pso->functionInfo() }, _keepAliveBuffers, _scratch);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, _pso->layout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
+};
+
+void Indium::PrivateComputeCommandEncoder::recordUntrackedBarrier() {
+	auto buf = _privateCommandBuffer.lock();
+	VkMemoryBarrier2 barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+	barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+	barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+	barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+	barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+	HazardTracker::record(buf->commandBuffer(), { barrier });
+};
+
+void Indium::PrivateComputeCommandEncoder::orderDispatch(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) {
+	auto buf = _privateCommandBuffer.lock();
+	auto vkCommandBuffer = buf->commandBuffer();
+
+	if (!_tracked) {
+		// Every encoder ends with a barrier on everything, but the dispatches of one encoder are not ordered by that. A
+		// serial encoder runs them one after the other, so each waits for the one before it; one of a
+		// concurrent encoder only has to wait for the dispatch that wrote its arguments.
+		if ((_descriptor.dispatchType == DispatchType::Serial && _dispatchCount > 0) || indirectBuffer) {
+			recordUntrackedBarrier();
+		}
+		++_dispatchCount;
+		return;
+	}
+
+	auto& tracker = buf->hazards();
+	constexpr VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+	bool untracked = forEachBoundResource(_functionResources, _pso->functionInfo(), [&](const HazardRange& range, VkAccessFlags2 access) {
+		tracker.use(range, stage, access);
+	});
+	_declared.applyTo(tracker);
+	if (auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)) {
+		if (privateBuffer->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeUntracked) {
+			untracked = true;
+		} else {
+			tracker.use(privateBuffer->hazardRange(indirectBufferOffset, sizeof(VkDispatchIndirectCommand)), VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+		}
+	}
+	tracker.flush(vkCommandBuffer);
+	_usesUntracked = _usesUntracked || untracked;
+
+	// The dispatches of a serial encoder run one after the other, whichever memory they share, so one that
+	// reaches a resource nothing tracks (which the tracker cannot order) waits for the ones before it.
+	if (untracked && _descriptor.dispatchType == DispatchType::Serial && _dispatchCount > 0) {
+		recordUntrackedBarrier();
+	}
+	++_dispatchCount;
+};
+
+void Indium::PrivateComputeCommandEncoder::useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) {
+	if (_tracked && !addDeclaredResource(_declared, resource, usage, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)) {
+		_usesUntracked = true;
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) {
+	for (const auto& resource: resources) {
+		useResource(resource, usage);
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::useHeap(const std::shared_ptr<Heap>& heap) {
+	if (_tracked && !addDeclaredHeap(_declared, heap, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT)) {
+		_usesUntracked = true;
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) {
+	for (const auto& heap: heaps) {
+		useHeap(heap);
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::memoryBarrier(BarrierScope scope) {
+	constexpr size_t knownScope = static_cast<size_t>(BarrierScope::Buffers | BarrierScope::Textures | BarrierScope::RenderTargets);
+	if (!scope || (static_cast<size_t>(scope) & ~knownScope)) {
+		throw std::invalid_argument("Invalid memory barrier scope");
+	}
+	auto buf = _privateCommandBuffer.lock();
+
+	// The resources the dispatches used are ordered by the tracker; the ones it does not know (untracked, or
+	// reached through memory it cannot see into) by a barrier between all the dispatches.
+	if (_usesUntracked || !_tracked) {
+		recordUntrackedBarrier();
+	}
+	if (_tracked) {
+		buf->hazards().groupBarrier(buf->commandBuffer(), VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+			VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::memoryBarrier(const std::vector<std::shared_ptr<Resource>>& resources) {
+	// ordering the given resources only is not cheaper than ordering all of them
+	memoryBarrier(BarrierScope::Buffers | BarrierScope::Textures);
 };

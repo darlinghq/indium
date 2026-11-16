@@ -5,12 +5,14 @@
 #include <indium/counter.hpp>
 #include <indium/types.hpp>
 #include <indium/compute-pipeline.hpp>
+#include <indium/resource.hpp>
 
 #include <memory>
 #include <unordered_map>
 
 namespace Indium {
 	class Buffer;
+	class Heap;
 	class SamplerState;
 	class Texture;
 
@@ -57,6 +59,27 @@ namespace Indium {
 		virtual void dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) = 0;
 
 		virtual void setImageblockSize(size_t width, size_t height) = 0;
+
+		/**
+		 * Declares that the dispatches recorded after this call may read or write `resource` through memory
+		 * Indium cannot see into (an argument buffer, an address stored in a buffer). Resources the dispatch is given
+		 * with setBuffer() and setTexture() need no declaration; this is for the others. Declaring a resource whose
+		 * hazard tracking mode is untracked changes nothing.
+		 */
+		virtual void useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) = 0;
+		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) = 0;
+		/** Like useResource() for every resource of the heap, for a heap that is tracked. */
+		virtual void useHeap(const std::shared_ptr<Heap>& heap) = 0;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) = 0;
+
+		/**
+		 * Orders what the dispatches recorded so far wrote before what the ones recorded next read or write. A dispatch
+		 * of an encoder with the serial dispatch type is already ordered after the one before it, so this is for
+		 * the concurrent dispatch type, and for resources that are not tracked. With no resources, every resource is
+		 * ordered; `BarrierScope` says which kinds of memory.
+		 */
+		virtual void memoryBarrier(BarrierScope scope) = 0;
+		virtual void memoryBarrier(const std::vector<std::shared_ptr<Resource>>& resources) = 0;
 
 		virtual void setStageInRegion(Region region) = 0;
 

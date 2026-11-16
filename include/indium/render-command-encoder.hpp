@@ -11,6 +11,7 @@ namespace Indium {
 	class RenderPassDescriptor;
 	class CommandBuffer;
 	class Buffer;
+	class Heap;
 	class Texture;
 	class DepthStencilState;
 	class SamplerState;
@@ -89,6 +90,11 @@ namespace Indium {
 		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage, RenderStages stages) = 0;
 		virtual void useResource(std::shared_ptr<Resource> resource, ResourceUsage usage) = 0;
 		virtual void useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) = 0;
+		/** Declares that the draws may reach every resource of `heap`, for a heap that is tracked. */
+		virtual void useHeap(const std::shared_ptr<Heap>& heap) = 0;
+		virtual void useHeap(const std::shared_ptr<Heap>& heap, RenderStages stages) = 0;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps) = 0;
+		virtual void useHeaps(const std::vector<std::shared_ptr<Heap>>& heaps, RenderStages stages) = 0;
 
 		/**
 		 * Makes the writes that commands encoded so far make in `after` stages to the resources in

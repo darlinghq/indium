@@ -4,9 +4,11 @@
 
 #include <indium/memory-pool.private.hpp>
 #include <indium/heap.private.hpp>
+#include <indium/hazard-tracker.private.hpp>
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 
@@ -22,6 +24,7 @@ namespace Indium {
 		size_t _length;
 		StorageMode _storageMode;
 		void* _mapped = nullptr;
+		HazardTrackingMode _hazardTrackingMode = HazardTrackingMode::HazardTrackingModeTracked;
 
 	public:
 		PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options);
@@ -50,6 +53,20 @@ namespace Indium {
 		virtual size_t allocatedSize() override;
 		virtual void makeAliasable() override;
 		virtual bool isAliasable() override;
+		virtual HazardTrackingMode hazardTrackingMode() const override { return _hazardTrackingMode; }
+
+		/**
+		 * The bytes of device memory `length` bytes from `offset` of the buffer are (clamped to the buffer), for
+		 * hazard tracking. By default from `offset` to the end of the buffer: that is what a shader given the
+		 * buffer at an offset may reach.
+		 */
+		HazardRange hazardRange(size_t offset = 0, size_t length = SIZE_MAX) const {
+			if (offset >= _length) {
+				return HazardRange {};
+			}
+			length = std::min(length, _length - offset);
+			return HazardRange::memory(_memory, _allocation.offset + offset, _allocation.offset + offset + length);
+		}
 
 		/** The memory the buffer is bound to: where it starts in `memory()`, how many bytes are reserved for it and the memory type. */
 		VkDeviceSize memoryOffset() const { return _allocation.offset; }
