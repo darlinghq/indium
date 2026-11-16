@@ -364,7 +364,34 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		}
 	}
 
+	// The extension adds formats to the device and its feature has to be enabled to use them.
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_KHR_MAINTENANCE_5_EXTENSION_NAME) == 0;
+	})) {
+		VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 {};
+		maintenance5.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &maintenance5;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		if (maintenance5.maintenance5) {
+			_enabledExtensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+			indiumFeatures = indiumFeatures | Feature::Maintenance5;
+		}
+	}
+
 	_features = indiumFeatures;
+
+	// VK_FORMAT_A8_UNORM_KHR comes with VK_KHR_maintenance5 (core in Vulkan 1.4). It is only useful for A8Unorm
+	// if everything Metal allows a texture to do can be done with it.
+	if (!!(_features & Feature::Maintenance5)) {
+		VkFormatProperties formatProperties {};
+		DynamicVK::vkGetPhysicalDeviceFormatProperties(_physicalDevice, VK_FORMAT_A8_UNORM_KHR, &formatProperties);
+		constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+			| VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+		_nativeA8Unorm = (formatProperties.optimalTilingFeatures & required) == required;
+	}
 };
 
 void Indium::PrivateDevice::createLogicalDevice() {
@@ -409,6 +436,14 @@ void Indium::PrivateDevice::createLogicalDevice() {
 		robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
 		robustness2.nullDescriptor = VK_TRUE;
 		features13.pNext = &robustness2;
+	}
+
+	VkPhysicalDeviceMaintenance5FeaturesKHR maintenance5 {};
+	if (!!(_features & Feature::Maintenance5)) {
+		maintenance5.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR;
+		maintenance5.maintenance5 = VK_TRUE;
+		maintenance5.pNext = features13.pNext;
+		features13.pNext = &maintenance5;
 	}
 
 	VkDeviceCreateInfo deviceCreateInfo {};
@@ -548,7 +583,7 @@ bool Indium::PrivateDevice::supportsDepth24Stencil8PixelFormat() const {
 bool Indium::PrivateDevice::supportsPixelFormatSampling(PixelFormat format, bool filtered) const {
 	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
 	try {
-		vkFormat = pixelFormatToVkFormat(format);
+		vkFormat = textureVkFormat(format);
 	} catch (const BadEnumValue&) {
 		return false;
 	}
@@ -567,7 +602,7 @@ bool Indium::PrivateDevice::supportsPixelFormatSampling(PixelFormat format, bool
 size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) const {
 	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
 	try {
-		vkFormat = pixelFormatToVkFormat(format);
+		vkFormat = textureVkFormat(format);
 	} catch (const BadEnumValue&) {
 		return 0;
 	}

@@ -2,8 +2,8 @@
 //
 // Pixel formats Vulkan has no direct equivalent of, and views of a texture as another pixel format,
 // checked on the real device (lavapipe or a GPU):
-//  - A8Unorm is stored as R8 and a shader reads (0, 0, 0, a); it reads and writes bytes like any
-//    one-byte format and cannot be written by a shader or rendered to;
+//  - a shader reads A8Unorm as (0, 0, 0, a); it reads and writes bytes like any one-byte format (shader writes
+//    and render targets are covered by test/a8unorm-write);
 //  - X32_Stencil8 / X24_Stencil8 are stencil-only views of Depth32Float_Stencil8 / Depth24Unorm_Stencil8,
 //    and of nothing else;
 //  - a view of the same texel size (RGBA8Unorm as RGBA8Unorm_sRGB, BGRA8Unorm, R32Uint) needs a texture made
@@ -161,8 +161,9 @@ int main() {
 					report(near(texel[0], 0x40 / 255.0f) && texel[1] == 1 && texel[2] == 0 && texel[3] == 0, "a swizzle applies on top of the A8Unorm read");
 				}
 			}
-			report(newTexture(device, PixelFormat::A8Unorm, TextureUsage::ShaderWrite) == nullptr, "an A8Unorm texture cannot be written by shaders");
-			report(newTexture(device, PixelFormat::A8Unorm, TextureUsage::RenderTarget) == nullptr, "an A8Unorm texture cannot be a render target");
+			// both come with a native A8 format; a device without one refuses both
+			report((newTexture(device, PixelFormat::A8Unorm, TextureUsage::ShaderWrite) == nullptr) == (newTexture(device, PixelFormat::A8Unorm, TextureUsage::RenderTarget) == nullptr),
+				"an A8Unorm texture can be written by shaders and rendered to, or neither");
 
 			auto r8 = newTexture(device, PixelFormat::R8Unorm, TextureUsage::ShaderRead | TextureUsage::PixelFormatView);
 			if (r8) {

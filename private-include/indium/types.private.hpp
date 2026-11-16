@@ -681,12 +681,6 @@ namespace Indium {
 			&& imageBlock.width == viewBlock.width && imageBlock.height == viewBlock.height;
 	};
 
-	// The Vulkan format of a view of a pixel format on an image created with `imageFormat`: the stencil views
-	// keep the image's combined format and select the stencil aspect, every other format has its own.
-	static constexpr VkFormat viewVkFormat(PixelFormat view, VkFormat imageFormat) {
-		return pixelFormatIsStencilView(view) ? imageFormat : pixelFormatToVkFormat(view);
-	};
-
 	static constexpr VkColorComponentFlags colorWriteMaskToVkColorComponentFlags(ColorWriteMask mask) {
 		VkColorComponentFlags flags = 0;
 		if (!!(mask & ColorWriteMask::Alpha)) {
