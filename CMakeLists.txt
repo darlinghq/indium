@@ -71,6 +71,7 @@ set(indium_sources
 	src/indium/sampler.cpp
 	src/indium/texture.cpp
 	src/indium/visibility-results.cpp
+	src/indium/texture-upload.cpp
 )
 
 set(iridium_sources

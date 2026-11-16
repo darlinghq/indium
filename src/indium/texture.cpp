@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <cstring>
 #include <numeric>
+#include <algorithm>
+#include <functional>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -119,6 +121,12 @@ namespace {
 	}
 };
 
+// A view starts at one of its texture's levels, and has the size of that level.
+size_t Indium::TextureView::levelExtent(size_t extent) const {
+	size_t last = _original->mipmapLevelCount() == 0 ? 0 : _original->mipmapLevelCount() - 1;
+	return std::max<size_t>(1, extent >> std::min(_levels.start, last));
+};
+
 Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers):
 	PrivateTexture(std::dynamic_pointer_cast<PrivateDevice>(original->device())),
 	_original(original),
@@ -144,6 +152,9 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	auto parentLayerEnd = parentLayerStart + _original->arrayLength() - 1;
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
+
+	_rootLevel = levelStart;
+	_rootLayer = layerStart;
 
 	bool isCube = _textureType == TextureType::eCube || _textureType == TextureType::eCubeArray;
 
@@ -192,15 +203,15 @@ Indium::TextureType Indium::TextureView::textureType() const {
 };
 
 size_t Indium::TextureView::width() const {
-	return _original->width();
+	return levelExtent(_original->width());
 };
 
 size_t Indium::TextureView::height() const {
-	return _original->height();
+	return levelExtent(_original->height());
 };
 
 size_t Indium::TextureView::depth() const {
-	return _original->depth();
+	return levelExtent(_original->depth());
 };
 
 size_t Indium::TextureView::mipmapLevelCount() const {
@@ -299,20 +310,34 @@ bool Indium::TextureView::mayBeWrittenByShader() {
 	return _original->mayBeWrittenByShader();
 };
 
+std::shared_ptr<Indium::ConcreteTexture> Indium::TextureView::concreteRoot() const {
+	std::shared_ptr<Texture> root = _original;
+	while (auto parent = root->parentTexture()) {
+		root = parent;
+	}
+	auto concrete = std::dynamic_pointer_cast<ConcreteTexture>(root);
+	if (!concrete) {
+		throw std::runtime_error("Invalid usage of replaceRegion or getBytes on a view of a texture that owns no image");
+	}
+	return concrete;
+};
+
 void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) {
-	throw std::runtime_error("TODO: support replaceRegion on texture views");
+	replaceRegion(region, mipmapLevel, 0, bytes, bytesPerRow, 0);
 };
 
 void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
-	throw std::runtime_error("TODO: support replaceRegion on texture views");
+	// the view's levels and slices are a range of its texture's, whatever the view's pixel format; texels of a
+	// view format of the same size are written as they are
+	concreteRoot()->uploadRegion(region, _rootLevel + mipmapLevel, _rootLayer + slice, _pixelFormat, bytes, bytesPerRow, bytesPerImage);
 };
 
 void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
-	throw std::runtime_error("TODO: support getBytes on texture views");
+	getBytes(region, mipmapLevel, 0, bytes, bytesPerRow, 0);
 };
 
 void Indium::TextureView::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
-	throw std::runtime_error("TODO: support getBytes on texture views");
+	concreteRoot()->downloadRegion(region, _rootLevel + mipmapLevel, _rootLayer + slice, _pixelFormat, bytes, bytesPerRow, bytesPerImage);
 };
 
 // PrivateTexture declares these to complete its vtable; the readback that has an
@@ -1126,13 +1151,17 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 };
 
 void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	uploadRegion(region, mipmapLevel, slice, _descriptor.pixelFormat, bytes, bytesPerRow, bytesPerImage);
+};
+
+void Indium::ConcreteTexture::uploadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
 	if (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared) {
 		throw std::runtime_error("Invalid usage of replaceRegion on non-managed and non-shared texture");
 	}
 
-	if (_shadow) {
-		// the rows of the texture are the buffer's, so this is a host write to the buffer; the image is
-		// refreshed from it before the next encoder that uses it
+	if (_backingBuffer) {
+		// the rows of the texture are the buffer's, so this is a host write to the buffer (a shadow image is
+		// refreshed from it before the next encoder that uses it)
 		size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
 		if (mipmapLevel != 0 || slice != 0 || region.origin.x + region.size.width > _descriptor.width || region.origin.y + region.size.height > _descriptor.height) {
 			throw std::runtime_error("Invalid region for replaceRegion");
@@ -1145,64 +1174,14 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 		return;
 	}
 
-	// FIXME: Apple says that the transfer performed in this function occurs on the CPU and does not synchronize with the GPU at all.
-	//        however, there's no simple way to do this in Vulkan while allowing (and sometimes requiring) non-linear tiling.
-	//        so, we have to fall back to submitting a command buffer with an encoded transfer operation.
+	// The memory of the image cannot be written by the host when it is optimally tiled, and Metal's replaceRegion
+	// has finished when it returns. So the bytes are copied into staging memory now, and the copy into the image is
+	// submitted with the next work (see TextureUploader).
+	auto aspect = pixelFormatToVkImageAspectFlags(accessFormat);
+	auto block = pixelFormatTexelBlock(accessFormat);
+	size_t depth = std::max<size_t>(region.size.depth, 1);
 
-	auto aspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
-
-	// create a temporary buffer copy
-	// FIXME: this doesn't work for PVRTC textures
-	// actually, FIXME: this doesn't handle a few cases, particularly with array texture types (since i haven't seen those yet at all)
-	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
-	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(bytes, byteSize, ResourceOptions::StorageModeShared));
-
-	// FIXME: handle compressed formats
-	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
-
-	// the one-shot command pool is shared by every thread that uploads or reads back
-	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
-	VkCommandBufferAllocateInfo cmdBufAllocInfo {};
-	cmdBufAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	cmdBufAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	cmdBufAllocInfo.commandPool = _device->oneshotCommandPool();
-	cmdBufAllocInfo.commandBufferCount = 1;
-
-	VkCommandBuffer cmdBuf;
-	if (DynamicVK::vkAllocateCommandBuffers(_device->device(), &cmdBufAllocInfo, &cmdBuf) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	VkCommandBufferBeginInfo cmdBufBeginInfo {};
-	cmdBufBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	cmdBufBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
-
-	// first, transition the image to the optimal layout for transfer destinations
-	VkImageMemoryBarrier barrier {};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.srcAccessMask = VK_ACCESS_NONE;
-	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = _image;
-	barrier.subresourceRange.aspectMask = aspect;
-	barrier.subresourceRange.baseMipLevel = mipmapLevel;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.baseArrayLayer = slice;
-	barrier.subresourceRange.layerCount = 1;
-
-	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-	// now encode the copy
 	VkBufferImageCopy copyInfo {};
-	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
-	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = mipmapLevel;
 	copyInfo.imageSubresource.baseArrayLayer = slice;
@@ -1213,45 +1192,42 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 	copyInfo.imageExtent.width = region.size.width;
 	copyInfo.imageExtent.height = region.size.height;
 	copyInfo.imageExtent.depth = region.size.depth;
-	DynamicVK::vkCmdCopyBufferToImage(cmdBuf, tmpBuf->buffer(), _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyInfo);
 
-	// finally, transition the image back to the general layout
-	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-	DynamicVK::vkEndCommandBuffer(cmdBuf);
-
-	VkFenceCreateInfo fenceCreateInfo {};
-	fenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-	VkFence theFence = VK_NULL_HANDLE;
-
-	if (DynamicVK::vkCreateFence(_device->device(), &fenceCreateInfo, nullptr, &theFence) != VK_SUCCESS) {
-		// TODO
-		abort();
+	std::function<void(uint8_t*)> fill;
+	size_t byteSize;
+	if (block.bytes != 0) {
+		// stage the rows tightly packed, and only the bytes the region covers
+		size_t rowBytes = (region.size.width + block.width - 1) / block.width * block.bytes;
+		size_t rows = (region.size.height + block.height - 1) / block.height;
+		if (bytesPerRow < rowBytes && rows > 1) {
+			throw std::runtime_error("Invalid bytesPerRow for replaceRegion: shorter than a row of the region");
+		}
+		size_t imageStride = bytesPerImage != 0 ? bytesPerImage : rows * bytesPerRow;
+		byteSize = rowBytes * rows * depth;
+		fill = [=](uint8_t* destination) {
+			for (size_t image = 0; image < depth; ++image) {
+				const auto* source = static_cast<const uint8_t*>(bytes) + image * imageStride;
+				if (bytesPerRow == rowBytes) {
+					std::memcpy(destination, source, rowBytes * rows);
+					destination += rowBytes * rows;
+					continue;
+				}
+				for (size_t row = 0; row < rows; ++row) {
+					std::memcpy(destination, source + row * bytesPerRow, rowBytes);
+					destination += rowBytes;
+				}
+			}
+		};
+	} else {
+		// no known texel size (depth and stencil formats): the bytes are taken as they are
+		// PVRTC and other formats with no known block size are not handled
+		byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (depth * bytesPerImage);
+		fill = [=](uint8_t* destination) {
+			std::memcpy(destination, bytes, byteSize);
+		};
 	}
 
-	VkSubmitInfo submitInfo {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &cmdBuf;
-
-	{
-		std::lock_guard queueLock(_device->graphicsQueueMutex());
-		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
-	}
-	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	DynamicVK::vkDestroyFence(_device->device(), theFence, nullptr);
-
-	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
-	oneshotLock.unlock();
+	_device->textureUploader().stage(shared_from_this(), byteSize, copyInfo, fill);
 };
 
 void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
@@ -1259,12 +1235,16 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 };
 
 void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	downloadRegion(region, mipmapLevel, slice, _descriptor.pixelFormat, bytes, bytesPerRow, bytesPerImage);
+};
+
+void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
 	if (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared) {
 		throw std::runtime_error("Invalid usage of getBytes on non-managed and non-shared texture");
 	}
 
 	// FIXME: handle compressed formats
-	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+	size_t bytesPerPixel = pixelFormatToByteCount(accessFormat);
 	if (bytesPerPixel == 0) {
 		throw std::runtime_error("Invalid usage of getBytes on a format with no known texel size");
 	}
@@ -1281,8 +1261,8 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 		throw std::runtime_error("Invalid bytesPerImage for getBytes: not a whole number of rows");
 	}
 
-	if (_shadow) {
-		// a host read of the buffer's rows (see replaceRegion)
+	if (_backingBuffer) {
+		// a host read of the buffer's rows (see uploadRegion)
 		if (mipmapLevel != 0 || slice != 0 || region.origin.x + region.size.width > _descriptor.width || region.origin.y + region.size.height > _descriptor.height) {
 			throw std::runtime_error("Invalid region for getBytes");
 		}
@@ -1294,13 +1274,15 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 		return;
 	}
 
-	// The read direction of replaceRegion: the image goes the other way, into a
-	// temporary host-visible buffer we then read the answer out of. replaceRegion
-	// says why a command buffer is needed here at all rather than a host write.
-	auto aspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
+	// The read direction of replaceRegion: the image goes the other way, into a temporary host-visible buffer we
+	// then read the answer out of. The writes of earlier replaceRegion calls are submitted first, ahead of the
+	// copy on the same queue.
+	auto aspect = pixelFormatToVkImageAspectFlags(accessFormat);
 
 	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
 	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
+
+	_device->textureUploader().flush();
 
 	// the one-shot command pool is shared by every thread that uploads or reads back
 	std::unique_lock oneshotLock(_device->oneshotCommandPoolMutex());
@@ -1322,10 +1304,11 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 
 	DynamicVK::vkBeginCommandBuffer(cmdBuf, &cmdBufBeginInfo);
 
-	// first, transition the image to the optimal layout for transfer sources
+	// first, transition the image to the optimal layout for transfer sources; what the GPU wrote earlier
+	// (and the uploads submitted just now) has to be visible to the copy
 	VkImageMemoryBarrier barrier {};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.srcAccessMask = VK_ACCESS_NONE;
+	barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
 	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -1338,7 +1321,7 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	barrier.subresourceRange.baseArrayLayer = slice;
 	barrier.subresourceRange.layerCount = 1;
 
-	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_NONE, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	DynamicVK::vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
@@ -1357,7 +1340,7 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 	copyInfo.imageExtent.depth = region.size.depth;
 	DynamicVK::vkCmdCopyImageToBuffer(cmdBuf, _image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tmpBuf->buffer(), 1, &copyInfo);
 
-	// finally, transition the image back to the general layout
+	// finally, transition the image back to the general layout, and make the copy visible to the host
 	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -1385,8 +1368,9 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 		std::lock_guard queueLock(_device->graphicsQueueMutex());
 		DynamicVK::vkQueueSubmit(_device->graphicsQueue(), 1, &submitInfo, theFence);
 	}
-	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, /* 1s */ 1ull * 1000 * 1000 * 1000) != VK_SUCCESS) {
-		// TODO
+	// the copy comes after the work already submitted on the queue, which may take longer than a second
+	if (DynamicVK::vkWaitForFences(_device->device(), 1, &theFence, VK_TRUE, UINT64_MAX) != VK_SUCCESS) {
+		// an unrecoverable failure (device loss), like the other calls that abort
 		abort();
 	}
 

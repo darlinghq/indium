@@ -147,6 +147,7 @@ std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::visibilityR
 };
 
 void Indium::PrivateDevice::releaseCachedObjects() {
+	_textureUploader.releaseAll();
 	std::scoped_lock lock(_visibilityResolveMutex);
 	_visibilityResolvePipeline.reset();
 };
