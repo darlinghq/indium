@@ -6,8 +6,10 @@
 #include <indium/types.private.hpp>
 #include <indium/memory-pool.private.hpp>
 #include <indium/buffer.private.hpp>
+#include <indium/heap.private.hpp>
 
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 
 namespace Indium {
@@ -173,6 +175,13 @@ namespace Indium {
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
 
+		// a view is part of its texture's memory
+		virtual std::shared_ptr<Heap> heap() override;
+		virtual size_t heapOffset() override;
+		virtual size_t allocatedSize() override;
+		virtual void makeAliasable() override;
+		virtual bool isAliasable() override;
+
 		virtual const TimelineSemaphore& acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) override;
 		virtual void beginUpdatingPresentationSemaphore(std::shared_ptr<BinarySemaphore> presentationSemaphore) override;
 		virtual void endUpdatingPresentationSemaphore() override;
@@ -197,8 +206,8 @@ namespace Indium {
 
 	private:
 		TextureDescriptor _descriptor;
-		VkImage _image;
-		VkImageView _imageView;
+		VkImage _image = VK_NULL_HANDLE;
+		VkImageView _imageView = VK_NULL_HANDLE;
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		VkDeviceMemory _memory = VK_NULL_HANDLE;
 		StorageMode _storageMode;
@@ -208,6 +217,9 @@ namespace Indium {
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
 		bool _shadow = false;
+		VkDeviceSize _requiredSize = 0;
+		// set for a texture made from a heap, which owns the memory
+		std::unique_ptr<HeapAllocation> _heapAllocation;
 
 	public:
 		// A linear image in a Linux DMA-BUF to use as the texture's storage.
@@ -228,9 +240,20 @@ namespace Indium {
 			bool shadow = false;
 		};
 
-		// With `import`, the texture's storage is imported instead of allocated, and with `backing` it is the
-		// memory of a buffer; every failure to create it throws std::runtime_error.
-		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr, const BufferBacking* backing = nullptr);
+		// The memory of a heap, at `offset` for a placement heap (HeapAllocation).
+		//
+		// With `query` set (and no heap), nothing is created: the image is only made to ask the driver what it
+		// would need, which is written to `*query`; the object is then not usable (Device::heapTextureSizeAndAlign()).
+		struct HeapBacking {
+			std::shared_ptr<PrivateHeap> heap;
+			std::optional<size_t> offset;
+			VkMemoryRequirements* query = nullptr;
+		};
+
+		// With `import`, the texture's storage is imported instead of allocated, with `backing` it is the
+		// memory of a buffer, and with `heapBacking` it is a range of a heap's memory; every failure to create
+		// it throws std::runtime_error.
+		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr, const BufferBacking* backing = nullptr, const HeapBacking* heapBacking = nullptr);
 		virtual ~ConcreteTexture();
 
 	private:
@@ -267,6 +290,12 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> buffer() const override;
 		virtual size_t bufferOffset() const override;
 		virtual size_t bufferBytesPerRow() const override;
+
+		virtual std::shared_ptr<Heap> heap() override;
+		virtual size_t heapOffset() override;
+		virtual size_t allocatedSize() override;
+		virtual void makeAliasable() override;
+		virtual bool isAliasable() override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;

@@ -12,6 +12,7 @@
 #include <indium/types.hpp>
 #include <indium/library.hpp>
 #include <indium/event.hpp>
+#include <indium/heap.hpp>
 
 namespace Indium {
 	class CommandQueue;
@@ -170,6 +171,24 @@ namespace Indium {
 		 */
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) = 0;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) = 0;
+
+		/**
+		 * Allocates a heap's memory up front.
+		 *
+		 * @returns `nullptr` for a sparse, Managed or Memoryless heap, a size of 0, or when the memory cannot be allocated.
+		 */
+		virtual std::shared_ptr<Heap> newHeap(const HeapDescriptor& descriptor) = 0;
+
+		/**
+		 * What a buffer of `length` bytes takes in a heap with the storage mode of `options` (this device's own
+		 * requirement for it): its size and the alignment its offset must have. The size is 0 for a length of 0.
+		 */
+		virtual SizeAndAlign heapBufferSizeAndAlign(size_t length, ResourceOptions options) = 0;
+
+		/**
+		 * What a texture takes in a heap, like `heapBufferSizeAndAlign()`; {0, 0} if the device cannot make the texture.
+		 */
+		virtual SizeAndAlign heapTextureSizeAndAlign(const TextureDescriptor& descriptor) = 0;
 
 		/**
 		 * Whether this device can import Linux DMA-BUFs as textures (VK_EXT_external_memory_dma_buf

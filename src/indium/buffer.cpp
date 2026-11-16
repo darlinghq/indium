@@ -3,21 +3,18 @@
 #include <indium/device.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 // TODO: use the VulkanMemoryAllocator library to manage memory allocation efficiently
 
 Indium::Buffer::~Buffer() {};
 
-Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options):
-	_privateDevice(device),
-	_length(length)
-{
-	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
-
+VkBufferCreateInfo Indium::bufferCreateInfo(VkDeviceSize size) {
 	VkBufferCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	info.size = length;
+	info.size = size;
 	info.usage =
 		VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
 		VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -34,6 +31,16 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	// TODO: maybe make this CONCURRENT instead? we already know all the queue families that can access it;
 	//       that info is available in the PrivateDevice instance.
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	return info;
+};
+
+Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options):
+	_privateDevice(device),
+	_length(length)
+{
+	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+
+	auto info = bufferCreateInfo(length);
 
 	if (DynamicVK::vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
 		// TODO
@@ -43,6 +50,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	VkMemoryRequirements requirements;
 
 	DynamicVK::vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
+	_requiredSize = requirements.size;
 
 	size_t targetIndex = _privateDevice->findMemoryType(requirements.memoryTypeBits, _storageMode);
 
@@ -61,6 +69,38 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	_memory = _allocation.memory;
 
 	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, _allocation.offset);
+};
+
+Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options, const HeapPlacement& placement):
+	_privateDevice(device),
+	_length(length)
+{
+	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+
+	// a Vulkan buffer has at least one byte
+	auto info = bufferCreateInfo(std::max<size_t>(length, 1));
+
+	if (DynamicVK::vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create a buffer");
+	}
+
+	VkMemoryRequirements requirements;
+	DynamicVK::vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
+	// the length is what a heap counts, so that a zero-length buffer takes nothing
+	requirements.size = length == 0 ? 0 : requirements.size;
+
+	_heapAllocation = placement.heap->reserve(requirements, placement.offset);
+	if (!_heapAllocation) {
+		DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+		throw std::runtime_error("The heap cannot place the buffer");
+	}
+
+	_requiredSize = _heapAllocation->size();
+	_memoryTypeIndex = placement.heap->memoryTypeIndex();
+	_allocation = placement.heap->subAllocation(*_heapAllocation);
+	_memory = _allocation.memory;
+
+	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, placement.heap->memoryOffset(_heapAllocation->offset()));
 };
 
 Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, const void* pointer, size_t length, ResourceOptions options):
@@ -88,7 +128,10 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 Indium::PrivateBuffer::~PrivateBuffer() {
 	// the mapping belongs to the memory block and goes away with it
 	DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
-	_privateDevice->memoryPool().free(_privateDevice->device(), _allocation);
+	if (!_heapAllocation) {
+		_privateDevice->memoryPool().free(_privateDevice->device(), _allocation);
+	}
+	// a heap buffer's range goes back to its heap with _heapAllocation
 };
 
 std::shared_ptr<Indium::Device> Indium::PrivateBuffer::device() {
@@ -159,4 +202,30 @@ std::shared_ptr<Indium::Texture> Indium::PrivateBuffer::newTexture(const Texture
 		}
 	}
 	return nullptr;
+};
+
+std::shared_ptr<Indium::Heap> Indium::PrivateBuffer::heap() {
+	return _heapAllocation ? _heapAllocation->heap() : nullptr;
+};
+
+size_t Indium::PrivateBuffer::heapOffset() {
+	// only a placement heap's resources have an offset the caller chose
+	if (_heapAllocation && _heapAllocation->heap()->type() == HeapType::Placement) {
+		return _heapAllocation->offset();
+	}
+	return 0;
+};
+
+size_t Indium::PrivateBuffer::allocatedSize() {
+	return _requiredSize;
+};
+
+void Indium::PrivateBuffer::makeAliasable() {
+	if (_heapAllocation) {
+		_heapAllocation->makeAliasable();
+	}
+};
+
+bool Indium::PrivateBuffer::isAliasable() {
+	return _heapAllocation && _heapAllocation->isAliasable();
 };

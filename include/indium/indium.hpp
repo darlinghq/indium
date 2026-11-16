@@ -14,6 +14,7 @@
 #include <indium/device.hpp>
 #include <indium/drawable.hpp>
 #include <indium/event.hpp>
+#include <indium/heap.hpp>
 #include <indium/init.hpp>
 #include <indium/library.hpp>
 #include <indium/linked-functions.hpp>
