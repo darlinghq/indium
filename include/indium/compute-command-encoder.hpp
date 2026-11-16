@@ -48,6 +48,13 @@ namespace Indium {
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) = 0;
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) = 0;
 
+		/**
+		 * Dispatches the number of threadgroups the GPU reads from `indirectBuffer` at `indirectBufferOffset`:
+		 * three 32-bit unsigned integers (width, height, depth). `indirectBufferOffset` must be a multiple of
+		 * 4 and the arguments must lie inside the buffer; a call that does not satisfy that dispatches nothing.
+		 */
+		virtual void dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) = 0;
+
 		virtual void setImageblockSize(size_t width, size_t height) = 0;
 
 		virtual void setStageInRegion(Region region) = 0;

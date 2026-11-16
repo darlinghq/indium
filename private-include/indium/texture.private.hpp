@@ -5,6 +5,7 @@
 #include <indium/texture.hpp>
 #include <indium/types.private.hpp>
 #include <indium/memory-pool.private.hpp>
+#include <indium/buffer.private.hpp>
 
 #include <mutex>
 #include <unordered_map>
@@ -57,6 +58,20 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() = 0;
 
 		/**
+		 * The Vulkan format the underlying image was created with. Views of other pixel formats are made
+		 * from it, so it is what a new view's format is judged against. A texture that does not own its
+		 * image says what it was created as.
+		 */
+		virtual VkFormat imageFormat() { return pixelFormatToVkFormat(pixelFormat()); }
+
+		/**
+		 * Whether views of the image may use a Vulkan format other than `imageFormat()`
+		 * (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT). Only an image that indium creates can say no: an image that
+		 * comes from elsewhere, such as a swapchain image, is not second-guessed.
+		 */
+		virtual bool imageIsMutableFormat() { return true; }
+
+		/**
 		 * The view to bind in a descriptor. Descriptors may only name a single aspect, so for a
 		 * combined depth/stencil texture this is a depth-only view; otherwise it is `imageView()`.
 		 */
@@ -95,6 +110,18 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
 		virtual bool needsExportablePresentationSemaphore() const;
+
+		/**
+		 * Whether the image is a copy of the rows of a buffer that is kept equal to the buffer by copies around the
+		 * encoders that use it (BufferBacking::shadow). The command buffer records the copies, outside of any render pass.
+		 */
+		virtual bool isBufferShadow() { return false; }
+		/** Records the copy of the buffer's rows into the image, and leaves the image in the general layout. */
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) {}
+		/** Records the copy of the image into the buffer's rows, and makes it visible to later commands and the host. */
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) {}
+		/** Whether a shader may write the texture (it was made with ShaderWrite usage). */
+		virtual bool mayBeWrittenByShader() { return false; }
 
 		// Declared here so this class has a complete vtable. The readback that has an
 		// image to copy from lives in ConcreteTexture and TextureView, which override
@@ -143,11 +170,18 @@ namespace Indium {
 		virtual VkImage image() override;
 		virtual std::shared_ptr<Device> device() override;
 		virtual VkImageLayout imageLayout() override;
+		virtual VkFormat imageFormat() override;
+		virtual bool imageIsMutableFormat() override;
 
 		virtual const TimelineSemaphore& acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) override;
 		virtual void beginUpdatingPresentationSemaphore(std::shared_ptr<BinarySemaphore> presentationSemaphore) override;
 		virtual void endUpdatingPresentationSemaphore() override;
 		virtual std::shared_ptr<BinarySemaphore> synchronizePresentation() override;
+
+		virtual bool isBufferShadow() override;
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) override;
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) override;
+		virtual bool mayBeWrittenByShader() override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
@@ -169,6 +203,11 @@ namespace Indium {
 		VkDeviceMemory _memory = VK_NULL_HANDLE;
 		StorageMode _storageMode;
 		MemoryPool::Allocation _allocation;
+		std::shared_ptr<PrivateBuffer> _backingBuffer;
+		size_t _backingOffset = 0;
+		size_t _backingBytesPerRow = 0;
+		bool _mutableFormat = false;
+		bool _shadow = false;
 
 	public:
 		// A linear image in a Linux DMA-BUF to use as the texture's storage.
@@ -178,9 +217,20 @@ namespace Indium {
 			uint64_t bytesPerRow;
 		};
 
-		// With `import`, the texture's storage is imported instead of allocated, and every failure
-		// to create it throws std::runtime_error.
-		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr);
+		// The rows of a buffer as the pixels of a texture (see Buffer::newTexture()).
+		// With `shadow`, the texture is an image of its own that is kept equal to the buffer by copying around the
+		// encoders that use it (recordBufferToImage() before, recordImageToBuffer() after a write), which is how a
+		// row pitch the device's linear images cannot have is supported.
+		struct BufferBacking {
+			std::shared_ptr<PrivateBuffer> buffer;
+			size_t offset;
+			size_t bytesPerRow;
+			bool shadow = false;
+		};
+
+		// With `import`, the texture's storage is imported instead of allocated, and with `backing` it is the
+		// memory of a buffer; every failure to create it throws std::runtime_error.
+		ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import = nullptr, const BufferBacking* backing = nullptr);
 		virtual ~ConcreteTexture();
 
 	private:
@@ -205,7 +255,18 @@ namespace Indium {
 		virtual VkImageView sampledImageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
+		virtual VkFormat imageFormat() override;
+		virtual bool imageIsMutableFormat() override;
 		virtual size_t vulkanArrayLength() const override;
+
+		virtual bool isBufferShadow() override;
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) override;
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) override;
+		virtual bool mayBeWrittenByShader() override;
+
+		virtual std::shared_ptr<Buffer> buffer() const override;
+		virtual size_t bufferOffset() const override;
+		virtual size_t bufferBytesPerRow() const override;
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;

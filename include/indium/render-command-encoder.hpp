@@ -45,6 +45,23 @@ namespace Indium {
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount) = 0;
 		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset) = 0;
 
+		/**
+		 * Draws with the arguments the GPU reads from `indirectBuffer` at `indirectBufferOffset`:
+		 * four 32-bit unsigned integers (vertex count, instance count, first vertex, base instance).
+		 *
+		 * `indirectBufferOffset` must be a multiple of 4 and the arguments must lie inside the buffer; a
+		 * call that does not satisfy that draws nothing. A base instance other than 0 needs a device that
+		 * reports drawIndirectFirstInstance; it is up to the caller to know the device.
+		 */
+		virtual void drawPrimitives(PrimitiveType primitiveType, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) = 0;
+
+		/**
+		 * The indexed form: five 32-bit values (index count, instance count, first index, base vertex as a
+		 * signed integer, base instance), the first index counted from `indexBufferOffset`. Same
+		 * requirements as the other form.
+		 */
+		virtual void drawIndexedPrimitives(PrimitiveType primitiveType, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) = 0;
+
 		virtual void setVertexBytes(const void* bytes, size_t length, size_t index) = 0;
 		virtual void setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) = 0;
 		virtual void setVertexBuffers(const std::vector<std::shared_ptr<Buffer>>& buffers, const std::vector<size_t>& offsets, Range<size_t> range) = 0;

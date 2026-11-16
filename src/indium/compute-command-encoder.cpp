@@ -21,6 +21,7 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
 		finishTrackedEncoder(commandBuffer->commandBuffer());
+		commandBuffer->endEncoderSegment(_functionResources.usedTextures, {});
 	}
 };
 
@@ -99,6 +100,40 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 	updateBindings();
 
 	DynamicVK::vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
+
+	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
+	_savedFunctionResources.push_back(_functionResources);
+};
+
+// MTLDispatchThreadgroupsIndirectArguments is three 32-bit values, as VkDispatchIndirectCommand is.
+static_assert(sizeof(VkDispatchIndirectCommand) == 3 * sizeof(uint32_t), "indirect dispatch arguments are three 32-bit values");
+
+void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset, Size threadsPerThreadgroup) {
+	if (!_pso || !indirectArgumentsFit(indirectBuffer, indirectBufferOffset, sizeof(VkDispatchIndirectCommand))) {
+		return;
+	}
+
+	auto buf = _privateCommandBuffer.lock();
+
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup);
+	_savedPipelines.push_back(pipeline);
+
+	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+
+	updateBindings();
+
+	// An earlier dispatch of this encoder may have written the arguments, and Vulkan does not order that
+	// against the GPU's read of them the way Metal does for the dispatches of a serial encoder.
+	VkMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+	DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+	// the buffer has to stay alive until the command buffer has completed
+	_keepAliveBuffers.push_back(indirectBuffer);
+
+	DynamicVK::vkCmdDispatchIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset);
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);

@@ -1,4 +1,5 @@
 #include <indium/buffer.private.hpp>
+#include <indium/texture.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
@@ -48,6 +49,8 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	if (targetIndex == SIZE_MAX) {
 		throw std::runtime_error("No suitable memory region found for buffer with requested storage mode");
 	}
+
+	_memoryTypeIndex = static_cast<uint32_t>(targetIndex);
 
 	try {
 		_allocation = _privateDevice->memoryPool().allocate(_privateDevice->device(), targetIndex, requirements, MemoryPool::Kind::Buffer);
@@ -134,4 +137,26 @@ uint64_t Indium::PrivateBuffer::gpuAddress() {
 	info.buffer = _buffer;
 	_gpuAddress = DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
 	return _gpuAddress;
+};
+
+std::shared_ptr<Indium::Texture> Indium::PrivateBuffer::newTexture(const TextureDescriptor& descriptor, size_t offset, size_t bytesPerRow) {
+	// the texture shares the buffer's memory, so it has the buffer's storage mode
+	auto textureStorageMode = static_cast<StorageMode>((static_cast<size_t>(descriptor.resourceOptions) >> 4) & 0xf);
+	// Metal asks for rows and a start that are a multiple of 16 bytes
+	if (textureStorageMode != _storageMode || bytesPerRow == 0 || bytesPerRow % 16 != 0 || offset % 16 != 0) {
+		return nullptr;
+	}
+
+	// First the texture whose image lies in the buffer's memory, which needs no copies, at the row pitch the
+	// device gives a linear image (or, with a DRM format modifier, at the pitch asked for); then one that has an
+	// image of its own and is copied to and from the buffer around the encoders that use it.
+	for (bool shadow: { false, true }) {
+		ConcreteTexture::BufferBacking backing { shared_from_this(), offset, bytesPerRow, shadow };
+		try {
+			return std::make_shared<ConcreteTexture>(_privateDevice, descriptor, nullptr, &backing);
+		} catch (const std::runtime_error&) {
+			// a format, usage or row pitch this kind of texture cannot have
+		}
+	}
+	return nullptr;
 };

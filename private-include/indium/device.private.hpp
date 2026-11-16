@@ -78,6 +78,10 @@ namespace Indium {
 		std::shared_ptr<Buffer> _fallbackBuffer;
 		std::shared_ptr<SamplerState> _fallbackSampler;
 		bool _nullDescriptor = false;
+		bool _fillModeNonSolid = false;
+		bool _depthClamp = false;
+		std::atomic<bool> _bufferShadowTextures { false };
+		bool _nativeA8Unorm = false;
 
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
@@ -91,6 +95,7 @@ namespace Indium {
 			MemoryBudget        = 1 << 4,
 			ExternalMemoryDMABuf = 1 << 5,
 			ImageDRMFormatModifier = 1 << 6,
+			Maintenance5        = 1 << 7,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -116,6 +121,7 @@ namespace Indium {
 		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
 		virtual bool supportsPixelFormatSampling(PixelFormat format, bool filtered) const override;
+		virtual size_t minimumLinearTextureAlignment(PixelFormat format) const override;
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) override;
@@ -170,6 +176,44 @@ namespace Indium {
 		 * image view or vertex buffer that reads as zero.
 		 */
 		bool nullDescriptorEnabled() const { return _nullDescriptor; }
+
+		/**
+		 * Whether the device can rasterize triangles as lines (Vulkan's fillModeNonSolid, which is enabled
+		 * when the device has it).
+		 */
+		bool fillModeNonSolidEnabled() const { return _fillModeNonSolid; }
+
+		/**
+		 * Whether the device can clamp fragment depth to the viewport range instead of clipping it (Vulkan's
+		 * depthClamp, which is enabled when the device has it).
+		 */
+		bool depthClampEnabled() const { return _depthClamp; }
+
+		/**
+		 * Whether a texture was ever made that is an image of its own kept equal to a buffer's rows (see
+		 * ConcreteTexture::BufferBacking). Command buffers only split into segments, so that the copies can be
+		 * recorded around the encoders, once there is one.
+		 */
+		void noteBufferShadowTexture() { _bufferShadowTextures.store(true, std::memory_order_relaxed); }
+		bool hasBufferShadowTextures() const { return _bufferShadowTextures.load(std::memory_order_relaxed); }
+		 * Whether A8Unorm textures use VK_FORMAT_A8_UNORM_KHR, which a shader can sample, write and render to
+		 * like any other format. Without it (no VK_KHR_maintenance5, or the format lacks a feature) A8Unorm is
+		 * R8 read through a swizzle, which only supports reads.
+		 */
+		bool nativeA8UnormEnabled() const { return _nativeA8Unorm; }
+
+		/** The Vulkan format a texture of `pixelFormat` has on this device. */
+		VkFormat textureVkFormat(PixelFormat pixelFormat) const {
+			if (pixelFormat == PixelFormat::A8Unorm && _nativeA8Unorm) {
+				return VK_FORMAT_A8_UNORM_KHR;
+			}
+			return pixelFormatToVkFormat(pixelFormat);
+		};
+
+		/** What a shader sees of the stored channels of `pixelFormat` on this device. */
+		bool needsImplicitSwizzle(PixelFormat pixelFormat) const {
+			return pixelFormatNeedsImplicitSwizzle(pixelFormat) && !_nativeA8Unorm;
+		};
 
 		/**
 		 * Held around every submission to and presentation on `graphicsQueue()`.

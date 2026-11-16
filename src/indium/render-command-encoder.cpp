@@ -120,7 +120,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
 		bool clear = loadActionToVkAttachmentLoadOp(color.loadAction, true) == VK_ATTACHMENT_LOAD_OP_CLEAR;
 		VkAttachmentDescription desc {};
-		desc.format = pixelFormatToVkFormat(color.texture->pixelFormat());
+		desc.format = _privateDevice->textureVkFormat(color.texture->pixelFormat());
 		desc.samples = sampleCountToVk(color.texture->sampleCount());
 		desc.loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
 		desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -180,7 +180,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 			auto texture = std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture);
 			ref.attachment = renderPassAttachments.size();
 			VkAttachmentDescription desc {};
-			desc.format = pixelFormatToVkFormat(texture->pixelFormat());
+			desc.format = _privateDevice->textureVkFormat(texture->pixelFormat());
 			desc.samples = VK_SAMPLE_COUNT_1_BIT;
 			desc.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 			desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -328,9 +328,8 @@ void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float sl
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthClipMode(DepthClipMode depthClipMode) {
-	if (depthClipMode != DepthClipMode::Clip) {
-		throw std::runtime_error("TODO: support setting depth clip mode");
-	}
+	// takes effect with the pipeline bound by the next draw
+	_depthClipMode = depthClipMode;
 };
 
 void Indium::PrivateRenderCommandEncoder::setViewport(const Viewport& viewport) {
@@ -449,32 +448,38 @@ bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 	return true;
 };
 
+void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBuffer, PrimitiveType primitiveType) {
+	// bind the pipeline with the right topology class for this primitive; the fill mode only applies to
+	// triangles, the depth clip mode to every primitive
+	size_t topologyClass;
+	switch (primitiveType) {
+		case PrimitiveType::Point:
+			topologyClass = 0;
+			break;
+		case PrimitiveType::Line:
+		case PrimitiveType::LineStrip:
+			topologyClass = 1;
+			break;
+		case PrimitiveType::Triangle:
+		case PrimitiveType::TriangleStrip:
+			topologyClass = 2;
+			break;
+		default:
+			throw BadEnumValue();
+	}
+	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp);
+	DynamicVK::vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+	DynamicVK::vkCmdSetPrimitiveTopology(commandBuffer, primitiveTypeToVkPrimitiveTopology(primitiveType));
+};
+
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
 	if (!_privatePSO) {
 		return;
 	}
 	auto buf = _privateCommandBuffer.lock();
 
-	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = VK_NULL_HANDLE;
-	switch (primitiveType) {
-		case PrimitiveType::Point:
-			pipeline = _privatePSO->pipelines()[0];
-			break;
-		case PrimitiveType::Line:
-		case PrimitiveType::LineStrip:
-			pipeline = _privatePSO->pipelines()[1];
-			break;
-		case PrimitiveType::Triangle:
-		case PrimitiveType::TriangleStrip:
-			pipeline = _privatePSO->pipelines()[2];
-			break;
-		default:
-			throw BadEnumValue();
-	}
-	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+	bindPipeline(buf->commandBuffer(), primitiveType);
 
 	// TODO: avoid re-binding descriptors on every draw.
 	bool drawable = updateBindings();
@@ -486,6 +491,33 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 	// when we emit a draw call, we save the current function resources so that they stay alive until the command buffer is done.
 	// TODO: do this more efficiently by essentially doing COW: after a draw call, we only save additional references to resources
 	//       if someone tries to overwrite them.
+	_savedFunctionResources.push_back(_functionResources[0]);
+	_savedFunctionResources.push_back(_functionResources[1]);
+};
+
+// Metal's MTLDrawPrimitivesIndirectArguments and MTLDrawIndexedPrimitivesIndirectArguments have the field order
+// and widths of VkDrawIndirectCommand and VkDrawIndexedIndirectCommand, so the buffer is handed to Vulkan as is.
+static_assert(sizeof(VkDrawIndirectCommand) == 4 * sizeof(uint32_t), "indirect draw arguments are four 32-bit values");
+static_assert(sizeof(VkDrawIndexedIndirectCommand) == 5 * sizeof(uint32_t), "indexed indirect draw arguments are five 32-bit values");
+
+void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) {
+	if (!_privatePSO || !indirectArgumentsFit(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndirectCommand))) {
+		return;
+	}
+	auto buf = _privateCommandBuffer.lock();
+
+	bindPipeline(buf->commandBuffer(), primitiveType);
+
+	bool drawable = updateBindings();
+
+	// the buffer has to stay alive until the command buffer has completed
+	_keepAliveBuffers.push_back(indirectBuffer);
+
+	if (drawable) {
+		DynamicVK::vkCmdDrawIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndirectCommand));
+	}
+
+	// see drawPrimitives() above for why we do this
 	_savedFunctionResources.push_back(_functionResources[0]);
 	_savedFunctionResources.push_back(_functionResources[1]);
 };
@@ -507,6 +539,11 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 	finishTrackedEncoder(buf->commandBuffer());
+
+	auto used = _functionResources[0].usedTextures;
+	used.insert(used.end(), _functionResources[1].usedTextures.begin(), _functionResources[1].usedTextures.end());
+	used.insert(used.end(), _readOnlyTextures.begin(), _readOnlyTextures.end());
+	buf->endEncoderSegment(used, _readWriteTextures);
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {
@@ -608,26 +645,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	}
 	auto buf = _privateCommandBuffer.lock();
 
-	// bind the pipeline with the right topology class for this primitive
-	VkPipeline pipeline = VK_NULL_HANDLE;
-	switch (primitiveType) {
-		case PrimitiveType::Point:
-			pipeline = _privatePSO->pipelines()[0];
-			break;
-		case PrimitiveType::Line:
-		case PrimitiveType::LineStrip:
-			pipeline = _privatePSO->pipelines()[1];
-			break;
-		case PrimitiveType::Triangle:
-		case PrimitiveType::TriangleStrip:
-			pipeline = _privatePSO->pipelines()[2];
-			break;
-		default:
-			throw BadEnumValue();
-	}
-	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-	DynamicVK::vkCmdSetPrimitiveTopology(buf->commandBuffer(), primitiveTypeToVkPrimitiveTopology(primitiveType));
+	bindPipeline(buf->commandBuffer(), primitiveType);
 
 	// TODO: avoid re-binding descriptors on every draw.
 	bool drawable = updateBindings();
@@ -653,6 +671,29 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset) {
 	drawIndexedPrimitives(primitiveType, indexCount, indexType, indexBuffer, indexBufferOffset, 1);
+};
+
+void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) {
+	if (!_privatePSO || !indexBuffer || !indirectArgumentsFit(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndexedIndirectCommand))) {
+		return;
+	}
+	auto buf = _privateCommandBuffer.lock();
+
+	bindPipeline(buf->commandBuffer(), primitiveType);
+
+	bool drawable = updateBindings();
+
+	_keepAliveBuffers.push_back(indexBuffer);
+	_keepAliveBuffers.push_back(indirectBuffer);
+
+	if (drawable) {
+		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer)->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
+		DynamicVK::vkCmdDrawIndexedIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+	}
+
+	// see drawPrimitives() above for why we do this
+	_savedFunctionResources.push_back(_functionResources[0]);
+	_savedFunctionResources.push_back(_functionResources[1]);
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared_ptr<DepthStencilState>& state) {
@@ -701,13 +742,8 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared
 };
 
 void Indium::PrivateRenderCommandEncoder::setTriangleFillMode(TriangleFillMode triangleFillMode) {
-	if (triangleFillMode != TriangleFillMode::Fill) {
-		// we might have to just create duplicate pipelines for each possible fill mode;
-		// there's only 2 at the moment, but this has to multiplied by the number of pipelines required
-		// for other combinations. for example, we currently have to create a pipeline for each topology class
-		// and there's 3 of those, so we would need 6 pipelines total. yikes.
-		throw std::runtime_error("TODO: support changing fill mode");
-	}
+	// takes effect with the pipeline bound by the next draw
+	_triangleFillMode = triangleFillMode;
 };
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t value) {
