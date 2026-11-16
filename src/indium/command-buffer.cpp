@@ -328,6 +328,10 @@ bool Indium::PrivateCommandBuffer::submitReady(std::vector<std::function<void()>
 	}
 
 	if (end > submission.next) {
+		// Host writes to textures (replaceRegion) made since the last submission are copied into their images
+		// before this command buffer's work, so that it sees them.
+		_privateDevice->textureUploader().flushLocked();
+
 		std::vector<VkSubmitInfo2> infos;
 		infos.reserve(end - submission.next);
 		for (size_t i = submission.next; i < end; ++i) {

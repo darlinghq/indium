@@ -14,6 +14,7 @@
 
 namespace Indium {
 	class PrivateCommandBuffer;
+	class ConcreteTexture;
 
 	/**
 	 * An abstract base class for Indium textures.
@@ -145,6 +146,12 @@ namespace Indium {
 		Range<size_t> _levels;
 		Range<size_t> _layers;
 		TextureSwizzleChannels _swizzle;
+		// where the view starts in the image of the texture it was made from (through any views in between)
+		size_t _rootLevel = 0;
+		size_t _rootLayer = 0;
+
+		std::shared_ptr<ConcreteTexture> concreteRoot() const;
+		size_t levelExtent(size_t extent) const;
 
 	public:
 		TextureView(std::shared_ptr<PrivateTexture> original, PixelFormat pixelFormat, TextureType textureType, VkImageAspectFlags imageAspect, TextureSwizzleChannels swizzle, const Range<size_t>& levels, const Range<size_t>& layers);
@@ -301,5 +308,12 @@ namespace Indium {
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
 		virtual void getBytes(Indium::Region region, size_t mipmapLevel, size_t slice, void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+
+		/**
+		 * replaceRegion and getBytes for a view of this texture: `accessFormat` is the pixel format the caller
+		 * sees the texels in (a view's), and the level and slice are this texture's own.
+		 */
+		void uploadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, const void* bytes, size_t bytesPerRow, size_t bytesPerImage);
+		void downloadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, void* bytes, size_t bytesPerRow, size_t bytesPerImage);
 	};
 };

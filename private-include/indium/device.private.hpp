@@ -18,6 +18,7 @@
 #include <atomic>
 #include <optional>
 #include <unordered_map>
+#include <indium/texture-upload.private.hpp>
 
 namespace Indium {
 	class PrivateDevice;
@@ -220,8 +221,9 @@ namespace Indium {
 		std::shared_ptr<ComputePipelineState> visibilityResolvePipeline();
 
 		/**
-		 * Drops the objects the device keeps for its own use (they hold a reference to the device). Called when the
-		 * device list is torn down.
+		 * Drops the objects the device keeps for its own use (they hold a reference to the device): the visibility
+		 * pipeline, and the uploads in flight and staging buffers of the TextureUploader, after waiting for the GPU
+		 * to finish with them. Called when the device list is torn down.
 		 */
 		void releaseCachedObjects();
 
@@ -309,6 +311,11 @@ namespace Indium {
 		 */
 		MemoryPool& memoryPool() { return _memoryPool; }
 
+		/**
+		 * The host writes to textures that are waiting for the GPU (see TextureUploader).
+		 */
+		TextureUploader& textureUploader() { return _textureUploader; }
+
 	private:
 		// Kept after every other member: QuartzCore uses this class through pointers only, so
 		// appending members does not move the ones it reads.
@@ -316,5 +323,6 @@ namespace Indium {
 		std::mutex _renderPassMutex;
 		std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKey::Hash> _renderPasses;
 		MemoryPool _memoryPool;
+		TextureUploader _textureUploader { *this };
 	};
 };

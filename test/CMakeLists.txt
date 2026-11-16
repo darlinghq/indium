@@ -35,6 +35,7 @@ add_subdirectory(a8unorm-write)
 add_subdirectory(events-fences)
 add_subdirectory(heaps)
 add_subdirectory(visibility-results)
+add_subdirectory(texture-uploads)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
