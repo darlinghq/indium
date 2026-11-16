@@ -111,6 +111,18 @@ namespace Indium {
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
 		virtual bool needsExportablePresentationSemaphore() const;
 
+		/**
+		 * Whether the image is a copy of the rows of a buffer that is kept equal to the buffer by copies around the
+		 * encoders that use it (BufferBacking::shadow). The command buffer records the copies, outside of any render pass.
+		 */
+		virtual bool isBufferShadow() { return false; }
+		/** Records the copy of the buffer's rows into the image, and leaves the image in the general layout. */
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) {}
+		/** Records the copy of the image into the buffer's rows, and makes it visible to later commands and the host. */
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) {}
+		/** Whether a shader may write the texture (it was made with ShaderWrite usage). */
+		virtual bool mayBeWrittenByShader() { return false; }
+
 		// Declared here so this class has a complete vtable. The readback that has an
 		// image to copy from lives in ConcreteTexture and TextureView, which override
 		// both; without these, every other subclass of PrivateTexture stays abstract.
@@ -166,6 +178,11 @@ namespace Indium {
 		virtual void endUpdatingPresentationSemaphore() override;
 		virtual std::shared_ptr<BinarySemaphore> synchronizePresentation() override;
 
+		virtual bool isBufferShadow() override;
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) override;
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) override;
+		virtual bool mayBeWrittenByShader() override;
+
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 		virtual void getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) override;
@@ -190,6 +207,7 @@ namespace Indium {
 		size_t _backingOffset = 0;
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
+		bool _shadow = false;
 
 	public:
 		// A linear image in a Linux DMA-BUF to use as the texture's storage.
@@ -200,10 +218,14 @@ namespace Indium {
 		};
 
 		// The rows of a buffer as the pixels of a texture (see Buffer::newTexture()).
+		// With `shadow`, the texture is an image of its own that is kept equal to the buffer by copying around the
+		// encoders that use it (recordBufferToImage() before, recordImageToBuffer() after a write), which is how a
+		// row pitch the device's linear images cannot have is supported.
 		struct BufferBacking {
 			std::shared_ptr<PrivateBuffer> buffer;
 			size_t offset;
 			size_t bytesPerRow;
+			bool shadow = false;
 		};
 
 		// With `import`, the texture's storage is imported instead of allocated, and with `backing` it is the
@@ -236,6 +258,11 @@ namespace Indium {
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
 		virtual size_t vulkanArrayLength() const override;
+
+		virtual bool isBufferShadow() override;
+		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) override;
+		virtual void recordImageToBuffer(VkCommandBuffer commandBuffer) override;
+		virtual bool mayBeWrittenByShader() override;
 
 		virtual std::shared_ptr<Buffer> buffer() const override;
 		virtual size_t bufferOffset() const override;

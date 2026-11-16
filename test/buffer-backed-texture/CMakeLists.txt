@@ -4,7 +4,7 @@ add_executable(indium-test-buffer-backed-texture buffer-backed-texture.cpp)
 
 # The modules are committed rather than produced by the build, for the reason test/basic-compute-mslc
 # gives; README.md has the commands.
-foreach(module read-float)
+foreach(module read-float write-texel)
 	string(REPLACE "-" "_" symbol "${module}")
 	add_custom_command(
 		OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${module}-spv.h"

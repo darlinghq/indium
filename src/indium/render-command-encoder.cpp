@@ -539,6 +539,11 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 	finishTrackedEncoder(buf->commandBuffer());
+
+	auto used = _functionResources[0].usedTextures;
+	used.insert(used.end(), _functionResources[1].usedTextures.begin(), _functionResources[1].usedTextures.end());
+	used.insert(used.end(), _readOnlyTextures.begin(), _readOnlyTextures.end());
+	buf->endEncoderSegment(used, _readWriteTextures);
 };
 
 void Indium::PrivateRenderCommandEncoder::setVertexBuffer(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t index) {

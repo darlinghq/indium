@@ -80,6 +80,7 @@ namespace Indium {
 		bool _nullDescriptor = false;
 		bool _fillModeNonSolid = false;
 		bool _depthClamp = false;
+		std::atomic<bool> _bufferShadowTextures { false };
 
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
@@ -185,6 +186,14 @@ namespace Indium {
 		 * depthClamp, which is enabled when the device has it).
 		 */
 		bool depthClampEnabled() const { return _depthClamp; }
+
+		/**
+		 * Whether a texture was ever made that is an image of its own kept equal to a buffer's rows (see
+		 * ConcreteTexture::BufferBacking). Command buffers only split into segments, so that the copies can be
+		 * recorded around the encoders, once there is one.
+		 */
+		void noteBufferShadowTexture() { _bufferShadowTextures.store(true, std::memory_order_relaxed); }
+		bool hasBufferShadowTextures() const { return _bufferShadowTextures.load(std::memory_order_relaxed); }
 
 		/**
 		 * Held around every submission to and presentation on `graphicsQueue()`.

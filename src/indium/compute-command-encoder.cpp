@@ -21,6 +21,7 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
 		finishTrackedEncoder(commandBuffer->commandBuffer());
+		commandBuffer->endEncoderSegment(_functionResources.usedTextures, {});
 	}
 };
 
