@@ -89,13 +89,14 @@ namespace {
 	// The view a shader samples through, when it has to differ from the view that is attached or stored to:
 	// - a view that names both the depth and stencil aspects is fine as an attachment, but a descriptor may
 	//   only name one aspect. Metal samples the depth of such a texture, so use a depth-only view.
-	// - a format whose Vulkan format has other channels than the Metal one (A8Unorm) is read through a swizzle,
-	//   which an attachment or storage view cannot have.
+	// - a format whose Vulkan format has other channels than the Metal one (A8Unorm stored as R8, on a device
+	//   without VK_FORMAT_A8_UNORM_KHR) is read through a swizzle, which an attachment or storage view cannot have.
 	// Returns VK_NULL_HANDLE when `info` needs no such view.
-	VkImageView createSampledImageView(VkDevice device, VkImageViewCreateInfo info, Indium::PixelFormat pixelFormat, const Indium::TextureSwizzleChannels& userSwizzle) {
+	VkImageView createSampledImageView(const Indium::PrivateDevice& privateDevice, VkImageViewCreateInfo info, Indium::PixelFormat pixelFormat, const Indium::TextureSwizzleChannels& userSwizzle) {
+		VkDevice device = privateDevice.device();
 		constexpr VkImageAspectFlags depthStencil = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 		bool combined = (info.subresourceRange.aspectMask & depthStencil) == depthStencil;
-		bool swizzled = Indium::pixelFormatNeedsImplicitSwizzle(pixelFormat);
+		bool swizzled = privateDevice.needsImplicitSwizzle(pixelFormat);
 		if (!combined && !swizzled) {
 			return VK_NULL_HANDLE;
 		}
@@ -149,7 +150,8 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	info.image = _original->image();
 	info.viewType = textureTypeToVkImageViewType(_textureType);
-	info.format = viewVkFormat(_pixelFormat, _original->imageFormat());
+	auto privateDevice = std::dynamic_pointer_cast<PrivateDevice>(_original->device());
+	info.format = pixelFormatIsStencilView(_pixelFormat) ? _original->imageFormat() : privateDevice->textureVkFormat(_pixelFormat);
 	info.components.r = textureSwizzleToVkComponentSwizzle(_swizzle.red);
 	info.components.g = textureSwizzleToVkComponentSwizzle(_swizzle.green);
 	info.components.b = textureSwizzleToVkComponentSwizzle(_swizzle.blue);
@@ -165,7 +167,7 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 		abort();
 	}
 
-	_sampledImageView = createSampledImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), info, _pixelFormat, _swizzle);
+	_sampledImageView = createSampledImageView(*privateDevice, info, _pixelFormat, _swizzle);
 };
 
 Indium::TextureView::~TextureView() {
@@ -392,7 +394,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	VkImageCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	info.imageType = textureTypeToVkImageType(_descriptor.textureType);
-	info.format = pixelFormatToVkFormat(_descriptor.pixelFormat);
+	info.format = _device->textureVkFormat(_descriptor.pixelFormat);
 	info.extent.width = _descriptor.width;
 	info.extent.height = _descriptor.height;
 	info.extent.depth = _descriptor.depth;
@@ -471,10 +473,11 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	if ((static_cast<uint32_t>(descriptor.usage) & ~static_cast<uint32_t>(knownUsage)) != 0) {
 		throw std::runtime_error("Unsupported texture usage flags");
 	}
-	// A8Unorm is stored as the red channel of R8 and only reads are swizzled to alpha, so a shader write or
-	// a render target would put its red where the alpha is expected.
-	if (_descriptor.pixelFormat == PixelFormat::A8Unorm && (descriptor.usage & (TextureUsage::ShaderWrite | TextureUsage::RenderTarget)) != TextureUsage::Unknown) {
-		throw std::runtime_error("A8Unorm textures can only be read by shaders");
+	// Without VK_FORMAT_A8_UNORM_KHR, A8Unorm is stored as the red channel of R8 and only reads are swizzled
+	// to alpha, so a shader write or a render target would put its red where the alpha is expected.
+	if (_descriptor.pixelFormat == PixelFormat::A8Unorm && !_device->nativeA8UnormEnabled()
+		&& (descriptor.usage & (TextureUsage::ShaderWrite | TextureUsage::RenderTarget)) != TextureUsage::Unknown) {
+		throw std::runtime_error("A8Unorm textures can only be read by shaders on this device");
 	}
 	// Views of other pixel formats of the same texel size need an image that may be viewed as them. An
 	// unspecified usage is not narrowed down, so it keeps that possibility open as well.
@@ -497,10 +500,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 			throw std::runtime_error("Multisample shader-write textures are unsupported");
 		}
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
-	} else if (unknownUsage && _descriptor.sampleCount == 1 && _descriptor.pixelFormat != PixelFormat::A8Unorm && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+	} else if (unknownUsage && _descriptor.sampleCount == 1 && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled()) && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	}
-	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && _descriptor.pixelFormat != PixelFormat::A8Unorm) {
+	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled())) {
 		if (isColor && (!unknownUsage || (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))) {
 			info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		} else if (isDepthStencil && (!unknownUsage || (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
@@ -707,7 +710,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info2.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 	info2.image = _image;
 	info2.viewType = textureTypeToVkImageViewType(_descriptor.textureType);
-	info2.format = pixelFormatToVkFormat(_descriptor.pixelFormat);
+	info2.format = _device->textureVkFormat(_descriptor.pixelFormat);
 	info2.components.r = textureSwizzleToVkComponentSwizzle(_descriptor.swizzle.red);
 	info2.components.g = textureSwizzleToVkComponentSwizzle(_descriptor.swizzle.green);
 	info2.components.b = textureSwizzleToVkComponentSwizzle(_descriptor.swizzle.blue);
@@ -719,7 +722,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		abort();
 	}
 
-	_sampledImageView = createSampledImageView(_device->device(), info2, _descriptor.pixelFormat, _descriptor.swizzle);
+	_sampledImageView = createSampledImageView(*_device, info2, _descriptor.pixelFormat, _descriptor.swizzle);
 };
 
 // Imports the DMA-BUF as the dedicated memory of `_image` (VK_KHR_external_memory_fd,
@@ -877,7 +880,7 @@ size_t Indium::ConcreteTexture::bufferBytesPerRow() const {
 };
 
 VkFormat Indium::ConcreteTexture::imageFormat() {
-	return pixelFormatToVkFormat(_descriptor.pixelFormat);
+	return _device->textureVkFormat(_descriptor.pixelFormat);
 };
 
 bool Indium::ConcreteTexture::imageIsMutableFormat() {
