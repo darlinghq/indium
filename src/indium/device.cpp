@@ -578,7 +578,9 @@ size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) 
 	info.arrayLayers = 1;
 	info.samples = VK_SAMPLE_COUNT_1_BIT;
 	info.tiling = VK_IMAGE_TILING_LINEAR;
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+	// the usage of a texture's image always includes the transfers, and some drivers (NVIDIA) pad the pitch more for
+	// an image that is a transfer destination
+	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
