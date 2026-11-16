@@ -63,6 +63,40 @@ void Indium::PrivateCommandQueue::releaseCommandPool(VkCommandPool commandPool) 
 	_idleCommandPools.push_back(commandPool);
 };
 
+void Indium::PrivateCommandQueue::submit(std::shared_ptr<PrivateCommandBuffer> commandBuffer) {
+	{
+		std::scoped_lock lock(_pendingMutex);
+		_pending.push_back(std::move(commandBuffer));
+	}
+	drain();
+};
+
+void Indium::PrivateCommandQueue::drain() {
+	// what is to be called once nothing is locked: handlers may commit more command buffers
+	std::vector<std::function<void()>> afterSubmit;
+	{
+		std::scoped_lock drainLock(_drainMutex);
+		for (;;) {
+			std::shared_ptr<PrivateCommandBuffer> commandBuffer;
+			{
+				std::scoped_lock lock(_pendingMutex);
+				if (_pending.empty()) {
+					break;
+				}
+				commandBuffer = _pending.front();
+			}
+			if (!commandBuffer->submitReady(afterSubmit)) {
+				break;
+			}
+			std::scoped_lock lock(_pendingMutex);
+			_pending.pop_front();
+		}
+	}
+	for (const auto& call: afterSubmit) {
+		call();
+	}
+};
+
 std::shared_ptr<Indium::CommandBuffer> Indium::PrivateCommandQueue::commandBuffer() {
 	return std::make_shared<PrivateCommandBuffer>(shared_from_this());
 };

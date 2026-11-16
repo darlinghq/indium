@@ -3,6 +3,7 @@
 #include <indium/render-pass.hpp>
 #include <indium/command-queue.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/event.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/render-pipeline.private.hpp>
 #include <indium/types.private.hpp>
@@ -866,6 +867,15 @@ void Indium::PrivateRenderCommandEncoder::useResource(std::shared_ptr<Resource> 
 void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::shared_ptr<Resource>>& resources, ResourceUsage usage) {
 	// TODO: check what Metal does in this case. this is just an educated guess
 	useResources(resources, usage, RenderStages::Vertex | RenderStages::Fragment | RenderStages::Tile | RenderStages::Object | RenderStages::Mesh);
+};
+
+void Indium::PrivateRenderCommandEncoder::updateFence(const std::shared_ptr<Fence>& fence, RenderStages after) {
+	// see checkFence(): nothing to record, and the stages cannot make it cheaper
+	checkFence(fence, _privateDevice);
+};
+
+void Indium::PrivateRenderCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) {
+	checkFence(fence, _privateDevice);
 };
 
 void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) {

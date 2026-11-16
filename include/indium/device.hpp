@@ -11,6 +11,7 @@
 #include <indium/base.hpp>
 #include <indium/types.hpp>
 #include <indium/library.hpp>
+#include <indium/event.hpp>
 
 namespace Indium {
 	class CommandQueue;
@@ -187,6 +188,20 @@ namespace Indium {
 		virtual std::shared_ptr<Texture> newTextureWithDMABuf(const TextureDescriptor& descriptor, int fd, uint64_t offset, uint64_t bytesPerRow) = 0;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) = 0;
+
+		/**
+		 * An event, a counter for ordering command buffers (`CommandBuffer::encodeSignalEvent()` and
+		 * `encodeWaitForEvent()`).
+		 */
+		virtual std::shared_ptr<Event> newEvent() = 0;
+		virtual std::shared_ptr<SharedEvent> newSharedEvent() = 0;
+
+		/**
+		 * The event `handle` names, as an object of its own that shares the value, or `nullptr` if the handle is
+		 * empty or the event belongs to another device.
+		 */
+		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) = 0;
+		virtual std::shared_ptr<Fence> newFence() = 0;
 
 		// --- support api ---
 

@@ -7,6 +7,7 @@
 #include <indium/blit-command-encoder.hpp>
 #include <indium/compute-command-encoder.hpp>
 #include <indium/base.hpp>
+#include <indium/event.hpp>
 
 namespace Indium {
 	class CommandQueue;
@@ -23,6 +24,21 @@ namespace Indium {
 		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder() = 0;
 		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(const ComputePassDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder(DispatchType dispatchType) = 0;
+
+		/**
+		 * Makes `event` reach `value` once the work encoded before this call (and everything committed before this
+		 * command buffer on its queue) has finished. A value the event has already reached or passed leaves it
+		 * unchanged. Not allowed while an encoder is active (`std::logic_error`); the event must be one of this
+		 * device (`std::invalid_argument`).
+		 */
+		virtual void encodeSignalEvent(const std::shared_ptr<Event>& event, uint64_t value) = 0;
+
+		/**
+		 * Holds back the work encoded after this call, and the command buffers committed after this one on its
+		 * queue, until `event` has reached `value`. A value it already reached holds nothing back. Same
+		 * restrictions as `encodeSignalEvent()`.
+		 */
+		virtual void encodeWaitForEvent(const std::shared_ptr<Event>& event, uint64_t value) = 0;
 
 		virtual void commit() = 0;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) = 0;

@@ -13,6 +13,7 @@
 #include <indium/sampler.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/depth-stencil.private.hpp>
+#include <indium/event.private.hpp>
 #include <indium/compute-pipeline.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
@@ -1088,6 +1089,29 @@ std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::newSamplerState(con
 std::shared_ptr<Indium::DepthStencilState> Indium::PrivateDevice::newDepthStencilState(const DepthStencilDescriptor& descriptor) {
 	ensureLogicalDevice();
 	return std::make_shared<PrivateDepthStencilState>(shared_from_this(), descriptor);
+};
+
+std::shared_ptr<Indium::Event> Indium::PrivateDevice::newEvent() {
+	ensureLogicalDevice();
+	return std::make_shared<PrivateEvent>(std::make_shared<EventCore>(shared_from_this()));
+};
+
+std::shared_ptr<Indium::SharedEvent> Indium::PrivateDevice::newSharedEvent() {
+	ensureLogicalDevice();
+	return std::make_shared<PrivateSharedEvent>(std::make_shared<EventCore>(shared_from_this()));
+};
+
+std::shared_ptr<Indium::SharedEvent> Indium::PrivateDevice::newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) {
+	auto privateHandle = std::dynamic_pointer_cast<PrivateSharedEventHandle>(handle);
+	if (!privateHandle || privateHandle->core()->device().get() != this) {
+		return nullptr;
+	}
+	return std::make_shared<PrivateSharedEvent>(privateHandle->core());
+};
+
+std::shared_ptr<Indium::Fence> Indium::PrivateDevice::newFence() {
+	ensureLogicalDevice();
+	return std::make_shared<PrivateFence>(shared_from_this());
 };
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {

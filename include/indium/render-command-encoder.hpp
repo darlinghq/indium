@@ -1,6 +1,7 @@
 #pragma once
 
 #include <indium/command-encoder.hpp>
+#include <indium/event.hpp>
 #include <indium/base.hpp>
 #include <indium/render-pipeline.hpp>
 
@@ -98,5 +99,17 @@ namespace Indium {
 		 * Vertex alone; other unsupported combinations throw `std::invalid_argument`.
 		 */
 		virtual void memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) = 0;
+
+		/**
+		 * Updates `fence` once the work of the stages `after` of the commands encoded so far has finished. A fence
+		 * from another device throws `std::invalid_argument`.
+		 */
+		virtual void updateFence(const std::shared_ptr<Fence>& fence, RenderStages after) = 0;
+
+		/**
+		 * Holds the `before` stages of the commands encoded after this call back until the work `fence` was
+		 * updated after in earlier encoders has finished.
+		 */
+		virtual void waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) = 0;
 	};
 };

@@ -1,4 +1,5 @@
 #include <indium/blit-command-encoder.private.hpp>
+#include <indium/event.private.hpp>
 #include <indium/command-encoder.private.hpp>
 #include <indium/command-buffer.private.hpp>
 #include <indium/texture.private.hpp>
@@ -455,6 +456,18 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	barrier.newLayout = privateTexture->imageLayout();
 
 	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+};
+
+void Indium::PrivateBlitCommandEncoder::updateFence(const std::shared_ptr<Fence>& fence) {
+	// see checkFence(): nothing to record
+	checkFence(fence, _privateDevice);
+};
+
+void Indium::PrivateBlitCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence) {
+	checkFence(fence, _privateDevice);
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		finishTrackedEncoder(commandBuffer->commandBuffer());
+	}
 };
 
 void Indium::PrivateBlitCommandEncoder::endEncoding() {

@@ -62,6 +62,9 @@ namespace Indium {
 
 		virtual DispatchType dispatchType() override;
 
+		virtual void updateFence(const std::shared_ptr<Fence>& fence) override;
+		virtual void waitForFence(const std::shared_ptr<Fence>& fence) override;
+
 		virtual void endEncoding() override;
 	};
 };

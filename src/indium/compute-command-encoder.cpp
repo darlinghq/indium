@@ -1,5 +1,6 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/event.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
 Indium::ComputeCommandEncoder::~ComputeCommandEncoder() {};
@@ -22,6 +23,18 @@ void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
 		finishTrackedEncoder(commandBuffer->commandBuffer());
 		commandBuffer->endEncoderSegment(_functionResources.usedTextures, {});
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::updateFence(const std::shared_ptr<Fence>& fence) {
+	// see checkFence(): nothing to record
+	checkFence(fence, _privateDevice);
+};
+
+void Indium::PrivateComputeCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence) {
+	checkFence(fence, _privateDevice);
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		finishTrackedEncoder(commandBuffer->commandBuffer());
 	}
 };
 

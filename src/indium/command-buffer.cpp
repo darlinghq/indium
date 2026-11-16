@@ -7,6 +7,7 @@
 #include <indium/blit-command-encoder.private.hpp>
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/event.private.hpp>
 
 #include <algorithm>
 #include <condition_variable>
@@ -74,6 +75,8 @@ void Indium::PrivateCommandBuffer::beginEncoderSegment() {
 };
 
 void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written) {
+	_encoderActive = false;
+
 	// an encoder that began before the first such texture was made has no segment of its own and cannot have
 	// copies recorded in front of it
 	if (!_encoderSegmentOpen) {
@@ -150,6 +153,7 @@ std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::rend
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
+		_encoderActive = true;
 	}
 	return encoder;
 };
@@ -160,6 +164,7 @@ std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCo
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
+		_encoderActive = true;
 	}
 	return encoder;
 };
@@ -170,6 +175,7 @@ std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCo
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
+		_encoderActive = true;
 	}
 	return encoder;
 };
@@ -184,6 +190,7 @@ std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::com
 	{
 		std::scoped_lock lock(_mutex);
 		_commandEncoders.push_back(encoder);
+		_encoderActive = true;
 	}
 	return encoder;
 };
@@ -192,43 +199,194 @@ std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::com
 	return computeCommandEncoder(ComputePassDescriptor { {}, dispatchType });
 };
 
-void Indium::PrivateCommandBuffer::commit() {
-	std::unique_lock lock(_mutex);
+void Indium::PrivateCommandBuffer::encodeSignalEvent(const std::shared_ptr<Event>& event, uint64_t value) {
+	addEventOperation(event, value, true);
+};
 
-	_committed = true;
+void Indium::PrivateCommandBuffer::encodeWaitForEvent(const std::shared_ptr<Event>& event, uint64_t value) {
+	addEventOperation(event, value, false);
+};
 
-	for (const auto& encoder: _commandEncoders) {
-		if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
-			for (const auto& texture: renderEncoder->readOnlyTextures()) {
-				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
-					privateTexture->precommit(shared_from_this());
-				}
-			}
-			for (const auto& texture: renderEncoder->readWriteTextures()) {
-				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
-					privateTexture->precommit(shared_from_this());
-				}
-			}
-		} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
-			for (const auto& texture: blitEncoder->readOnlyTextures()) {
-				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
-					privateTexture->precommit(shared_from_this());
-				}
-			}
-			for (const auto& texture: blitEncoder->readWriteTextures()) {
-				if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
-					privateTexture->precommit(shared_from_this());
-				}
-			}
-		}
-
-		// TODO: same for other encoders
+void Indium::PrivateCommandBuffer::addEventOperation(const std::shared_ptr<Event>& event, uint64_t value, bool signal) {
+	auto eventBase = std::dynamic_pointer_cast<PrivateEventBase>(event);
+	if (!eventBase || eventBase->core()->device() != _privateDevice) {
+		throw std::invalid_argument("The event does not belong to the command buffer's device");
 	}
 
+	std::scoped_lock lock(_mutex);
+	if (_committed) {
+		throw std::logic_error("The command buffer has been committed");
+	}
+	if (_encoderActive) {
+		throw std::logic_error("An encoder is still active");
+	}
+
+	// the operation takes effect between the commands recorded so far and the ones recorded next, so they end up
+	// in command buffers of their own
 	if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
-		// TODO
+		// an unrecoverable failure, like the other command buffer calls that abort
 		abort();
 	}
+	_finishedSegments.push_back(_commandBuffer);
+	_commandBuffer = newSegment();
+	_eventOperations.push_back(EventOperation { eventBase->core(), value, signal, _finishedSegments.size() });
+};
+
+void Indium::PrivateCommandBuffer::commit() {
+	{
+		std::unique_lock lock(_mutex);
+
+		_committed = true;
+
+		for (const auto& encoder: _commandEncoders) {
+			if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
+				for (const auto& texture: renderEncoder->readOnlyTextures()) {
+					if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+						privateTexture->precommit(shared_from_this());
+					}
+				}
+				for (const auto& texture: renderEncoder->readWriteTextures()) {
+					if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+						privateTexture->precommit(shared_from_this());
+					}
+				}
+			} else if (auto blitEncoder = std::dynamic_pointer_cast<PrivateBlitCommandEncoder>(encoder)) {
+				for (const auto& texture: blitEncoder->readOnlyTextures()) {
+					if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+						privateTexture->precommit(shared_from_this());
+					}
+				}
+				for (const auto& texture: blitEncoder->readWriteTextures()) {
+					if (auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture)) {
+						privateTexture->precommit(shared_from_this());
+					}
+				}
+			}
+
+			// TODO: same for other encoders
+		}
+
+		// The batches of a command buffer with event operations are separate queue submissions, which a queue need
+		// not finish in order, but the command buffer is completed by the signal of the last one. The barrier
+		// that ends it covers every earlier command of the queue, so that signal comes after theirs.
+		if (!_eventOperations.empty()) {
+			finishTrackedEncoder(_commandBuffer);
+		}
+
+		if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
+			// TODO
+			abort();
+		}
+	}
+
+	// the queue submits it once everything it waits for has happened and the command buffers committed before it
+	// have been submitted
+	_privateCommandQueue->submit(shared_from_this());
+};
+
+bool Indium::PrivateCommandBuffer::submitReady(std::vector<std::function<void()>>& afterSubmit) {
+	std::unique_lock lock(_mutex);
+
+	// Texture timeline values are handed out below and must reach the queue in the same order,
+	// or a submission could wait on a binary semaphore that a later-reserved one signals first.
+	std::unique_lock queueLock(_privateDevice->graphicsQueueMutex());
+
+	if (!_submission) {
+		prepareSubmission();
+	}
+	auto& submission = *_submission;
+
+	// A queue submission that waits for an event value nothing has signaled yet holds up everything submitted
+	// after it on the Vulkan queue, including the work that is to signal it from another command queue. So
+	// a batch is only submitted once the values it waits for have been reached.
+	size_t end = submission.next;
+	for (; end < submission.batches.size(); ++end) {
+		bool blocked = false;
+		for (const auto& [core, value]: submission.batches[end].eventWaits) {
+			if (core->reached(value)) {
+				continue;
+			}
+			blocked = true;
+			if (!submission.waiterRegistered) {
+				submission.waiterRegistered = true;
+				auto self = shared_from_this();
+				_privateDevice->waitForSemaphore(core->semaphore(), value, [self, core = core]() {
+					{
+						std::scoped_lock waiterLock(self->_mutex);
+						if (self->_submission) {
+							self->_submission->waiterRegistered = false;
+						}
+					}
+					self->_privateCommandQueue->drain();
+				});
+			}
+			break;
+		}
+		if (blocked) {
+			break;
+		}
+	}
+
+	if (end > submission.next) {
+		std::vector<VkSubmitInfo2> infos;
+		infos.reserve(end - submission.next);
+		for (size_t i = submission.next; i < end; ++i) {
+			auto& batch = submission.batches[i];
+			// A signal that does not raise the value (another command buffer or the host got there first) is
+			// dropped; the order of the submissions decides.
+			for (const auto& [core, value]: batch.eventSignals) {
+				if (core->reserveDeviceSignal(value)) {
+					VkSemaphoreSubmitInfo signalInfo {};
+					signalInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+					signalInfo.semaphore = core->semaphore();
+					signalInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+					signalInfo.value = value;
+					batch.signals.push_back(signalInfo);
+				}
+			}
+			VkSubmitInfo2 info {};
+			info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+			info.commandBufferInfoCount = batch.commandBuffers.size();
+			info.pCommandBufferInfos = batch.commandBuffers.data();
+			info.signalSemaphoreInfoCount = batch.signals.size();
+			info.pSignalSemaphoreInfos = batch.signals.data();
+			info.waitSemaphoreInfoCount = batch.waits.size();
+			info.pWaitSemaphoreInfos = batch.waits.data();
+			infos.push_back(info);
+		}
+
+		// FIXME: we need to check if the queue we're submitting on supports the operations encoded in the command buffer.
+		//        the Device constructor tries to choose command queues that support as many operations as possible, but it's possible
+		//        that a particular device only supports certain operations on certain queues (e.g. maybe it only supports transfer operations
+		//        on an exclusive queue that doesn't support graphics or compute).
+		if (DynamicVK::vkQueueSubmit2(_privateDevice->graphicsQueue(), infos.size(), infos.data(), VK_NULL_HANDLE) != VK_SUCCESS) {
+			// TODO
+			abort();
+		}
+		submission.next = end;
+	}
+
+	if (submission.next < submission.batches.size()) {
+		return false;
+	}
+
+	auto self = shared_from_this();
+	auto readWriteTextures = std::move(submission.readWriteTextures);
+	auto presentationSemaphores = std::move(submission.presentationSemaphores);
+	_submission.reset();
+
+	queueLock.unlock();
+	lock.unlock();
+
+	afterSubmit.push_back([self, readWriteTextures = std::move(readWriteTextures), presentationSemaphores = std::move(presentationSemaphores)]() {
+		self->finishSubmission(readWriteTextures, presentationSemaphores);
+	});
+	return true;
+};
+
+void Indium::PrivateCommandBuffer::prepareSubmission() {
+	auto submissionPtr = std::make_unique<Submission>();
+	auto& submission = *submissionPtr;
 
 	// to keep ourselves alive until we're done
 	auto self = shared_from_this();
@@ -236,11 +394,9 @@ void Indium::PrivateCommandBuffer::commit() {
 	// for the event loop
 	auto timelineSemaphore = _privateDevice->getWrappedTimelineSemaphore();
 
-	++timelineSemaphore->count;
-
 	std::vector<std::shared_ptr<Texture>> readOnlyTextures;
-	std::vector<std::shared_ptr<Texture>> readWriteTextures;
-	std::vector<std::shared_ptr<BinarySemaphore>> presentationSemaphores;
+	std::vector<std::shared_ptr<Texture>>& readWriteTextures = submission.readWriteTextures;
+	std::vector<std::shared_ptr<BinarySemaphore>>& presentationSemaphores = submission.presentationSemaphores;
 
 	for (const auto& encoder: _commandEncoders) {
 		if (auto renderEncoder = std::dynamic_pointer_cast<PrivateRenderCommandEncoder>(encoder)) {
@@ -295,10 +451,6 @@ void Indium::PrivateCommandBuffer::commit() {
 		return std::find(readWriteTextures.begin(), readWriteTextures.end(), texture) != readWriteTextures.end();
 	}), readOnlyTextures.end());
 
-	// Texture timeline values are handed out below and must reach the queue in the same order,
-	// or a submission could wait on a binary semaphore that a later-reserved one signals first.
-	std::unique_lock queueLock(_privateDevice->graphicsQueueMutex());
-
 	for (const auto& texture: readWriteTextures) {
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 		// Only textures something else presents consume the presentation semaphore. Signaling
@@ -313,14 +465,6 @@ void Indium::PrivateCommandBuffer::commit() {
 
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
-	std::vector<VkCommandBufferSubmitInfo> commandBufferInfos;
-
-	VkSemaphoreSubmitInfo signalEventLoopInfo {};
-	signalEventLoopInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-	signalEventLoopInfo.semaphore = timelineSemaphore->semaphore;
-	signalEventLoopInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	signalEventLoopInfo.value = timelineSemaphore->count;
-	signalInfos.push_back(signalEventLoopInfo);
 
 	std::vector<std::shared_ptr<BinarySemaphore>> extraWaitSemaphores;
 
@@ -376,6 +520,54 @@ void Indium::PrivateCommandBuffer::commit() {
 		handleTextureSemaphores(privateTexture);
 	}
 
+	// One batch per stretch between event operations. A signal ends its batch, so that nothing recorded after it
+	// delays it; a wait starts one, so that it only holds back what is recorded after it.
+	std::vector<VkCommandBuffer> segments = _finishedSegments;
+	segments.push_back(_commandBuffer);
+
+	auto& batches = submission.batches;
+	batches.emplace_back();
+	size_t nextOperation = 0;
+	for (size_t i = 0; i < segments.size(); ++i) {
+		for (; nextOperation < _eventOperations.size() && _eventOperations[nextOperation].position <= i; ++nextOperation) {
+			const auto& operation = _eventOperations[nextOperation];
+
+			if (operation.signal) {
+				// whether it is submitted is decided when its batch is
+				batches.back().eventSignals.emplace_back(operation.core, operation.value);
+				batches.back().closed = true;
+			} else {
+				if (batches.back().closed || !batches.back().commandBuffers.empty() || !batches.back().signals.empty() || !batches.back().eventSignals.empty()) {
+					batches.emplace_back();
+				}
+				VkSemaphoreSubmitInfo info {};
+				info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+				info.semaphore = operation.core->semaphore();
+				info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+				info.value = operation.value;
+				batches.back().waits.push_back(info);
+				batches.back().eventWaits.emplace_back(operation.core, operation.value);
+			}
+		}
+
+		if (batches.back().closed) {
+			batches.emplace_back();
+		}
+		batches.back().commandBuffers.push_back(VkCommandBufferSubmitInfo { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, segments[i], 0 });
+	}
+
+	batches.front().waits.insert(batches.front().waits.begin(), waitInfos.begin(), waitInfos.end());
+	batches.back().signals.insert(batches.back().signals.end(), signalInfos.begin(), signalInfos.end());
+
+	// the event loop waits for this signal of the last batch (see commit() for why it comes after the others)
+	++timelineSemaphore->count;
+	VkSemaphoreSubmitInfo completionInfo {};
+	completionInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	completionInfo.semaphore = timelineSemaphore->semaphore;
+	completionInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	completionInfo.value = timelineSemaphore->count;
+	batches.back().signals.push_back(completionInfo);
+
 	// FIXME: apparently, sometimes, this callback will not be invoked. this is obviously bad because users might want to know when we're done,
 	//        but it also leaves the resources for this command buffer tied up, essentially becoming a memory leak.
 	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
@@ -394,32 +586,11 @@ void Indium::PrivateCommandBuffer::commit() {
 		invokeHandlers(handlers, self);
 	});
 
-	commandBufferInfos.reserve(_finishedSegments.size() + 1);
-	for (auto segment: _finishedSegments) {
-		commandBufferInfos.push_back(VkCommandBufferSubmitInfo { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, segment, 0 });
-	}
-	commandBufferInfos.push_back(VkCommandBufferSubmitInfo { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, _commandBuffer, 0 });
+	_submission = std::move(submissionPtr);
+};
 
-	VkSubmitInfo2 info {};
-	info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-	info.commandBufferInfoCount = commandBufferInfos.size();
-	info.pCommandBufferInfos = commandBufferInfos.data();
-	info.signalSemaphoreInfoCount = signalInfos.size();
-	info.pSignalSemaphoreInfos = signalInfos.data();
-	info.waitSemaphoreInfoCount = waitInfos.size();
-	info.pWaitSemaphoreInfos = waitInfos.data();
-
-	// FIXME: we need to check if the queue we're submitting on supports the operations encoded in the command buffer.
-	//        the Device constructor tries to choose command queues that support as many operations as possible, but it's possible
-	//        that a particular device only supports certain operations on certain queues (e.g. maybe it only supports transfer operations
-	//        on an exclusive queue that doesn't support graphics or compute).
-	if (DynamicVK::vkQueueSubmit2(_privateDevice->graphicsQueue(), 1, &info, VK_NULL_HANDLE) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	queueLock.unlock();
-	lock.unlock();
+void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::shared_ptr<Texture>>& readWriteTextures, const std::vector<std::shared_ptr<BinarySemaphore>>& presentationSemaphores) {
+	auto self = shared_from_this();
 
 	// now that the binary semaphore signals are pending, we can allow them to be used
 	for (size_t i = 0; i < readWriteTextures.size(); ++i) {
