@@ -80,6 +80,7 @@ namespace Indium {
 		bool _nullDescriptor = false;
 		bool _fillModeNonSolid = false;
 		bool _depthClamp = false;
+		std::atomic<bool> _bufferShadowTextures { false };
 		bool _nativeA8Unorm = false;
 
 	public:
@@ -189,6 +190,12 @@ namespace Indium {
 		bool depthClampEnabled() const { return _depthClamp; }
 
 		/**
+		 * Whether a texture was ever made that is an image of its own kept equal to a buffer's rows (see
+		 * ConcreteTexture::BufferBacking). Command buffers only split into segments, so that the copies can be
+		 * recorded around the encoders, once there is one.
+		 */
+		void noteBufferShadowTexture() { _bufferShadowTextures.store(true, std::memory_order_relaxed); }
+		bool hasBufferShadowTextures() const { return _bufferShadowTextures.load(std::memory_order_relaxed); }
 		 * Whether A8Unorm textures use VK_FORMAT_A8_UNORM_KHR, which a shader can sample, write and render to
 		 * like any other format. Without it (no VK_KHR_maintenance5, or the format lacks a feature) A8Unorm is
 		 * R8 read through a swizzle, which only supports reads.

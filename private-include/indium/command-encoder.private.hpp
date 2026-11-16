@@ -80,6 +80,9 @@ namespace Indium {
 	struct FunctionResources {
 		std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
 		std::vector<std::shared_ptr<Texture>> textures;
+		// every texture that was ever set, including the ones a later call replaced (the draws and dispatches
+		// in between used them)
+		std::vector<std::shared_ptr<Texture>> usedTextures;
 		std::vector<std::shared_ptr<SamplerState>> samplers;
 
 		void setBytes(const std::shared_ptr<Device>& device, ScratchArena& scratch, std::vector<std::shared_ptr<Buffer>>& keepAlive, const void* bytes, size_t length, size_t index) {
@@ -127,6 +130,9 @@ namespace Indium {
 			}
 
 			textures[index] = texture;
+			if (texture && std::find(usedTextures.begin(), usedTextures.end(), texture) == usedTextures.end()) {
+				usedTextures.push_back(texture);
+			}
 		};
 	};
 

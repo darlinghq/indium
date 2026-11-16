@@ -109,7 +109,7 @@ namespace Indium {
 		/**
 		 * The row pitch alignment, in bytes, of a texture of `format` that is backed by a buffer
 		 * (Buffer::newTexture()): the `bytesPerRow` of such a texture is a multiple of it. 0 for a format
-		 * that cannot be linear.
+		 * that cannot be backed by a buffer (compressed and depth/stencil formats).
 		 */
 		virtual size_t minimumLinearTextureAlignment(PixelFormat format) const = 0;
 

@@ -6,6 +6,7 @@
 
 #include <stdexcept>
 #include <cstring>
+#include <numeric>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -282,6 +283,22 @@ std::shared_ptr<Indium::BinarySemaphore> Indium::TextureView::synchronizePresent
 	return _original->synchronizePresentation();
 };
 
+bool Indium::TextureView::isBufferShadow() {
+	return _original->isBufferShadow();
+};
+
+void Indium::TextureView::recordBufferToImage(VkCommandBuffer commandBuffer) {
+	_original->recordBufferToImage(commandBuffer);
+};
+
+void Indium::TextureView::recordImageToBuffer(VkCommandBuffer commandBuffer) {
+	_original->recordImageToBuffer(commandBuffer);
+};
+
+bool Indium::TextureView::mayBeWrittenByShader() {
+	return _original->mayBeWrittenByShader();
+};
+
 void Indium::TextureView::replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) {
 	throw std::runtime_error("TODO: support replaceRegion on texture views");
 };
@@ -383,6 +400,49 @@ bool Indium::PrivateTexture::needsExportablePresentationSemaphore() const {
 // DRM_FORMAT_MOD_LINEAR from the Linux kernel's drm_fourcc.h: no tiling, rows one after another.
 static constexpr uint64_t drmFormatModifierLinear = 0;
 
+namespace {
+	struct LinearPitchRule {
+		// the row pitch of a linear image of the texture's width, and the unit every linear row pitch of the format is a multiple of
+		size_t pitchOfWidth = 0;
+		size_t granularity = 0;
+	};
+
+	// The device decides the row pitch of a linear image. Create images (no memory is needed to ask) of growing widths
+	// and see which pitches it uses.
+	LinearPitchRule linearPitchRule(Indium::PrivateDevice& device, const VkImageCreateInfo& info, size_t bytesPerPixel) {
+		auto pitchOf = [&](uint32_t width) -> size_t {
+			VkImageCreateInfo probeInfo = info;
+			probeInfo.extent.width = width;
+			probeInfo.extent.height = 1;
+			VkImage probe = VK_NULL_HANDLE;
+			if (Indium::DynamicVK::vkCreateImage(device.device(), &probeInfo, nullptr, &probe) != VK_SUCCESS) {
+				return 0;
+			}
+			VkImageSubresource subresource {};
+			subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			VkSubresourceLayout layout {};
+			Indium::DynamicVK::vkGetImageSubresourceLayout(device.device(), probe, &subresource, &layout);
+			Indium::DynamicVK::vkDestroyImage(device.device(), probe, nullptr);
+			return layout.rowPitch;
+		};
+
+		LinearPitchRule rule;
+		rule.pitchOfWidth = pitchOf(info.extent.width);
+		if (bytesPerPixel == 0) {
+			return rule;
+		}
+		// rows of up to 1 KiB, in steps of 16 bytes
+		for (size_t bytes = 16; bytes <= 1024; bytes += 16) {
+			size_t pitch = pitchOf(static_cast<uint32_t>((bytes + bytesPerPixel - 1) / bytesPerPixel));
+			if (pitch == 0) {
+				return {};
+			}
+			rule.granularity = std::gcd(rule.granularity, pitch);
+		}
+		return rule;
+	}
+}
+
 Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, const DMABufImport* import, const BufferBacking* backing):
 	PrivateTexture(device),
 	_descriptor(descriptor)
@@ -428,13 +488,26 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	info.tiling = (descriptor.allowGPUOptimizedContents || !canBeLinear) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
+	// A shadow texture is an optimal image of its own that is copied to and from the buffer around the encoders
+	// that use it (see BufferBacking); only a texture that shares the buffer's memory is a linear image.
+	const bool shadow = backing && backing->shadow;
+	const BufferBacking* direct = shadow ? nullptr : backing;
+
 	// The rows of a buffer are a linear image: no tiling, one row after another at a pitch the buffer has to share.
 	if (backing) {
 		if (!canBeLinear || !isColor || _descriptor.textureType != TextureType::e2D || _descriptor.depth != 1 || _descriptor.arrayLength != 1
 			|| pixelFormatIsCompressed(_descriptor.pixelFormat) || pixelFormatToByteCount(_descriptor.pixelFormat) == 0 || import) {
 			throw std::runtime_error("A buffer can only back a 2D texture with one level, slice and sample in an uncompressed color format");
 		}
-		info.tiling = VK_IMAGE_TILING_LINEAR;
+		info.tiling = shadow ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+		if (shadow) {
+			// the rows are copied with a row length in texels, and have to lie inside the buffer
+			size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+			if (backing->bytesPerRow % bytesPerPixel != 0 || backing->bytesPerRow < _descriptor.width * bytesPerPixel
+				|| backing->offset + backing->bytesPerRow * (_descriptor.height - 1) + _descriptor.width * bytesPerPixel > backing->buffer->length()) {
+				throw std::runtime_error("The buffer cannot back a texture with this size, format and row pitch");
+			}
+		}
 	}
 
 	// An imported DMA-BUF holds one linear 2D color image, described to Vulkan through an explicit
@@ -468,6 +541,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 		info.pNext = &externalInfo;
 	}
+
+	// A buffer's rows are at the pitch the application chose. A linear image has the pitch the driver chose, so
+	// when they differ the image is given the pitch through an explicit DRM format modifier layout instead (see below).
+	bool explicitPitch = false;
 
 	constexpr auto knownUsage = TextureUsage::ShaderRead | TextureUsage::ShaderWrite | TextureUsage::RenderTarget | TextureUsage::PixelFormatView;
 	if ((static_cast<uint32_t>(descriptor.usage) & ~static_cast<uint32_t>(knownUsage)) != 0) {
@@ -514,9 +591,51 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.queueFamilyIndexCount = 0;
 	info.pQueueFamilyIndices = nullptr;
 	// the pixels of a buffer-backed texture are already in memory, which only the preinitialized layout keeps
-	info.initialLayout = backing ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+	info.initialLayout = direct ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
 
-	if (import) {
+	if (direct && info.tiling == VK_IMAGE_TILING_LINEAR && !import) {
+		auto rule = linearPitchRule(*_device, info, pixelFormatToByteCount(_descriptor.pixelFormat));
+		// A driver may accept a pitch of its own choosing for an image with an explicit layout and still lay the rows
+		// out at a pitch it prefers, so only a pitch the linear images of the format themselves can have is asked for.
+		if (rule.granularity != 0 && rule.pitchOfWidth != direct->bytesPerRow && direct->bytesPerRow % rule.granularity == 0
+			&& direct->bytesPerRow >= rule.pitchOfWidth && !!(_device->features() & PrivateDevice::Feature::ImageDRMFormatModifier)) {
+			explicitPitch = true;
+			info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+			planeLayout.offset = 0;
+			planeLayout.size = 0;
+			planeLayout.rowPitch = direct->bytesPerRow;
+			modifierInfo.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+			modifierInfo.drmFormatModifier = drmFormatModifierLinear;
+			modifierInfo.drmFormatModifierPlaneCount = 1;
+			modifierInfo.pPlaneLayouts = &planeLayout;
+			info.pNext = &modifierInfo;
+		}
+	}
+
+	if (explicitPitch) {
+		VkPhysicalDeviceImageDrmFormatModifierInfoEXT modifierQuery {};
+		modifierQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT;
+		modifierQuery.drmFormatModifier = drmFormatModifierLinear;
+		modifierQuery.sharingMode = info.sharingMode;
+
+		VkPhysicalDeviceImageFormatInfo2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+		query.pNext = &modifierQuery;
+		query.format = info.format;
+		query.type = info.imageType;
+		query.tiling = info.tiling;
+		query.usage = info.usage;
+		query.flags = info.flags;
+
+		VkImageFormatProperties2 properties {};
+		properties.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+		auto status = DynamicVK::vkGetPhysicalDeviceImageFormatProperties2(_device->physicalDevice(), &query, &properties);
+		if (status != VK_SUCCESS
+			|| properties.imageFormatProperties.maxExtent.width < info.extent.width
+			|| properties.imageFormatProperties.maxExtent.height < info.extent.height) {
+			throw std::runtime_error("The device cannot make a linear image with this format and usage at the pitch of the buffer");
+		}
+	} else if (import) {
 		VkPhysicalDeviceImageDrmFormatModifierInfoEXT modifierQuery {};
 		modifierQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT;
 		modifierQuery.drmFormatModifier = drmFormatModifierLinear;
@@ -563,6 +682,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		if (import) {
 			throw std::runtime_error("The DMA-BUF image could not be created");
 		}
+		if (direct) {
+			throw std::runtime_error("The device cannot make an image at the pitch of the buffer");
+		}
 		// TODO
 		abort();
 	}
@@ -572,24 +694,24 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
 
 	VkDeviceSize memoryOffset = 0;
-	if (backing) {
+	if (direct) {
 		// The image has to lie where the buffer's rows are: at the pitch the buffer was laid out with, at an
 		// offset the image can be bound at, in a memory type it can use, and inside the buffer's memory.
 		VkImageSubresource subresource {};
-		subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		subresource.aspectMask = explicitPitch ? VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT : VK_IMAGE_ASPECT_COLOR_BIT;
 		VkSubresourceLayout layout {};
 		DynamicVK::vkGetImageSubresourceLayout(_device->device(), _image, &subresource, &layout);
 
-		auto& buffer = backing->buffer;
+		auto& buffer = direct->buffer;
 		size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
-		size_t lastRowEnd = backing->offset + backing->bytesPerRow * (_descriptor.height - 1) + _descriptor.width * bytesPerPixel;
-		VkDeviceSize bindOffset = buffer->memoryOffset() + backing->offset;
+		size_t lastRowEnd = direct->offset + direct->bytesPerRow * (_descriptor.height - 1) + _descriptor.width * bytesPerPixel;
+		VkDeviceSize bindOffset = buffer->memoryOffset() + direct->offset;
 		bool fits = layout.offset == 0
-			&& layout.rowPitch == backing->bytesPerRow
+			&& layout.rowPitch == direct->bytesPerRow
 			&& (reqs.memoryTypeBits & (1u << buffer->memoryTypeIndex())) != 0
 			&& reqs.alignment != 0 && bindOffset % reqs.alignment == 0
 			&& lastRowEnd <= buffer->length()
-			&& backing->offset + reqs.size <= buffer->memorySize();
+			&& direct->offset + reqs.size <= buffer->memorySize();
 		if (!fits) {
 			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
 			throw std::runtime_error("The buffer cannot back a texture with this size, format and row pitch");
@@ -597,8 +719,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 		// the buffer's memory is not this texture's to free
 		_backingBuffer = buffer;
-		_backingOffset = backing->offset;
-		_backingBytesPerRow = backing->bytesPerRow;
+		_backingOffset = direct->offset;
+		_backingBytesPerRow = direct->bytesPerRow;
 		_memory = VK_NULL_HANDLE;
 		DynamicVK::vkBindImageMemory(_device->device(), _image, buffer->memory(), bindOffset);
 	} else if (import) {
@@ -633,8 +755,16 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		memoryOffset = _allocation.offset;
 	}
 
-	if (!backing) {
+	if (!direct) {
 		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+	}
+
+	if (shadow) {
+		_backingBuffer = backing->buffer;
+		_backingOffset = backing->offset;
+		_backingBytesPerRow = backing->bytesPerRow;
+		_shadow = true;
+		_device->noteBufferShadowTexture();
 	}
 
 	// transition the image into the general layout
@@ -887,6 +1017,89 @@ bool Indium::ConcreteTexture::imageIsMutableFormat() {
 	return _mutableFormat;
 };
 
+bool Indium::ConcreteTexture::isBufferShadow() {
+	return _shadow;
+};
+
+bool Indium::ConcreteTexture::mayBeWrittenByShader() {
+	return (_descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown;
+};
+
+void Indium::ConcreteTexture::recordBufferToImage(VkCommandBuffer commandBuffer) {
+	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+
+	// what earlier commands wrote to the buffer has to be there before the copy reads it
+	VkMemoryBarrier memoryBarrier {};
+	memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	memoryBarrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+	memoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+	VkImageMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 1, &barrier);
+
+	VkBufferImageCopy copyInfo {};
+	copyInfo.bufferOffset = _backingOffset;
+	copyInfo.bufferRowLength = _backingBytesPerRow / bytesPerPixel;
+	copyInfo.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copyInfo.imageSubresource.layerCount = 1;
+	copyInfo.imageExtent = { static_cast<uint32_t>(_descriptor.width), static_cast<uint32_t>(_descriptor.height), 1 };
+	DynamicVK::vkCmdCopyBufferToImage(commandBuffer, _backingBuffer->buffer(), _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyInfo);
+
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+};
+
+void Indium::ConcreteTexture::recordImageToBuffer(VkCommandBuffer commandBuffer) {
+	size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+
+	VkImageMemoryBarrier barrier {};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image = _image;
+	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	barrier.subresourceRange.levelCount = 1;
+	barrier.subresourceRange.layerCount = 1;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+	VkBufferImageCopy copyInfo {};
+	copyInfo.bufferOffset = _backingOffset;
+	copyInfo.bufferRowLength = _backingBytesPerRow / bytesPerPixel;
+	copyInfo.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copyInfo.imageSubresource.layerCount = 1;
+	copyInfo.imageExtent = { static_cast<uint32_t>(_descriptor.width), static_cast<uint32_t>(_descriptor.height), 1 };
+	DynamicVK::vkCmdCopyImageToBuffer(commandBuffer, _image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, _backingBuffer->buffer(), 1, &copyInfo);
+
+	// later commands, and the host once the command buffer has completed, see the rows
+	barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	barrier.srcAccessMask = 0;
+	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	VkMemoryBarrier memoryBarrier {};
+	memoryBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	memoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &memoryBarrier, 0, nullptr, 1, &barrier);
+};
+
 void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) {
 	return replaceRegion(region, mipmapLevel, 0, bytes, bytesPerRow, 0);
 };
@@ -894,6 +1107,21 @@ void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmap
 void Indium::ConcreteTexture::replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
 	if (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared) {
 		throw std::runtime_error("Invalid usage of replaceRegion on non-managed and non-shared texture");
+	}
+
+	if (_shadow) {
+		// the rows of the texture are the buffer's, so this is a host write to the buffer; the image is
+		// refreshed from it before the next encoder that uses it
+		size_t bytesPerPixel = pixelFormatToByteCount(_descriptor.pixelFormat);
+		if (mipmapLevel != 0 || slice != 0 || region.origin.x + region.size.width > _descriptor.width || region.origin.y + region.size.height > _descriptor.height) {
+			throw std::runtime_error("Invalid region for replaceRegion");
+		}
+		auto* destination = static_cast<uint8_t*>(_backingBuffer->contents()) + _backingOffset;
+		for (size_t row = 0; row < region.size.height; ++row) {
+			std::memcpy(destination + (region.origin.y + row) * _backingBytesPerRow + region.origin.x * bytesPerPixel,
+				static_cast<const uint8_t*>(bytes) + row * bytesPerRow, region.size.width * bytesPerPixel);
+		}
+		return;
 	}
 
 	// FIXME: Apple says that the transfer performed in this function occurs on the CPU and does not synchronize with the GPU at all.
@@ -1030,6 +1258,19 @@ void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel
 
 	if (bytesPerImage != 0 && bytesPerImage % bytesPerRow != 0) {
 		throw std::runtime_error("Invalid bytesPerImage for getBytes: not a whole number of rows");
+	}
+
+	if (_shadow) {
+		// a host read of the buffer's rows (see replaceRegion)
+		if (mipmapLevel != 0 || slice != 0 || region.origin.x + region.size.width > _descriptor.width || region.origin.y + region.size.height > _descriptor.height) {
+			throw std::runtime_error("Invalid region for getBytes");
+		}
+		auto* source = static_cast<const uint8_t*>(_backingBuffer->contents()) + _backingOffset;
+		for (size_t row = 0; row < region.size.height; ++row) {
+			std::memcpy(static_cast<uint8_t*>(bytes) + row * bytesPerRow,
+				source + (region.origin.y + row) * _backingBytesPerRow + region.origin.x * bytesPerPixel, region.size.width * bytesPerPixel);
+		}
+		return;
 	}
 
 	// The read direction of replaceRegion: the image goes the other way, into a

@@ -460,5 +460,6 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 void Indium::PrivateBlitCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
 		finishTrackedEncoder(commandBuffer->commandBuffer());
+		commandBuffer->endEncoderSegment(_readOnlyTextures, _readWriteTextures);
 	}
 };

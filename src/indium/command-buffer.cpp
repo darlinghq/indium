@@ -32,32 +32,120 @@ Indium::PrivateCommandBuffer::PrivateCommandBuffer(std::shared_ptr<PrivateComman
 {
 	_privateDevice = _privateCommandQueue->privateDevice();
 
+	_commandPool = _privateCommandQueue->acquireCommandPool();
+	_commandBuffer = newSegment();
+};
+
+VkCommandBuffer Indium::PrivateCommandBuffer::newSegment() {
 	VkCommandBufferAllocateInfo allocInfo {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	_commandPool = _privateCommandQueue->acquireCommandPool();
 	allocInfo.commandPool = _commandPool;
 	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	allocInfo.commandBufferCount = 1;
 
-	if (DynamicVK::vkAllocateCommandBuffers(_privateDevice->device(), &allocInfo, &_commandBuffer) != VK_SUCCESS) {
+	VkCommandBuffer segment = VK_NULL_HANDLE;
+	if (DynamicVK::vkAllocateCommandBuffers(_privateDevice->device(), &allocInfo, &segment) != VK_SUCCESS) {
 		// TODO: handle this in a more C++-friendly way
 		abort();
 	}
+	_allSegments.push_back(segment);
 
 	VkCommandBufferBeginInfo beginInfo {};
 	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	if (DynamicVK::vkBeginCommandBuffer(_commandBuffer, &beginInfo) != VK_SUCCESS) {
+	if (DynamicVK::vkBeginCommandBuffer(segment, &beginInfo) != VK_SUCCESS) {
 		// TODO: same
 		abort();
 	}
+	return segment;
+};
+
+void Indium::PrivateCommandBuffer::beginEncoderSegment() {
+	if (!_privateDevice->hasBufferShadowTextures()) {
+		return;
+	}
+	// what was recorded so far ends here, so that copies for the encoder can go in front of its commands
+	if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
+		// an unrecoverable failure, like the other command buffer calls that abort
+		abort();
+	}
+	_finishedSegments.push_back(_commandBuffer);
+	_commandBuffer = newSegment();
+	_encoderSegmentOpen = true;
+};
+
+void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written) {
+	// an encoder that began before the first such texture was made has no segment of its own and cannot have
+	// copies recorded in front of it
+	if (!_encoderSegmentOpen) {
+		return;
+	}
+	_encoderSegmentOpen = false;
+
+	const auto collect = [](const std::vector<std::shared_ptr<Texture>>& textures, std::vector<std::shared_ptr<PrivateTexture>>& out) {
+		for (const auto& texture: textures) {
+			auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
+			if (!privateTexture || !privateTexture->isBufferShadow()) {
+				continue;
+			}
+			// a view and its texture are one image
+			std::shared_ptr<Texture> root = privateTexture;
+			while (auto parent = root->parentTexture()) {
+				root = parent;
+			}
+			auto privateRoot = std::dynamic_pointer_cast<PrivateTexture>(root);
+			if (std::find(out.begin(), out.end(), privateRoot) == out.end()) {
+				out.push_back(privateRoot);
+			}
+		}
+	};
+	std::vector<std::shared_ptr<PrivateTexture>> toRead;
+	std::vector<std::shared_ptr<PrivateTexture>> toWrite;
+	collect(used, toRead);
+	collect(written, toRead);
+	collect(written, toWrite);
+	for (const auto& texture: toRead) {
+		if (texture->mayBeWrittenByShader() && std::find(toWrite.begin(), toWrite.end(), texture) == toWrite.end()) {
+			toWrite.push_back(texture);
+		}
+	}
+
+	if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
+		// an unrecoverable failure, like the other command buffer calls that abort
+		abort();
+	}
+	auto encoderSegment = _commandBuffer;
+
+	if (!toRead.empty()) {
+		auto prologue = newSegment();
+		for (const auto& texture: toRead) {
+			texture->recordBufferToImage(prologue);
+		}
+		DynamicVK::vkEndCommandBuffer(prologue);
+		_finishedSegments.push_back(prologue);
+	}
+	_finishedSegments.push_back(encoderSegment);
+	if (!toWrite.empty()) {
+		auto epilogue = newSegment();
+		for (const auto& texture: toWrite) {
+			texture->recordImageToBuffer(epilogue);
+		}
+		DynamicVK::vkEndCommandBuffer(epilogue);
+		_finishedSegments.push_back(epilogue);
+	}
+
+	// whatever is recorded between this encoder and the next
+	_commandBuffer = newSegment();
 };
 
 Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
-	DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _commandPool, 1, &_commandBuffer);
+	for (auto segment: _allSegments) {
+		DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _commandPool, 1, &segment);
+	}
 	_privateCommandQueue->releaseCommandPool(_commandPool);
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
+	beginEncoderSegment();
 	auto encoder = std::make_shared<Indium::PrivateRenderCommandEncoder>(shared_from_this(), descriptor);
 	{
 		std::scoped_lock lock(_mutex);
@@ -67,6 +155,7 @@ std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::rend
 };
 
 std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoder() {
+	beginEncoderSegment();
 	auto encoder = std::make_shared<Indium::PrivateBlitCommandEncoder>(shared_from_this());
 	{
 		std::scoped_lock lock(_mutex);
@@ -76,6 +165,7 @@ std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCo
 };
 
 std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoder(const BlitPassDescriptor& descriptor) {
+	beginEncoderSegment();
 	auto encoder = std::make_shared<Indium::PrivateBlitCommandEncoder>(shared_from_this(), descriptor);
 	{
 		std::scoped_lock lock(_mutex);
@@ -89,6 +179,7 @@ std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::com
 };
 
 std::shared_ptr<Indium::ComputeCommandEncoder> Indium::PrivateCommandBuffer::computeCommandEncoder(const ComputePassDescriptor& descriptor) {
+	beginEncoderSegment();
 	auto encoder = std::make_shared<Indium::PrivateComputeCommandEncoder>(shared_from_this(), descriptor);
 	{
 		std::scoped_lock lock(_mutex);
@@ -222,7 +313,7 @@ void Indium::PrivateCommandBuffer::commit() {
 
 	std::vector<VkSemaphoreSubmitInfo> signalInfos;
 	std::vector<VkSemaphoreSubmitInfo> waitInfos;
-	VkCommandBufferSubmitInfo commandBufferInfo {};
+	std::vector<VkCommandBufferSubmitInfo> commandBufferInfos;
 
 	VkSemaphoreSubmitInfo signalEventLoopInfo {};
 	signalEventLoopInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -303,13 +394,16 @@ void Indium::PrivateCommandBuffer::commit() {
 		invokeHandlers(handlers, self);
 	});
 
-	commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-	commandBufferInfo.commandBuffer = _commandBuffer;
+	commandBufferInfos.reserve(_finishedSegments.size() + 1);
+	for (auto segment: _finishedSegments) {
+		commandBufferInfos.push_back(VkCommandBufferSubmitInfo { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, segment, 0 });
+	}
+	commandBufferInfos.push_back(VkCommandBufferSubmitInfo { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, nullptr, _commandBuffer, 0 });
 
 	VkSubmitInfo2 info {};
 	info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-	info.commandBufferInfoCount = 1;
-	info.pCommandBufferInfos = &commandBufferInfo;
+	info.commandBufferInfoCount = commandBufferInfos.size();
+	info.pCommandBufferInfos = commandBufferInfos.data();
 	info.signalSemaphoreInfoCount = signalInfos.size();
 	info.pSignalSemaphoreInfos = signalInfos.data();
 	info.waitSemaphoreInfoCount = waitInfos.size();

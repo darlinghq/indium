@@ -611,41 +611,13 @@ size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) 
 		return 0;
 	}
 
-	// The device decides the row pitch of a linear image, and the pitch of a one-texel-wide image is the
-	// alignment it rounds every pitch up to.
-	VkImageCreateInfo info {};
-	info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	info.imageType = VK_IMAGE_TYPE_2D;
-	info.format = vkFormat;
-	info.extent = { 1, 1, 1 };
-	info.mipLevels = 1;
-	info.arrayLayers = 1;
-	info.samples = VK_SAMPLE_COUNT_1_BIT;
-	info.tiling = VK_IMAGE_TILING_LINEAR;
-	// the usage of a texture's image always includes the transfers, and some drivers (NVIDIA) pad the pitch more for
-	// an image that is a transfer destination
-	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-	VkImageFormatProperties formatProperties {};
-	if (DynamicVK::vkGetPhysicalDeviceImageFormatProperties(_physicalDevice, vkFormat, info.imageType, info.tiling, info.usage, info.flags, &formatProperties) != VK_SUCCESS) {
+	if (pixelFormatToVkImageAspectFlags(format) != VK_IMAGE_ASPECT_COLOR_BIT || pixelFormatIsCompressed(format)) {
 		return 0;
 	}
 
-	VkDevice vkDevice = device();
-	VkImage image = VK_NULL_HANDLE;
-	if (DynamicVK::vkCreateImage(vkDevice, &info, nullptr, &image) != VK_SUCCESS) {
-		return 0;
-	}
-	VkImageSubresource subresource {};
-	subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	VkSubresourceLayout layout {};
-	DynamicVK::vkGetImageSubresourceLayout(vkDevice, image, &subresource, &layout);
-	DynamicVK::vkDestroyImage(vkDevice, image, nullptr);
-
-	// a pitch is a whole number of texels; the alignment is the smallest number of bytes a row can be
-	return std::max<size_t>(layout.rowPitch, bytesPerPixel);
+	// A buffer's rows may be at any multiple of 16 bytes: a texture whose image can lie there is a linear image,
+	// and any other is an image of its own that is copied to and from the buffer (see Buffer::newTexture()).
+	return std::max<size_t>(16, bytesPerPixel);
 };
 
 bool Indium::PrivateDevice::supportsTextureSampleCount(uint32_t sampleCount) const {
