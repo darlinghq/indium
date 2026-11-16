@@ -1,6 +1,7 @@
 // Copyright (C) 2026 Darling Developers
 
 #include <indium/memory-pool.private.hpp>
+#include <indium/range-allocator.private.hpp>
 #include <indium/dynamic-vk.hpp>
 
 #include <algorithm>
@@ -14,8 +15,7 @@ struct Indium::MemoryPool::Block {
 	bool dedicated = false;
 	void* mapped = nullptr;
 	size_t live = 0;
-	// offset -> size of each free range, coalesced
-	std::map<VkDeviceSize, VkDeviceSize> free;
+	RangeAllocator ranges { 0 };
 };
 
 namespace {
@@ -42,25 +42,31 @@ namespace {
 	}
 
 	bool isEmpty(const Indium::MemoryPool::Block& block) {
-		return block.live == 0 && block.free.size() == 1 && block.free.begin()->second == block.size;
+		return block.live == 0 && block.ranges.isEmpty();
 	}
 };
 
+Indium::MemoryPool::Allocation Indium::MemoryPool::allocateDedicated(VkDevice device, uint32_t typeIndex, VkDeviceSize size, Kind kind) {
+	auto block = std::make_shared<Block>();
+	block->dedicated = true;
+	block->size = size;
+	block->memory = allocateMemory(device, typeIndex, size, kind == Kind::Buffer);
+
+	Allocation result;
+	result.memory = block->memory;
+	result.offset = 0;
+	result.size = size;
+	result.block = std::move(block);
+	return result;
+};
+
 Indium::MemoryPool::Allocation Indium::MemoryPool::allocate(VkDevice device, uint32_t typeIndex, const VkMemoryRequirements& requirements, Kind kind) {
+	if (requirements.size > maxPooledSize) {
+		return allocateDedicated(device, typeIndex, requirements.size, kind);
+	}
+
 	const bool deviceAddress = kind == Kind::Buffer;
 	Allocation result;
-
-	if (requirements.size > maxPooledSize) {
-		auto block = std::make_shared<Block>();
-		block->dedicated = true;
-		block->size = requirements.size;
-		block->memory = allocateMemory(device, typeIndex, requirements.size, deviceAddress);
-		result.memory = block->memory;
-		result.offset = 0;
-		result.size = requirements.size;
-		result.block = std::move(block);
-		return result;
-	}
 
 	const VkDeviceSize size = alignUp(requirements.size, granule);
 	const VkDeviceSize alignment = std::max<VkDeviceSize>(requirements.alignment, granule);
@@ -70,28 +76,16 @@ Indium::MemoryPool::Allocation Indium::MemoryPool::allocate(VkDevice device, uin
 	auto& list = _blocks[key];
 
 	auto place = [&](const std::shared_ptr<Block>& block) {
-		for (auto it = block->free.begin(); it != block->free.end(); ++it) {
-			VkDeviceSize rangeStart = it->first;
-			VkDeviceSize rangeEnd = it->first + it->second;
-			VkDeviceSize start = alignUp(rangeStart, alignment);
-			if (start + size > rangeEnd) {
-				continue;
-			}
-			block->free.erase(it);
-			if (start > rangeStart) {
-				block->free[rangeStart] = start - rangeStart;
-			}
-			if (start + size < rangeEnd) {
-				block->free[start + size] = rangeEnd - (start + size);
-			}
-			++block->live;
-			result.memory = block->memory;
-			result.offset = start;
-			result.size = size;
-			result.block = block;
-			return true;
+		auto start = block->ranges.allocate(size, alignment);
+		if (!start) {
+			return false;
 		}
-		return false;
+		++block->live;
+		result.memory = block->memory;
+		result.offset = *start;
+		result.size = size;
+		result.block = block;
+		return true;
 	};
 
 	for (auto& block: list) {
@@ -104,7 +98,7 @@ Indium::MemoryPool::Allocation Indium::MemoryPool::allocate(VkDevice device, uin
 	block->key = key;
 	block->size = blockSize;
 	block->memory = allocateMemory(device, typeIndex, blockSize, deviceAddress);
-	block->free[0] = blockSize;
+	block->ranges = RangeAllocator(blockSize);
 	list.push_back(block);
 	place(block);
 	return result;
@@ -126,21 +120,7 @@ void Indium::MemoryPool::free(VkDevice device, Allocation& allocation) {
 
 	std::scoped_lock lock(_mutex);
 
-	// merge with the free neighbours
-	auto next = block->free.lower_bound(offset);
-	if (next != block->free.begin()) {
-		auto previous = std::prev(next);
-		if (previous->first + previous->second == offset) {
-			offset = previous->first;
-			size += previous->second;
-			block->free.erase(previous);
-		}
-	}
-	if (next != block->free.end() && offset + size == next->first) {
-		size += next->second;
-		block->free.erase(next);
-	}
-	block->free[offset] = size;
+	block->ranges.free(offset, size);
 	--block->live;
 
 	if (!isEmpty(*block)) {

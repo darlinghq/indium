@@ -66,6 +66,13 @@ namespace Indium {
 		Allocation allocate(VkDevice device, uint32_t typeIndex, const VkMemoryRequirements& requirements, Kind kind);
 
 		/**
+		 * A block of `size` bytes that is not shared with any other resource: the whole memory object is
+		 * the allocation (offset 0), and freeing it frees the memory object. For things that sub-allocate
+		 * themselves, such as a heap. `size` is not rounded.
+		 */
+		Allocation allocateDedicated(VkDevice device, uint32_t typeIndex, VkDeviceSize size, Kind kind);
+
+		/**
 		 * Gives the allocation's range back. The resource bound to it must be destroyed already.
 		 */
 		void free(VkDevice device, Allocation& allocation);
