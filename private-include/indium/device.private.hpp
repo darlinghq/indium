@@ -196,6 +196,8 @@ namespace Indium {
 		 */
 		void noteBufferShadowTexture() { _bufferShadowTextures.store(true, std::memory_order_relaxed); }
 		bool hasBufferShadowTextures() const { return _bufferShadowTextures.load(std::memory_order_relaxed); }
+
+		/**
 		 * Whether A8Unorm textures use VK_FORMAT_A8_UNORM_KHR, which a shader can sample, write and render to
 		 * like any other format. Without it (no VK_KHR_maintenance5, or the format lacks a feature) A8Unorm is
 		 * R8 read through a swizzle, which only supports reads.
