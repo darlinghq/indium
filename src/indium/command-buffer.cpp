@@ -675,10 +675,12 @@ void Indium::PrivateCommandBuffer::retire() {
 	std::vector<EventOperation> eventOperations;
 	std::vector<VkCommandBuffer> segments;
 	std::vector<std::shared_ptr<BinarySemaphore>> semaphores;
+	std::vector<std::shared_ptr<Resource>> resources;
 	VkCommandPool pool = VK_NULL_HANDLE;
 	{
 		std::unique_lock lock(_mutex);
 		semaphores.swap(_retainedSemaphores);
+		resources.swap(_retainedResources);
 		encoders.swap(_commandEncoders);
 		drawables.swap(_drawablesToPresent);
 		eventOperations.swap(_eventOperations);
@@ -695,6 +697,7 @@ void Indium::PrivateCommandBuffer::retire() {
 	drawables.clear();
 	eventOperations.clear();
 	semaphores.clear();
+	resources.clear();
 };
 
 void Indium::PrivateCommandBuffer::freeSegments(VkCommandPool pool, const std::vector<VkCommandBuffer>& segments) {

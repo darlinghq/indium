@@ -67,7 +67,9 @@ Indium::PrivateBlitCommandEncoder::~PrivateBlitCommandEncoder() {
 void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& source, size_t sourceOffset, const std::shared_ptr<Buffer>& destination, size_t destinationOffset, size_t size) {
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateSource = std::dynamic_pointer_cast<PrivateBuffer>(source);
+	cmdbuf->retainResource(privateSource);
 	auto privateDest = std::dynamic_pointer_cast<PrivateBuffer>(destination);
+	cmdbuf->retainResource(privateDest);
 
 	VkBufferCopy info {};
 
@@ -85,6 +87,7 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& source, size_t sourceOffset, size_t sourceBytesPerRow, size_t sourceBytesPerImage, Size sourceSize, const std::shared_ptr<Texture>& destination, size_t destinationSlice, size_t destinationLevel, Origin destinationOrigin, BlitOption options) {
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateSource = std::dynamic_pointer_cast<PrivateBuffer>(source);
+	cmdbuf->retainResource(privateSource);
 	auto privateDest = std::dynamic_pointer_cast<PrivateTexture>(destination);
 
 	if (std::find(_readWriteTextures.begin(), _readWriteTextures.end(), destination) == _readWriteTextures.end()) {
@@ -152,6 +155,7 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateSource = std::dynamic_pointer_cast<PrivateTexture>(source);
 	auto privateDest = std::dynamic_pointer_cast<PrivateBuffer>(destination);
+	cmdbuf->retainResource(privateDest);
 
 	if (std::find(_readOnlyTextures.begin(), _readOnlyTextures.end(), source) == _readOnlyTextures.end()) {
 		_readOnlyTextures.push_back(source);
@@ -368,6 +372,7 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 void Indium::PrivateBlitCommandEncoder::fillBuffer(const std::shared_ptr<Buffer>& buffer, Range<size_t> range, uint8_t value) {
 	auto cmdbuf = _privateCommandBuffer.lock();
 	auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+	cmdbuf->retainResource(privateBuffer);
 	uint32_t value32 =
 		((uint32_t)value << 24) |
 		((uint32_t)value << 16) |
