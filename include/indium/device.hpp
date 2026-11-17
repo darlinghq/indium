@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -126,6 +127,30 @@ namespace Indium {
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(std::shared_ptr<Function> computeFunction, PipelineOption options = PipelineOption::None, std::shared_ptr<ComputePipelineReflection> reflection = nullptr) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
+
+		/**
+		 * Whether newBufferNoCopy() can work on this device (VK_EXT_external_memory_host is available).
+		 */
+		virtual bool supportsBufferNoCopy() const = 0;
+
+		/**
+		 * A buffer whose storage is the memory at `pointer`, with no copy: what the CPU writes there is what the GPU
+		 * reads and the other way round, and `contents()` is `pointer`. `options` must have the shared or the
+		 * managed storage mode (the memory is coherent in both, so a managed buffer needs no `didModifyRange()`).
+		 *
+		 * The memory has to stay valid for the life of the buffer, which is not released before the GPU has finished
+		 * with every command buffer that uses it; `deallocator` (which may be empty) is called with `pointer` and
+		 * `length` after that, on whichever thread releases the buffer last. It is not called when this returns
+		 * nullptr.
+		 *
+		 * `pointer` has to be aligned to the host page size (and to what the device needs for imported host memory,
+		 * which must not be more than a page). The buffer can reach up to the end of the last page of the range, the
+		 * way a GPU access reaches past the end of any host mapping.
+		 *
+		 * @returns nullptr for a null or unaligned pointer, a zero length, another storage mode or a device that
+		 *          cannot import the memory.
+		 */
+		virtual std::shared_ptr<Buffer> newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) = 0;
 		/**
 		 * Translates Metal Shading Language source and creates a library from
 		 * it.

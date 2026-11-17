@@ -83,6 +83,15 @@ namespace Indium {
 		 */
 		void retire();
 
+		/**
+		 * Keeps `resource` alive until the command buffer retires, that is until the GPU is done with the commands that
+		 * refer to it, whoever else lets go of it and however long the encoder that recorded them is kept.
+		 */
+		void retainResource(std::shared_ptr<Resource> resource) {
+			std::scoped_lock lock(_mutex);
+			_retainedResources.push_back(std::move(resource));
+		}
+
 		void addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
 		void addCompletedHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
 
@@ -169,6 +178,7 @@ namespace Indium {
 
 		uint64_t _completionValue = 0;
 		std::vector<std::shared_ptr<BinarySemaphore>> _retainedSemaphores;
+		std::vector<std::shared_ptr<Resource>> _retainedResources;
 
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		// the finished segments in execution order (`_commandBuffer` is the one being recorded), and every one allocated

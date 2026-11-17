@@ -349,6 +349,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		{ VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, Feature::MemoryBudget },
 		{ VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, Feature::ExternalMemoryDMABuf },
 		{ VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME, Feature::ImageDRMFormatModifier },
+		{ VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, Feature::ExternalMemoryHost },
 	};
 
 	for (const auto& prop: extProps) {
@@ -805,6 +806,23 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(size_t length, 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* pointer, size_t length, ResourceOptions options) {
 	ensureLogicalDevice();
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
+};
+
+bool Indium::PrivateDevice::supportsBufferNoCopy() const {
+	return !!(_features & Feature::ExternalMemoryHost);
+};
+
+std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) {
+	if (!supportsBufferNoCopy()) {
+		return nullptr;
+	}
+	ensureLogicalDevice();
+	try {
+		return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options, std::move(deallocator), PrivateBuffer::NoCopy {});
+	} catch (const std::runtime_error&) {
+		// not importable: the memory is not what the device can use as a buffer
+		return nullptr;
+	}
 };
 
 size_t Indium::PrivateDevice::findMemoryType(uint32_t memoryTypeBits, StorageMode storageMode) const {

@@ -101,6 +101,7 @@ namespace Indium {
 			ExternalMemoryDMABuf = 1 << 5,
 			ImageDRMFormatModifier = 1 << 6,
 			Maintenance5        = 1 << 7,
+			ExternalMemoryHost  = 1 << 8,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -134,6 +135,8 @@ namespace Indium {
 		virtual std::shared_ptr<ComputePipelineState> newComputePipelineState(std::shared_ptr<Function> computeFunction, PipelineOption options = PipelineOption::None, std::shared_ptr<ComputePipelineReflection> reflection = nullptr) override;
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) override;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) override;
+		virtual bool supportsBufferNoCopy() const override;
+		virtual std::shared_ptr<Buffer> newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;

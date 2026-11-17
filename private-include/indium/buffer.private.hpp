@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -37,6 +38,11 @@ namespace Indium {
 			std::optional<size_t> offset;
 		};
 		PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options, const HeapPlacement& placement);
+
+		// A buffer over memory the caller owns, imported with VK_EXT_external_memory_host (see
+		// Device::newBufferNoCopy()). Throws std::runtime_error if the memory cannot be imported.
+		struct NoCopy {};
+		PrivateBuffer(std::shared_ptr<PrivateDevice> device, void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator, NoCopy);
 		~PrivateBuffer();
 
 		virtual std::shared_ptr<Device> device() override;
@@ -84,5 +90,10 @@ namespace Indium {
 		VkDeviceSize _requiredSize = 0;
 		// set for a buffer made from a heap, which owns the memory
 		std::unique_ptr<HeapAllocation> _heapAllocation;
+		// set for a buffer over the caller's memory: the memory object imported from it, which is not the pool's,
+		// and what to tell the caller when the buffer is gone
+		bool _importedMemory = false;
+		void* _importedPointer = nullptr;
+		std::function<void(void*, size_t)> _deallocator;
 	};
 };
