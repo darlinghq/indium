@@ -135,9 +135,8 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
 	_hazardTrackingMode = resolveHazardTrackingMode(options, HazardTrackingMode::HazardTrackingModeDefault);
 
-	// The GPU gets the pages the range lies in, so the range has to start on one; the device must also be happy
-	// with a page as its import granularity, because the size handed to it is rounded up to a whole page (the
-	// bytes after the end of the range, up to the end of its last page, are mapped like the rest).
+	// The GPU gets the pages the range lies in (they are mapped whole, whatever part of them the caller uses), and
+	// the buffer starts at its place inside them. The device must be happy with a page as its import granularity.
 	const size_t pageSize = static_cast<size_t>(sysconf(_SC_PAGESIZE));
 	VkDeviceSize alignment = 0;
 	{
@@ -153,22 +152,29 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void
 	if (pointer == nullptr || length == 0
 		|| (_storageMode != StorageMode::Shared && _storageMode != StorageMode::Managed)
 		|| alignment == 0 || alignment > pageSize || pageSize % alignment != 0
-		|| reinterpret_cast<uintptr_t>(pointer) % pageSize != 0
-		|| length > SIZE_MAX - pageSize) {
+		|| length > SIZE_MAX / 2) {
 		throw std::runtime_error("The memory cannot be imported as a buffer");
 	}
-	const VkDeviceSize importSize = (length + pageSize - 1) / pageSize * pageSize;
+	const uintptr_t start = reinterpret_cast<uintptr_t>(pointer);
+	const uintptr_t end = start + length;
+	if (end < start || end > UINTPTR_MAX - pageSize) {
+		throw std::runtime_error("The memory cannot be imported as a buffer");
+	}
+	void* const importPointer = reinterpret_cast<void*>(start / pageSize * pageSize);
+	const VkDeviceSize offsetInPages = start % pageSize;
+	const VkDeviceSize importSize = (end + pageSize - 1) / pageSize * pageSize - start / pageSize * pageSize;
 
 	VkMemoryHostPointerPropertiesEXT pointerProperties {};
 	pointerProperties.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT;
-	if (DynamicVK::vkGetMemoryHostPointerPropertiesEXT(_privateDevice->device(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, pointer, &pointerProperties) != VK_SUCCESS) {
+	if (DynamicVK::vkGetMemoryHostPointerPropertiesEXT(_privateDevice->device(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, importPointer, &pointerProperties) != VK_SUCCESS) {
 		throw std::runtime_error("The device cannot import this memory");
 	}
 
 	VkExternalMemoryBufferCreateInfo externalInfo {};
 	externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
 	externalInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
-	auto info = bufferCreateInfo(length);
+	// the VkBuffer covers the bytes from the start of the first page to the end of the range
+	auto info = bufferCreateInfo(offsetInPages + length);
 	info.pNext = &externalInfo;
 
 	if (DynamicVK::vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
@@ -188,7 +194,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void
 	VkImportMemoryHostPointerInfoEXT importInfo {};
 	importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT;
 	importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
-	importInfo.pHostPointer = pointer;
+	importInfo.pHostPointer = importPointer;
 
 	VkMemoryAllocateFlagsInfo flagsInfo {};
 	flagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
@@ -214,8 +220,10 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void
 	_memoryTypeIndex = static_cast<uint32_t>(typeIndex);
 	_requiredSize = importSize;
 	_allocation.memory = _memory;
-	_allocation.offset = 0;
-	_allocation.size = importSize;
+	// the memory is bound to the buffer from its start, so the buffer's first byte is at this offset of both
+	_allocation.offset = offsetInPages;
+	_allocation.size = importSize - offsetInPages;
+	_bufferOffset = offsetInPages;
 	_mapped = pointer;
 	_importedMemory = true;
 	_importedPointer = pointer;
@@ -223,7 +231,41 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void
 	_deallocator = std::move(deallocator);
 };
 
+Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator, NoCopyShadow):
+	// the buffer's own memory is shared (host-visible and coherent) whatever storage mode was asked for
+	PrivateBuffer(device, length, static_cast<ResourceOptions>((static_cast<size_t>(options) & ~(static_cast<size_t>(0xf) << 4)) | (static_cast<size_t>(StorageMode::Shared) << 4)))
+{
+	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+	_shadowDeviceMapped = _privateDevice->memoryPool().map(_privateDevice->device(), _allocation);
+	if (!_shadowDeviceMapped) {
+		// the destructor releases the memory the delegated constructor made
+		throw std::runtime_error("The buffer's memory cannot be mapped");
+	}
+	_shadow = pointer;
+	_deallocator = std::move(deallocator);
+	_importedPointer = pointer;
+	_privateDevice->addShadowBuffer(this);
+	syncShadowToDevice();
+};
+
+void Indium::PrivateBuffer::syncShadowToDevice() {
+	if (_shadow) {
+		memcpy(_shadowDeviceMapped, _shadow, _length);
+	}
+};
+
+void Indium::PrivateBuffer::syncShadowFromDevice() {
+	if (_shadow) {
+		memcpy(_shadow, _shadowDeviceMapped, _length);
+	}
+};
+
 Indium::PrivateBuffer::~PrivateBuffer() {
+	if (_shadow) {
+		_privateDevice->removeShadowBuffer(this);
+		// the GPU is done with the buffer: what it wrote goes back before the memory is given up
+		syncShadowFromDevice();
+	}
 	// the mapping belongs to the memory block and goes away with it
 	DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
 	if (_importedMemory) {
@@ -234,6 +276,9 @@ Indium::PrivateBuffer::~PrivateBuffer() {
 		}
 	} else if (!_heapAllocation) {
 		_privateDevice->memoryPool().free(_privateDevice->device(), _allocation);
+		if (_shadow && _deallocator) {
+			_deallocator(_importedPointer, _length);
+		}
 	}
 	// a heap buffer's range goes back to its heap with _heapAllocation
 };
@@ -251,6 +296,10 @@ void* Indium::PrivateBuffer::contents() {
 		return nullptr;
 	}
 
+	if (_shadow) {
+		return _shadow;
+	}
+
 	if (!_mapped) {
 		_mapped = _privateDevice->memoryPool().map(_privateDevice->device(), _allocation);
 		if (!_mapped) {
@@ -263,7 +312,7 @@ void* Indium::PrivateBuffer::contents() {
 };
 
 void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
-	if (_importedMemory) {
+	if (_importedMemory || _shadow) {
 		// the memory is coherent and was never mapped through Vulkan: nothing to flush
 		return;
 	}
@@ -287,6 +336,7 @@ uint64_t Indium::PrivateBuffer::gpuAddress() {
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	info.buffer = _buffer;
 	_gpuAddress = DynamicVK::vkGetBufferDeviceAddress(_privateDevice->device(), &info);
+	_gpuAddress += _bufferOffset;
 	return _gpuAddress;
 };
 

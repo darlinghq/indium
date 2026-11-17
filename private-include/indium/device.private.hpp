@@ -22,6 +22,7 @@
 
 namespace Indium {
 	class PrivateDevice;
+	class PrivateBuffer;
 
 	extern std::vector<std::shared_ptr<PrivateDevice>> globalDeviceList;
 
@@ -75,6 +76,9 @@ namespace Indium {
 			}
 		}
 
+		std::mutex _shadowMutex;
+		std::vector<PrivateBuffer*> _shadowBuffers;
+		std::atomic<bool> _bufferNoCopyImportDisabled { false };
 		std::mutex _fallbackMutex;
 		std::shared_ptr<Buffer> _fallbackBuffer;
 		std::shared_ptr<SamplerState> _fallbackSampler;
@@ -137,6 +141,15 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) override;
 		virtual bool supportsBufferNoCopy() const override;
 		virtual std::shared_ptr<Buffer> newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) override;
+		/**
+		 * The copying no-copy buffers (see PrivateBuffer::NoCopyShadow) are kept in step with the caller's memory:
+		 * `toDevice` copies the caller's memory to every one of them, otherwise they are copied back.
+		 */
+		void syncShadowBuffers(bool toDevice);
+		void addShadowBuffer(PrivateBuffer* buffer);
+		void removeShadowBuffer(PrivateBuffer* buffer);
+		/** For tests: when set, newBufferNoCopy() acts as if the device could not import host memory. */
+		void setBufferNoCopyImportDisabled(bool disabled) { _bufferNoCopyImportDisabled = disabled; }
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) override;
 		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) override;

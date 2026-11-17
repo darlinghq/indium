@@ -73,8 +73,8 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 
 	VkBufferCopy info {};
 
-	info.srcOffset = sourceOffset;
-	info.dstOffset = destinationOffset;
+	info.srcOffset = sourceOffset + privateSource->bufferOffset();
+	info.dstOffset = destinationOffset + privateDest->bufferOffset();
 	info.size = size;
 
 	useBuffer(*cmdbuf, privateSource, sourceOffset, size, false);
@@ -126,7 +126,7 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	auto pitch = bufferTexelPitch(privateDest->pixelFormat(), sourceBytesPerRow, sourceBytesPerImage);
-	copyInfo.bufferOffset = sourceOffset;
+	copyInfo.bufferOffset = sourceOffset + privateSource->bufferOffset();
 	copyInfo.bufferRowLength = pitch.rowLength;
 	copyInfo.bufferImageHeight = pitch.imageHeight;
 	copyInfo.imageSubresource.aspectMask = aspect;
@@ -193,7 +193,7 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	auto pitch = bufferTexelPitch(privateSource->pixelFormat(), destinationBytesPerRow, destinationBytesPerImage);
-	copyInfo.bufferOffset = destinationOffset;
+	copyInfo.bufferOffset = destinationOffset + privateDest->bufferOffset();
 	copyInfo.bufferRowLength = pitch.rowLength;
 	copyInfo.bufferImageHeight = pitch.imageHeight;
 	copyInfo.imageSubresource.aspectMask = aspect;
@@ -391,7 +391,20 @@ void Indium::PrivateBlitCommandEncoder::fillBuffer(const std::shared_ptr<Buffer>
 	useBuffer(*cmdbuf, privateBuffer, range.start, range.length, true);
 	flushUses(*cmdbuf);
 
-	DynamicVK::vkCmdFillBuffer(cmdbuf->commandBuffer(), privateBuffer->buffer(), range.start, range.length, value32);
+	const VkDeviceSize fillOffset = range.start + privateBuffer->bufferOffset();
+	if (fillOffset % 4 == 0) {
+		DynamicVK::vkCmdFillBuffer(cmdbuf->commandBuffer(), privateBuffer->buffer(), fillOffset, range.length, value32);
+	} else {
+		// A buffer over unaligned caller memory starts in the middle of a word of its VkBuffer, where Vulkan cannot
+		// fill: copy from a host-filled buffer instead (the host's writes are visible to the submission).
+		auto scratch = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->newBuffer(range.length, ResourceOptions::StorageModeShared));
+		memset(scratch->contents(), value, range.length);
+		cmdbuf->retainResource(scratch);
+		VkBufferCopy info {};
+		info.dstOffset = fillOffset;
+		info.size = range.length;
+		DynamicVK::vkCmdCopyBuffer(cmdbuf->commandBuffer(), scratch->buffer(), privateBuffer->buffer(), 1, &info);
+	}
 };
 
 void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) {

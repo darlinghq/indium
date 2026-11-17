@@ -157,7 +157,7 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 	// the buffer has to stay alive until the command buffer has completed
 	_keepAliveBuffers.push_back(indirectBuffer);
 
-	DynamicVK::vkCmdDispatchIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset);
+	DynamicVK::vkCmdDispatchIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->bufferOffset());
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);
