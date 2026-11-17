@@ -16,6 +16,7 @@
 #include <indium/event.private.hpp>
 #include <indium/compute-pipeline.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/translation-cache.private.hpp>
 
 #include <iridium/iridium.hpp>
 
@@ -523,6 +524,16 @@ void Indium::PrivateDevice::createLogicalDevice() {
 		}
 	}
 
+	{
+		PipelineCacheIdentity identity;
+		identity.vendorID = _properties.vendorID;
+		identity.deviceID = _properties.deviceID;
+		identity.driverVersion = _properties.driverVersion;
+		std::copy(std::begin(_properties.pipelineCacheUUID), std::end(_properties.pipelineCacheUUID), identity.pipelineCacheUUID.begin());
+		identity.deviceUUID = deviceUUID();
+		_pipelineCache = std::make_unique<PipelineCache>(_device, identity, PipelineCache::defaultDirectory(), PipelineCache::fileNameFor(identity, PipelineCache::currentExecutablePath()));
+	}
+
 	_logicalDeviceCreated.store(true, std::memory_order_release);
 
 	// a poller that started before the device existed is waiting for it
@@ -537,6 +548,8 @@ Indium::PrivateDevice::~PrivateDevice() {
 	_textureUploader.releaseAll();
 	// every buffer and texture holds a reference to the device, so none is left
 	_memoryPool.releaseAll(_device);
+	// saves the cache; every pipeline made with it is gone with the pipeline states, which hold the device
+	_pipelineCache.reset();
 	for (const auto& [key, renderPass]: _renderPasses) {
 		DynamicVK::vkDestroyRenderPass(_device, renderPass, nullptr);
 	}
@@ -778,6 +791,22 @@ std::shared_ptr<Indium::CommandQueue> Indium::PrivateDevice::newCommandQueue() {
 	return std::make_shared<PrivateCommandQueue>(shared_from_this());
 };
 
+VkResult Indium::PrivateDevice::createGraphicsPipeline(const VkGraphicsPipelineCreateInfo& info, VkPipeline* pipeline) {
+	VkResult result = DynamicVK::vkCreateGraphicsPipelines(_device, _pipelineCache->handle(), 1, &info, nullptr, pipeline);
+	if (result == VK_SUCCESS) {
+		_pipelineCache->noteChanged();
+	}
+	return result;
+};
+
+VkResult Indium::PrivateDevice::createComputePipeline(const VkComputePipelineCreateInfo& info, VkPipeline* pipeline) {
+	VkResult result = DynamicVK::vkCreateComputePipelines(_device, _pipelineCache->handle(), 1, &info, nullptr, pipeline);
+	if (result == VK_SUCCESS) {
+		_pipelineCache->noteChanged();
+	}
+	return result;
+};
+
 std::shared_ptr<Indium::RenderPipelineState> Indium::PrivateDevice::newRenderPipelineState(const RenderPipelineDescriptor& descriptor) {
 	ensureLogicalDevice();
 	return std::make_shared<PrivateRenderPipelineState>(shared_from_this(), descriptor);
@@ -917,23 +946,33 @@ std::shared_ptr<Indium::SamplerState> Indium::PrivateDevice::fallbackSampler() {
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
 	ensureLogicalDevice();
-	// TODO: cache translated libraries
-	size_t translatedSize = 0;
-	Iridium::OutputInfo outputInfo;
-	auto translatedData = Iridium::translate(data, length, translatedSize, outputInfo);
 
-	// translate() returns nullptr on failure, and a failed translation reports a
-	// zero output size, so there is no module to hand PrivateLibrary: it would
-	// call vkCreateShaderModule with a null pointer and abort() there, a crash a
-	// long way from the translation that failed. Report the failure here instead,
-	// the way newFunction reports an unknown name.
-	if (!translatedData) {
-		return nullptr;
+	// The module depends on nothing but the library's bytes, so a library seen before is not translated again
+	// (function constants are specialization constants of the module and are applied per function).
+	auto& translations = TranslationCache::shared();
+	auto key = Sha256::of(data, length);
+	auto entry = translations.find(key);
+
+	if (!entry) {
+		size_t translatedSize = 0;
+		auto fresh = std::make_shared<TranslationCache::Entry>();
+		auto translatedData = Iridium::translate(data, length, translatedSize, fresh->outputInfo);
+
+		// translate() returns nullptr on failure, and a failed translation reports a
+		// zero output size, so there is no module to hand PrivateLibrary: it would
+		// call vkCreateShaderModule with a null pointer and abort() there, a crash a
+		// long way from the translation that failed. Report the failure here instead,
+		// the way newFunction reports an unknown name. Failures are not cached.
+		if (!translatedData) {
+			return nullptr;
+		}
+
+		fresh->spirv.assign(static_cast<const uint8_t*>(translatedData), static_cast<const uint8_t*>(translatedData) + translatedSize);
+		free(translatedData);
+		entry = translations.insert(key, fresh);
 	}
 
-	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, functionInfosFromIridium(outputInfo));
-	free(translatedData);
-	return lib;
+	return std::make_shared<PrivateLibrary>(shared_from_this(), reinterpret_cast<const char*>(entry->spirv.data()), entry->spirv.size(), functionInfosFromIridium(entry->outputInfo));
 };
 
 std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* spirv, size_t length, const LibraryReflection& reflection, std::string* errorMessage) {

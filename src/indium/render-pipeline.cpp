@@ -55,7 +55,7 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 	VkGraphicsPipelineCreateInfo pipelineCreateInfo {};
 
 	// a topology class is 0 for points, 1 for lines and 2 for triangles
-	VkPipeline create(VkDevice device, size_t topologyClass, bool lines, bool clamp) {
+	VkPipeline create(Indium::PrivateDevice& device, size_t topologyClass, bool lines, bool clamp) {
 		static constexpr VkPrimitiveTopology topologies[3] = {
 			VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 		};
@@ -64,7 +64,7 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 		rasterizationState.depthClampEnable = clamp ? VK_TRUE : VK_FALSE;
 
 		VkPipeline pipeline = VK_NULL_HANDLE;
-		if (Indium::DynamicVK::vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &pipeline) != VK_SUCCESS) {
+		if (device.createGraphicsPipeline(pipelineCreateInfo, &pipeline) != VK_SUCCESS) {
 			return VK_NULL_HANDLE;
 		}
 		return pipeline;
@@ -294,7 +294,7 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 
 	// the default fill mode and depth clip mode: the other combinations are created when a draw needs them
 	for (size_t topologyClass = 0; topologyClass < _pipelines.size(); ++topologyClass) {
-		_pipelines[topologyClass] = recipe.create(_privateDevice->device(), topologyClass, false, false);
+		_pipelines[topologyClass] = recipe.create(*_privateDevice, topologyClass, false, false);
 		if (_pipelines[topologyClass] == VK_NULL_HANDLE) {
 			// the default pipelines are the ones every draw can use, so there is nothing to fall back to
 			abort();
@@ -338,7 +338,7 @@ VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass,
 	}
 
 	// a variant that cannot be made is remembered as such, and the draw uses the default pipeline
-	VkPipeline variant = _recipe->create(_privateDevice->device(), topologyClass, lines, clamp);
+	VkPipeline variant = _recipe->create(*_privateDevice, topologyClass, lines, clamp);
 	_variants.emplace(key, variant);
 	return variant != VK_NULL_HANDLE ? variant : _pipelines[topologyClass];
 };

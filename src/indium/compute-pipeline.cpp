@@ -53,9 +53,8 @@ Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {
 };
 
 VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerThreadgroup, const std::optional<Size>& gridSize) {
-	// TODO: optimize this by using pipeline caches.
-	//       also, we can store the most recent pipeline and, if the number of threads per threadgroup stays the same,
-	//       we can just return that instead (wrapped in a reference counting object).
+	// The device's pipeline cache makes repeating a creation cheap, within the process and across runs.
+	// Keeping the most recent pipeline for an unchanged threadgroup size would save even that lookup.
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
 
@@ -116,7 +115,7 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 	info.stage.pSpecializationInfo = &specInfo;
 	info.layout = _layout;
 
-	if (DynamicVK::vkCreateComputePipelines(_privateDevice->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
+	if (_privateDevice->createComputePipeline(info, &pipeline) != VK_SUCCESS) {
 		// TODO
 		abort();
 	}
