@@ -2,6 +2,7 @@
 #include <indium/command-queue.private.hpp>
 #include <indium/device.private.hpp>
 #include <indium/render-command-encoder.private.hpp>
+#include <indium/parallel-render-command-encoder.private.hpp>
 #include <indium/texture.private.hpp>
 #include <indium/drawable.hpp>
 #include <indium/blit-command-encoder.private.hpp>
@@ -173,6 +174,12 @@ std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::rend
 		_encoderActive = true;
 	}
 	return encoder;
+};
+
+std::shared_ptr<Indium::ParallelRenderCommandEncoder> Indium::PrivateCommandBuffer::parallelRenderCommandEncoder(const RenderPassDescriptor& descriptor) {
+	// nothing is recorded until the pass ends, but it is an encoder in the meantime for what asks whether one is active
+	_encoderActive = true;
+	return std::make_shared<Indium::PrivateParallelRenderCommandEncoder>(shared_from_this(), descriptor);
 };
 
 std::shared_ptr<Indium::BlitCommandEncoder> Indium::PrivateCommandBuffer::blitCommandEncoder() {

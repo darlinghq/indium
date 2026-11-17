@@ -21,6 +21,7 @@
 #include <indium/pipeline.hpp>
 #include <indium/rasterization-rate.hpp>
 #include <indium/render-command-encoder.hpp>
+#include <indium/parallel-render-command-encoder.hpp>
 #include <indium/render-pass.hpp>
 #include <indium/render-pipeline.hpp>
 #include <indium/resource.hpp>

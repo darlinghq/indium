@@ -75,9 +75,23 @@ namespace Indium {
 		 */
 		void bindPipeline(VkCommandBuffer commandBuffer, PrimitiveType primitiveType);
 
+		// the viewport and scissor rectangle an encoder starts with
+		size_t _defaultWidth = 0;
+		size_t _defaultHeight = 0;
+
+		/** Sets the state Metal gives a new encoder (all of it that this encoder tracks or sets in the command buffer). */
+		void applyDefaultState();
+
 	public:
 		PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor);
 		~PrivateRenderCommandEncoder();
+
+		/**
+		 * Puts the encoder back in the state it was made in, apart from the pass itself: no pipeline, bindings or
+		 * depth-stencil state, and the default viewport, scissor, culling, blend color and so on. For playing the
+		 * commands of one encoder of a parallel pass after those of another, each starting from the defaults.
+		 */
+		void resetState();
 
 		virtual void setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) override;
 		virtual void setFrontFacingWinding(Winding frontFaceWinding) override;

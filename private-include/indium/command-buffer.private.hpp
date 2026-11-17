@@ -37,6 +37,7 @@ namespace Indium {
 		~PrivateCommandBuffer();
 
 		virtual std::shared_ptr<RenderCommandEncoder> renderCommandEncoder(const RenderPassDescriptor& descriptor) override;
+		virtual std::shared_ptr<ParallelRenderCommandEncoder> parallelRenderCommandEncoder(const RenderPassDescriptor& descriptor) override;
 		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder() override;
 		virtual std::shared_ptr<BlitCommandEncoder> blitCommandEncoder(const BlitPassDescriptor& descriptor) override;
 		virtual std::shared_ptr<ComputeCommandEncoder> computeCommandEncoder() override;
