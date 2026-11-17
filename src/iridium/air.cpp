@@ -1161,6 +1161,50 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		return true;
 	}
 
+	// bit functions: air.<fn>.<type>
+	if (parts.size() == 3 && (fn == "popcount" || fn == "clz" || fn == "ctz" || fn == "reverse_bits" || fn == "rotate")) {
+		auto info = *builder.reverseLookupType(type);
+		bool vector = info.backingType == Type::BackingType::Vector;
+		auto scalar = vector ? *builder.reverseLookupType(info.targetType) : info;
+		auto unsignedType = integerTypeWithSign(builder, type, false);
+		auto fromUnsigned = [&](ResultID value) {
+			return unsignedType == type ? value : builder.encodeBitcast(type, value);
+		};
+		auto argument = operand(0);
+		if (fn == "popcount") {
+			resID = builder.encodeOp(Opcode::BitCount, type, { argument });
+		} else if (fn == "reverse_bits") {
+			resID = builder.encodeOp(Opcode::BitReverse, type, { argument });
+		} else if (fn == "rotate") {
+			// rotate left by n (modulo the width): the bits shifted out come back in on the right
+			auto mask = integerConstantOfType(builder, type, scalar.scalarWidth - 1);
+			auto width = integerConstantOfType(builder, type, scalar.scalarWidth);
+			auto left = builder.encodeArithBinop(Opcode::BitwiseAnd, type, operand(1), mask);
+			auto right = builder.encodeArithBinop(Opcode::BitwiseAnd, type, builder.encodeArithBinop(Opcode::ISub, type, width, left), mask);
+			auto shifted = builder.encodeArithBinop(Opcode::ShiftLeftLogical, type, argument, left);
+			resID = builder.encodeArithBinop(Opcode::BitwiseOr, type, shifted, builder.encodeArithBinop(Opcode::ShiftRightLogical, type, argument, right));
+			// a rotation by zero shifts right by the full width, which is undefined: select the input then
+			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+			auto none = builder.encodeOp(Opcode::IEqual, boolType, { left, integerConstantOfType(builder, type, 0) });
+			resID = builder.encodeOp(Opcode::Select, type, { none, argument, resID });
+		} else if (fn == "clz") {
+			// FindUMsb is the index of the highest set bit, -1 for zero: width - 1 minus that is the number of
+			// leading zeros, and the width for zero
+			auto highest = builder.encodeGLSLOp(GLSLOpcode::FindUMsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
+			auto count = builder.encodeArithBinop(Opcode::ISub, unsignedType, integerConstantOfType(builder, unsignedType, scalar.scalarWidth - 1), highest);
+			resID = fromUnsigned(count);
+		} else {
+			// FindILsb is the index of the lowest set bit, -1 for zero, where the number of trailing zeros is the width
+			auto lowest = builder.encodeGLSLOp(GLSLOpcode::FindILsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
+			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+			auto isZero = builder.encodeOp(Opcode::IEqual, boolType, { argument, integerConstantOfType(builder, type, 0) });
+			resID = fromUnsigned(builder.encodeOp(Opcode::Select, unsignedType, { isZero, integerConstantOfType(builder, unsignedType, scalar.scalarWidth), lowest }));
+		}
+		return true;
+	}
+
 	// integer functions: air.<fn>.<s|u>.<type>
 	if (parts.size() == 4 && (parts[2] == "s" || parts[2] == "u")) {
 		bool isSigned = parts[2] == "s";
@@ -1172,6 +1216,25 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "clamp") {
 			resID = builder.encodeGLSLOp(isSigned ? GLSLOpcode::SClamp : GLSLOpcode::UClamp, type, { operand(0), operand(1), operand(2) });
+			return true;
+		}
+		if (fn == "insert_bits") {
+			// (base, insert, offset, count)
+			resID = builder.encodeOp(Opcode::BitFieldInsert, type, { operand(0), operand(1), operand(2), operand(3) });
+			return true;
+		}
+		if (fn == "extract_bits") {
+			// (value, offset, count)
+			resID = builder.encodeOp(isSigned ? Opcode::BitFieldSExtract : Opcode::BitFieldUExtract, type, { operand(0), operand(1), operand(2) });
+			return true;
+		}
+		if (fn == "mul_hi") {
+			// the high half of the double-width product: the second member of OpUMulExtended's pair
+			auto info = *builder.reverseLookupType(type);
+			LayoutFreeScope layoutFree(true);
+			auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { type, 0, {} }, Type::Member { type, info.size, {} } }, info.size * 2, info.alignment));
+			auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { operand(0), operand(1) });
+			resID = builder.encodeCompositeExtract(type, product, { 1 });
 			return true;
 		}
 		if (fn == "abs") {
