@@ -448,7 +448,7 @@ bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 			if (privateBuffer) {
 				buffers[vulkanIndex] = privateBuffer->buffer();
-				offsets[vulkanIndex] = offset;
+				offsets[vulkanIndex] = offset + privateBuffer->bufferOffset();
 			} else if (_privateDevice->nullDescriptorEnabled()) {
 				// The pipeline fetches vertices from a buffer index that was never bound. A null buffer
 				// reads as zero at any index, so nullDescriptor makes this safe for every layout.
@@ -612,7 +612,7 @@ void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitive
 
 	if (drawable) {
 		noteBuffer(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndirectCommand), VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
-		DynamicVK::vkCmdDrawIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndirectCommand));
+		DynamicVK::vkCmdDrawIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->bufferOffset(), 1, sizeof(VkDrawIndirectCommand));
 	}
 
 	// see drawPrimitives() above for why we do this
@@ -768,7 +768,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 
 	if (drawable) {
 		noteBuffer(indexBuffer, indexBufferOffset, SIZE_MAX, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
-		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
+		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), privateIndexBuffer->buffer(), indexBufferOffset + privateIndexBuffer->bufferOffset(), indexTypeToVkIndexType(indexType));
 		DynamicVK::vkCmdDrawIndexed(buf->commandBuffer(), indexCount, instanceCount, 0, baseVertex, baseInstance);
 	}
 
@@ -801,8 +801,8 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 	if (drawable) {
 		noteBuffer(indexBuffer, indexBufferOffset, SIZE_MAX, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
 		noteBuffer(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndexedIndirectCommand), VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
-		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer)->buffer(), indexBufferOffset, indexTypeToVkIndexType(indexType));
-		DynamicVK::vkCmdDrawIndexedIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset, 1, sizeof(VkDrawIndexedIndirectCommand));
+		DynamicVK::vkCmdBindIndexBuffer(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer)->buffer(), indexBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indexBuffer)->bufferOffset(), indexTypeToVkIndexType(indexType));
+		DynamicVK::vkCmdDrawIndexedIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->bufferOffset(), 1, sizeof(VkDrawIndexedIndirectCommand));
 	}
 
 	// see drawPrimitives() above for why we do this

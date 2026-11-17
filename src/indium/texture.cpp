@@ -1105,7 +1105,7 @@ void Indium::ConcreteTexture::recordBufferToImage(VkCommandBuffer commandBuffer)
 	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &memoryBarrier, 0, nullptr, 1, &barrier);
 
 	VkBufferImageCopy copyInfo {};
-	copyInfo.bufferOffset = _backingOffset;
+	copyInfo.bufferOffset = _backingOffset + _backingBuffer->bufferOffset();
 	copyInfo.bufferRowLength = _backingBytesPerRow / bytesPerPixel;
 	copyInfo.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	copyInfo.imageSubresource.layerCount = 1;
@@ -1137,7 +1137,7 @@ void Indium::ConcreteTexture::recordImageToBuffer(VkCommandBuffer commandBuffer)
 	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 	VkBufferImageCopy copyInfo {};
-	copyInfo.bufferOffset = _backingOffset;
+	copyInfo.bufferOffset = _backingOffset + _backingBuffer->bufferOffset();
 	copyInfo.bufferRowLength = _backingBytesPerRow / bytesPerPixel;
 	copyInfo.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	copyInfo.imageSubresource.layerCount = 1;

@@ -129,7 +129,8 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
 
 		/**
-		 * Whether newBufferNoCopy() can work on this device (VK_EXT_external_memory_host is available).
+		 * Whether newBufferNoCopy() can import the caller's memory on this device (VK_EXT_external_memory_host is
+		 * available). Without it newBufferNoCopy() still works, with a copy.
 		 */
 		virtual bool supportsBufferNoCopy() const = 0;
 
@@ -143,12 +144,18 @@ namespace Indium {
 		 * `length` after that, on whichever thread releases the buffer last. It is not called when this returns
 		 * nullptr.
 		 *
-		 * `pointer` has to be aligned to the host page size (and to what the device needs for imported host memory,
-		 * which must not be more than a page). The buffer can reach up to the end of the last page of the range, the
-		 * way a GPU access reaches past the end of any host mapping.
+		 * `pointer` and `length` need not be aligned. The device is given the pages the range lies in, so the
+		 * buffer can reach the rest of the first and last page, the way a GPU access reaches past the end of any
+		 * host mapping. Two buffers may overlap.
 		 *
-		 * @returns nullptr for a null or unaligned pointer, a zero length, another storage mode or a device that
-		 *          cannot import the memory.
+		 * When the memory cannot be imported (no VK_EXT_external_memory_host, the driver refuses it, or the device
+		 * wants more than a page of alignment) the buffer has memory of its own instead, a warning is printed to
+		 * stderr the first time that happens in a process, and `contents()` is still `pointer`: the bytes there are
+		 * copied to the buffer when a command buffer is committed and copied back when a command buffer completes.
+		 * CPU access to the memory while the GPU may use the buffer is therefore not seen as it would be with an
+		 * import.
+		 *
+		 * @returns nullptr for a null pointer, a zero length or another storage mode.
 		 */
 		virtual std::shared_ptr<Buffer> newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) = 0;
 		/**

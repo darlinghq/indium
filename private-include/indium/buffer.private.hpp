@@ -41,8 +41,16 @@ namespace Indium {
 
 		// A buffer over memory the caller owns, imported with VK_EXT_external_memory_host (see
 		// Device::newBufferNoCopy()). Throws std::runtime_error if the memory cannot be imported.
+		// The pointer and the length need not be aligned: the pages the range lies in are imported and the
+		// buffer starts at the right place in them.
 		struct NoCopy {};
 		PrivateBuffer(std::shared_ptr<PrivateDevice> device, void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator, NoCopy);
+
+		// The same for memory that cannot be imported: a buffer with memory of its own, which stands in for the
+		// caller's memory. contents() is still the caller's pointer; the bytes are copied to the buffer's memory when
+		// a command buffer is committed and back when one completes (see PrivateDevice::syncShadowBuffers()).
+		struct NoCopyShadow {};
+		PrivateBuffer(std::shared_ptr<PrivateDevice> device, void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator, NoCopyShadow);
 		~PrivateBuffer();
 
 		virtual std::shared_ptr<Device> device() override;
@@ -74,6 +82,18 @@ namespace Indium {
 			return HazardRange::memory(_memory, _allocation.offset + offset, _allocation.offset + offset + length);
 		}
 
+		/**
+		 * Where the buffer's first byte is in the VkBuffer. Zero, except for a buffer over caller memory that does not
+		 * start on a page: its VkBuffer covers the whole pages and every offset handed to Vulkan gets this added.
+		 */
+		VkDeviceSize bufferOffset() const { return _bufferOffset; }
+
+		/** Whether the buffer has memory of its own that stands in for the caller's memory (the copying fallback). */
+		bool isShadow() const { return _shadow != nullptr; }
+		/** Copies the caller's memory to the buffer's own memory (isShadow() only), or the other way round. */
+		void syncShadowToDevice();
+		void syncShadowFromDevice();
+
 		/** The memory the buffer is bound to: where it starts in `memory()`, how many bytes are reserved for it and the memory type. */
 		VkDeviceSize memoryOffset() const { return _allocation.offset; }
 		VkDeviceSize memorySize() const { return _allocation.size; }
@@ -93,6 +113,10 @@ namespace Indium {
 		// set for a buffer over the caller's memory: the memory object imported from it, which is not the pool's,
 		// and what to tell the caller when the buffer is gone
 		bool _importedMemory = false;
+		VkDeviceSize _bufferOffset = 0;
+		// the copying fallback: the caller's memory and the mapping of the buffer's own
+		void* _shadow = nullptr;
+		void* _shadowDeviceMapped = nullptr;
 		void* _importedPointer = nullptr;
 		std::function<void(void*, size_t)> _deallocator;
 	};

@@ -257,6 +257,9 @@ void Indium::PrivateCommandBuffer::addEventOperation(const std::shared_ptr<Event
 };
 
 void Indium::PrivateCommandBuffer::commit() {
+	// buffers that stand in for the caller's memory take the bytes it holds now
+	_privateDevice->syncShadowBuffers(true);
+
 	{
 		std::unique_lock lock(_mutex);
 
@@ -636,6 +639,8 @@ void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::share
 };
 
 void Indium::PrivateCommandBuffer::markCompleted() {
+	// the caller's memory gets what the GPU wrote before anything learns that the command buffer is done
+	_privateDevice->syncShadowBuffers(false);
 	{
 		std::unique_lock lock(_mutex);
 		_completed = true;

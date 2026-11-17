@@ -813,15 +813,54 @@ bool Indium::PrivateDevice::supportsBufferNoCopy() const {
 };
 
 std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBufferNoCopy(void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator) {
-	if (!supportsBufferNoCopy()) {
+	const auto storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+	if (pointer == nullptr || length == 0 || (storageMode != StorageMode::Shared && storageMode != StorageMode::Managed)) {
 		return nullptr;
 	}
 	ensureLogicalDevice();
+
+	if (supportsBufferNoCopy() && !_bufferNoCopyImportDisabled) {
+		try {
+			return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options, deallocator, PrivateBuffer::NoCopy {});
+		} catch (const std::runtime_error&) {
+			// the device cannot import this memory: use a copy instead
+		}
+	}
+
+	// The memory cannot be imported (the device or the driver does not do it, or wants a bigger alignment than
+	// a page): the buffer gets memory of its own and the caller's bytes are copied back and forth around command
+	// buffers. That differs from real no-copy memory in that the two are only in step between a commit and the
+	// completion of a command buffer, so say so, once.
+	static std::once_flag warned;
+	std::call_once(warned, [] {
+		fprintf(stderr, "Indium: this device cannot import the memory of a no-copy buffer; a copy is used and kept in step "
+			"with the caller's memory when command buffers are committed and when they complete\n");
+	});
 	try {
-		return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options, std::move(deallocator), PrivateBuffer::NoCopy {});
+		return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options, std::move(deallocator), PrivateBuffer::NoCopyShadow {});
 	} catch (const std::runtime_error&) {
-		// not importable: the memory is not what the device can use as a buffer
 		return nullptr;
+	}
+};
+
+void Indium::PrivateDevice::addShadowBuffer(PrivateBuffer* buffer) {
+	std::scoped_lock lock(_shadowMutex);
+	_shadowBuffers.push_back(buffer);
+};
+
+void Indium::PrivateDevice::removeShadowBuffer(PrivateBuffer* buffer) {
+	std::scoped_lock lock(_shadowMutex);
+	_shadowBuffers.erase(std::remove(_shadowBuffers.begin(), _shadowBuffers.end(), buffer), _shadowBuffers.end());
+};
+
+void Indium::PrivateDevice::syncShadowBuffers(bool toDevice) {
+	std::scoped_lock lock(_shadowMutex);
+	for (auto buffer: _shadowBuffers) {
+		if (toDevice) {
+			buffer->syncShadowToDevice();
+		} else {
+			buffer->syncShadowFromDevice();
+		}
 	}
 };
 

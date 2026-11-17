@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include <sys/mman.h>
@@ -119,6 +120,130 @@ void* pages(size_t count) {
 	return memory == MAP_FAILED ? nullptr : memory;
 }
 
+// Unaligned pointers and lengths: the pages around the range are imported (or, with `forceFallback`, the import is
+// refused and the buffer is a copy), contents() is still the caller's pointer, and what the CPU writes is what the GPU
+// reads and the other way round, at the right bytes.
+void runUnaligned(uint8_t* memory, ResourceOptions options, const std::shared_ptr<CommandQueue>& queue, bool forceFallback) {
+	const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+	device->setBufferNoCopyImportDisabled(forceFallback);
+	const std::string mode = forceFallback ? "copying fallback: " : "imported: ";
+	auto name = [&](const char* what) { return mode + what; };
+
+	for (size_t misalignment: { size_t(1), size_t(3), size_t(16), size_t(100) }) {
+		const size_t length = 3 * page / 2 + 7;
+		uint8_t* start = memory + 2 * page + misalignment;
+		Calls calls;
+		auto buffer = device->newBufferNoCopy(start, length, options, calls.function());
+		auto other = device->newBuffer(length, options);
+		report(buffer != nullptr && buffer->length() == length && buffer->contents() == start,
+			name(("a pointer " + std::to_string(misalignment) + " bytes past a page gives a buffer over the pointer").c_str()).c_str());
+		if (!buffer || !other) {
+			continue;
+		}
+		// bytes around the range must stay as they were
+		std::memset(memory, 0xee, 8 * page);
+		for (size_t i = 0; i < length; ++i) {
+			start[i] = static_cast<uint8_t>(i * 7 + misalignment);
+		}
+		std::memset(other->contents(), 0x22, length);
+
+		auto commands = queue->commandBuffer();
+		auto blit = commands->blitCommandEncoder();
+		blit->copy(buffer, 0, other, 0, length);
+		blit->endEncoding();
+		commands->commit();
+		commands->waitUntilCompleted();
+		bool same = true;
+		for (size_t i = 0; i < length; ++i) {
+			same = same && static_cast<uint8_t*>(other->contents())[i] == static_cast<uint8_t>(i * 7 + misalignment);
+		}
+		report(same, name("the GPU reads the bytes the CPU wrote at the unaligned pointer").c_str());
+
+		// the GPU writes: a copy into the buffer at an offset and a fill, odd ones included
+		std::memset(other->contents(), 0x44, length);
+		const size_t before = misalignment == 1 ? 9 : 4;
+		commands = queue->commandBuffer();
+		blit = commands->blitCommandEncoder();
+		blit->copy(other, 0, buffer, before, 40);
+		blit->fillBuffer(buffer, Range<size_t> { 100, 32 }, 0x99);
+		blit->fillBuffer(buffer, Range<size_t> { length - length % 4 - 8, 8 }, 0x77);
+		blit->endEncoding();
+		commands->commit();
+		commands->waitUntilCompleted();
+		bool copied = true;
+		for (size_t i = 0; i < 40; ++i) {
+			copied = copied && start[before + i] == 0x44;
+		}
+		bool filled = true;
+		for (size_t i = 100; i < 132; ++i) {
+			filled = filled && start[i] == 0x99;
+		}
+		for (size_t i = length - length % 4 - 8; i < length - length % 4; ++i) {
+			filled = filled && start[i] == 0x77;
+		}
+		report(copied && filled, name("the GPU's copy and fills are seen at the caller's pointer").c_str());
+		report(start[before - 1] == static_cast<uint8_t>((before - 1) * 7 + misalignment) && start[before + 40] == static_cast<uint8_t>((before + 40) * 7 + misalignment)
+			&& memory[2 * page + misalignment - 1] == 0xee && start[length] == 0xee,
+			name("bytes outside the written ranges and outside the buffer are untouched").c_str());
+
+		report(calls.count == 0, name("the deallocator has not run while the buffer is alive").c_str());
+		buffer.reset();
+		// the command buffers that used the buffer hold it until they retire
+		report(eventually([&] { return calls.count == 1; }) && calls.pointer == start && calls.length == length, name("the deallocator runs once with the caller's pointer and length").c_str());
+	}
+
+	{
+		// a length of a single byte, and a range that ends exactly on a page boundary
+		Calls calls;
+		auto tiny = device->newBufferNoCopy(memory + page + 5, 1, options, calls.function());
+		auto edge = device->newBufferNoCopy(memory + page + 5, page - 5, options, nullptr);
+		report(tiny != nullptr && tiny->length() == 1 && edge != nullptr && edge->contents() == memory + page + 5,
+			name("a one-byte range and a range ending on a page boundary give buffers").c_str());
+	}
+
+	{
+		// two buffers over the same pages, one overlapping the other: the GPU writes through one, the CPU sees it in both
+		auto first = device->newBufferNoCopy(memory + 3 * page + 8, page, options, nullptr);
+		auto second = device->newBufferNoCopy(memory + 3 * page + 8 + 64, page / 2, options, nullptr);
+		report(first != nullptr && second != nullptr, name("two buffers over the same pages can both be made").c_str());
+		if (first && second) {
+			std::memset(memory + 3 * page, 0, 2 * page);
+			auto source = device->newBuffer(64, options);
+			std::memset(source->contents(), 0x5c, 64);
+			auto commands = queue->commandBuffer();
+			auto blit = commands->blitCommandEncoder();
+			blit->copy(source, 0, second, 0, 64);
+			blit->endEncoding();
+			commands->commit();
+			commands->waitUntilCompleted();
+			auto* viaFirst = static_cast<uint8_t*>(first->contents());
+			auto* viaSecond = static_cast<uint8_t*>(second->contents());
+			report(viaSecond[0] == 0x5c && viaSecond[63] == 0x5c && viaFirst[64] == 0x5c && viaFirst[127] == 0x5c && viaFirst[63] == 0 && viaFirst[128] == 0,
+				name("a write through one of two overlapping buffers shows at the other's bytes").c_str());
+		}
+	}
+
+	if (forceFallback) {
+		// the memory handed to a refused import is a copy that the GPU wrote to until the buffer is gone: the final bytes reach the caller
+		Calls calls;
+		std::atomic<bool> completed { false };
+		{
+			auto buffer = device->newBufferNoCopy(memory + 6 * page + 3, 64, options, calls.function());
+			auto commands = queue->commandBuffer();
+			auto blit = commands->blitCommandEncoder();
+			blit->fillBuffer(buffer, Range<size_t> { 0, 64 }, 0x31);
+			blit->endEncoding();
+			commands->addCompletedHandler([&](std::shared_ptr<CommandBuffer>) { completed = true; });
+			commands->commit();
+			commands->waitUntilCompleted();
+		}
+		report(eventually([&] { return calls.count == 1; }) && memory[6 * page + 3] == 0x31 && memory[6 * page + 66] == 0x31,
+			name("the buffer's last state reaches the caller's memory before the deallocator runs").c_str());
+	}
+
+	device->setBufferNoCopyImportDisabled(false);
+}
+
 void run() {
 	const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
 	auto* memory = static_cast<uint8_t*>(pages(8));
@@ -162,12 +287,14 @@ void run() {
 	{
 		// refusals give nullptr and never call the deallocator
 		Calls calls;
-		report(device->newBufferNoCopy(memory + 16, page, options, calls.function()) == nullptr, "an unaligned pointer gives nullptr");
 		report(device->newBufferNoCopy(memory, 0, options, calls.function()) == nullptr, "a zero length gives nullptr");
 		report(device->newBufferNoCopy(nullptr, page, options, calls.function()) == nullptr, "a null pointer gives nullptr");
 		report(device->newBufferNoCopy(memory, page, ResourceOptions::StorageModePrivate, calls.function()) == nullptr, "private storage gives nullptr");
 		report(calls.count == 0, "a refused range does not call the deallocator");
 	}
+
+	runUnaligned(memory, options, queue, false);
+	runUnaligned(memory, options, queue, true);
 
 	{
 		// no deallocator is fine
@@ -238,23 +365,25 @@ int main() {
 			return 0;
 		}
 		device = std::dynamic_pointer_cast<PrivateDevice>(systemDevice);
-		if (!device->supportsBufferNoCopy()) {
-			void* memory = pages(1);
-			report(device->newBufferNoCopy(memory, static_cast<size_t>(sysconf(_SC_PAGESIZE)), ResourceOptions::StorageModeShared, nullptr) == nullptr,
-				"without VK_EXT_external_memory_host no buffer is made");
-			std::printf("SKIP the device cannot import host memory\n");
-		} else {
-			std::atomic<bool> keepPolling { true };
-			std::thread poller([&]() {
-				while (keepPolling) {
-					device->pollEvents(UINT64_MAX);
-				}
-			});
+		std::atomic<bool> keepPolling { true };
+		std::thread poller([&]() {
+			while (keepPolling) {
+				device->pollEvents(UINT64_MAX);
+			}
+		});
+		if (device->supportsBufferNoCopy()) {
 			run();
-			keepPolling = false;
-			device->wakeupEventLoop();
-			poller.join();
+		} else {
+			// no import: every no-copy buffer is a copy
+			std::printf("the device cannot import host memory: only the copying fallback is checked\n");
+			const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+			auto* memory = static_cast<uint8_t*>(pages(8));
+			runUnaligned(memory, ResourceOptions::StorageModeShared, device->newCommandQueue(), true);
+			munmap(memory, 8 * page);
 		}
+		keepPolling = false;
+		device->wakeupEventLoop();
+		poller.join();
 		device.reset();
 		systemDevice.reset();
 	}
