@@ -140,6 +140,7 @@ namespace Indium {
 			_macro(vkCreateGraphicsPipelines) \
 			_macro(vkCreateImage) \
 			_macro(vkCreateImageView) \
+			_macro(vkCreatePipelineCache) \
 			_macro(vkCreatePipelineLayout) \
 			_macro(vkCreateQueryPool) \
 			_macro(vkCreateRenderPass) \
@@ -160,6 +161,7 @@ namespace Indium {
 			_macro(vkDestroyImageView) \
 			_macro(vkDestroyInstance) \
 			_macro(vkDestroyPipeline) \
+			_macro(vkDestroyPipelineCache) \
 			_macro(vkDestroyPipelineLayout) \
 			_macro(vkDestroyQueryPool) \
 			_macro(vkDestroyRenderPass) \
@@ -181,6 +183,7 @@ namespace Indium {
 			_macro(vkGetImageSubresourceLayout) \
 			_macro(vkGetMemoryFdPropertiesKHR) \
 			_macro(vkGetMemoryHostPointerPropertiesEXT) \
+			_macro(vkGetPipelineCacheData) \
 			_macro(vkGetPhysicalDeviceFeatures2) \
 			_macro(vkGetPhysicalDeviceFormatProperties) \
 			_macro(vkGetPhysicalDeviceImageFormatProperties) \
@@ -196,6 +199,7 @@ namespace Indium {
 			_macro(vkGetSemaphoreCounterValue) \
 			_macro(vkGetSwapchainImagesKHR) \
 			_macro(vkMapMemory) \
+			_macro(vkMergePipelineCaches) \
 			_macro(vkQueuePresentKHR) \
 			_macro(vkQueueSubmit) \
 			_macro(vkQueueSubmit2) \

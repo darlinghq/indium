@@ -19,6 +19,7 @@
 #include <optional>
 #include <unordered_map>
 #include <indium/texture-upload.private.hpp>
+#include <indium/pipeline-cache.private.hpp>
 
 namespace Indium {
 	class PrivateDevice;
@@ -332,6 +333,18 @@ namespace Indium {
 		 */
 		TextureUploader& textureUploader() { return _textureUploader; }
 
+		/**
+		 * The pipeline cache every Vulkan pipeline of this device is created with. It is persisted in the
+		 * user's cache directory (see PipelineCache), or kept in memory if that is not possible.
+		 */
+		PipelineCache& pipelineCache() { ensureLogicalDevice(); return *_pipelineCache; }
+
+		/**
+		 * Creates one pipeline through the device's cache and records the change for the next save.
+		 */
+		VkResult createGraphicsPipeline(const VkGraphicsPipelineCreateInfo& info, VkPipeline* pipeline);
+		VkResult createComputePipeline(const VkComputePipelineCreateInfo& info, VkPipeline* pipeline);
+
 	private:
 		// Kept after every other member: QuartzCore uses this class through pointers only, so
 		// appending members does not move the ones it reads.
@@ -340,5 +353,6 @@ namespace Indium {
 		std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKey::Hash> _renderPasses;
 		MemoryPool _memoryPool;
 		TextureUploader _textureUploader { *this };
+		std::unique_ptr<PipelineCache> _pipelineCache;
 	};
 };

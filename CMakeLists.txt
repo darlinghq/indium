@@ -67,13 +67,16 @@ set(indium_sources
 	src/indium/library.cpp
 	src/indium/memory-pool.cpp
 	src/indium/parallel-render-command-encoder.cpp
+	src/indium/pipeline-cache.cpp
 	src/indium/render-command-encoder.cpp
 	src/indium/render-pipeline.cpp
 	src/indium/resource.cpp
 	src/indium/sampler.cpp
+	src/indium/sha256.cpp
 	src/indium/texture.cpp
 	src/indium/visibility-results.cpp
 	src/indium/texture-upload.cpp
+	src/indium/translation-cache.cpp
 )
 
 set(iridium_sources
