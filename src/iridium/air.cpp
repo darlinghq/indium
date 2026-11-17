@@ -1053,28 +1053,33 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
 }
 
-// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), reads and size
+// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), reads, writes and size
 // queries. Returns false when `name` is not one of them. `samplerFor` resolves a sampler operand (a constant sampler has no value of its own).
-template<typename SamplerFor>
-static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::FunctionType stage, SamplerFor&& samplerFor, Iridium::SPIRV::ResultID& resID) {
+template<typename SamplerFor, typename IsReadSampler>
+static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::FunctionType stage, SamplerFor&& samplerFor, IsReadSampler&& isReadSampler, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 
 	bool compare = name.substr(0, 25) == "air.sample_compare_depth_";
 	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
 	bool read = name.substr(0, 17) == "air.read_texture_";
 	bool write = name.substr(0, 18) == "air.write_texture_";
-	if (write) {
-		// every texture argument is declared (and bound by Indium) as a sampled image
-		throw ImpossibleResultID("texture writes are unsupported");
-	}
 	bool width = name == "air.get_width_texture_2d";
 	bool height = name == "air.get_height_texture_2d";
 	if (!sample && !read && !write && !width && !height) {
 		return false;
 	}
 
+	// the last operand of a call is the callee; AIR comes from outside, so a call with fewer arguments than the
+	// intrinsic takes is rejected instead of read past its end
+	auto argumentCount = DynamicLLVM::LLVMGetNumOperands(inst) - 1;
+	auto argument = [&](unsigned i) {
+		if (i >= argumentCount) {
+			throw ImpossibleResultID("texture intrinsic " + std::string(name) + " has too few arguments");
+		}
+		return DynamicLLVM::LLVMGetOperand(inst, i);
+	};
 	auto operand = [&](unsigned i) {
-		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, i));
+		return llvmValueToResultID(builder, argument(i));
 	};
 
 	auto texturePointer = operand(0);
@@ -1114,8 +1119,14 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		throw ImpossibleResultID("depth comparison on an array texture is unsupported");
 	}
 
+	// A read of a texture that is only read names a sampler (the result of air.get_read_sampler, which has no
+	// value of its own) before the coordinates and, after them (and after the layer), an offset (not for one-dimensional textures). A texture that is also written
+	// (and a write) has neither.
+	bool readsWithSampler = read && argumentCount > 1 && isReadSampler(DynamicLLVM::LLVMGetOperand(inst, 1));
+	unsigned coordinatesIndex = compare ? 3 : ((sample || readsWithSampler) ? 2 : 1);
+
 	// an array texture takes the layer as another coordinate (a float one when sampling)
-	auto coordinates = operand(compare ? 3 : (sample ? 2 : 1));
+	auto coordinates = operand(coordinatesIndex);
 	if (arrayed) {
 		auto coordinateType = *builder.reverseLookupType(builder.lookupResultType(coordinates));
 		auto componentType = coordinateType.backingType == Type::BackingType::Vector ? coordinateType.targetType : builder.lookupResultType(coordinates);
@@ -1123,7 +1134,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		for (unsigned i = 0; i < dims; ++i) {
 			components.push_back(dims == 1 ? coordinates : builder.encodeCompositeExtract(componentType, coordinates, { i }));
 		}
-		auto layer = operand(sample ? 3 : 2);
+		auto layer = operand(coordinatesIndex + 1);
 		if (sample) {
 			layer = builder.encodeOp(Opcode::ConvertSToF, componentType, { layer });
 		}
@@ -1136,8 +1147,26 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	auto texelType = builder.declareType(Type(Type::VectorTag {}, 4, imageType.targetType));
 	ResultID value;
 
-	if (sample) {
-		auto samplerPointer = samplerFor(DynamicLLVM::LLVMGetOperand(inst, 1));
+	if (write) {
+		// write(texture, coordinates, [layer,] color [, level]): only textures declared with write or
+		// read_write access are storage images
+		if (!storage) {
+			throw ImpossibleResultID("write to a texture that is not declared writable");
+		}
+		// the level follows the color; a storage image view covers one level, so only level 0 is written
+		auto level = argument(3 + layerOperands);
+		if (!DynamicLLVM::LLVMIsAConstantInt(level) || DynamicLLVM::LLVMConstIntGetZExtValue(level) != 0) {
+			throw ImpossibleResultID("texture write to a level other than 0 is unsupported");
+		}
+		auto color = operand(2 + layerOperands);
+		builder.requireCapability(Capability::StorageImageWriteWithoutFormat);
+		builder.encodeOpWithoutResult(Opcode::ImageWrite, { image, coordinates, convertTexel(builder, color, builder.lookupResultType(color), texelType) });
+		return true;
+	}
+
+	if (sample && isReadSampler(argument(1))) {
+		} else if (sample) {
+		auto samplerPointer = samplerFor(argument(1));
 		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
 		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
 		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
@@ -1147,8 +1176,8 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		// (not for cube textures), a flag that selects an explicit LOD, and that LOD.
 		bool cube = imageType.imageDimensionality == Dim::eCube;
 		unsigned lodFlagIndex = compare ? (cube ? 5 : 7) : (cube ? 3 : 5) + layerOperands;
-		auto offset = cube ? nullptr : DynamicLLVM::LLVMGetOperand(inst, lodFlagIndex - 1);
-		auto lodFlag = DynamicLLVM::LLVMGetOperand(inst, lodFlagIndex);
+		auto offset = cube ? nullptr : argument(lodFlagIndex - 1);
+		auto lodFlag = argument(lodFlagIndex);
 		if (!DynamicLLVM::LLVMIsAConstantInt(lodFlag)) {
 			throw ImpossibleResultID("texture sample with a non-constant LOD mode");
 		}
@@ -1185,8 +1214,23 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		std::vector<uint32_t> arguments { image, coordinates };
 		if (!storage) {
 			// a sampled image is read with OpImageFetch, which takes the level
-			arguments.push_back(0x2);
-			arguments.push_back(operand(2 + layerOperands));
+			// (a one-dimensional texture has no offset)
+			bool hasOffsetOperand = readsWithSampler && dims > 1;
+			unsigned levelIndex = coordinatesIndex + layerOperands + (hasOffsetOperand ? 2 : 1);
+			auto offset = hasOffsetOperand ? argument(levelIndex - 1) : nullptr;
+			bool hasOffset = offset && !DynamicLLVM::LLVMIsNull(offset);
+			if (hasOffset && !DynamicLLVM::LLVMIsConstant(offset)) {
+				throw ImpossibleResultID("texture read with a non-constant offset");
+			}
+			// image operands: Lod = 0x2, ConstOffset = 0x8
+			arguments.push_back(0x2 | (hasOffset ? 0x8 : 0));
+			arguments.push_back(operand(levelIndex));
+			if (hasOffset) {
+				arguments.push_back(llvmValueToResultID(builder, offset));
+			}
+		}
+		if (storage) {
+			builder.requireCapability(Capability::StorageImageReadWithoutFormat);
 		}
 		value = builder.encodeOp(storage ? Opcode::ImageRead : Opcode::ImageFetch, texelType, arguments);
 	}
@@ -1922,6 +1966,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			std::string_view sampleTypeName(argType.data() + (firstAngle + 1), comma - (firstAngle + 1));
 			std::string_view accessTypeName(argType.data() + notWhitespace, lastAngle - notWhitespace);
 
+			// A texture that is written is a storage image; one that is only sampled or read is a sampled image
+			// (read() on it is a fetch).
+			if (accessTypeName == "write") {
+				accessType = TextureAccessType::Write;
+			} else if (accessTypeName == "read_write") {
+				accessType = TextureAccessType::ReadWrite;
+			}
+
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType });
 
 			SPIRV::ResultID fakeSampleType = SPIRV::ResultIDInvalid;
@@ -2154,6 +2206,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	// packed state, rather than through a global variable. declare one sampler per distinct expression before the body is translated.
 	// the expression is shared by every function in the library, so each function keeps its own variables.
 	std::unordered_map<LLVMValueRef, SPIRV::ResultID> constantSamplers;
+	std::unordered_set<LLVMValueRef> readSamplerCalls;
 	for (LLVMBasicBlockRef bb = DynamicLLVM::LLVMGetFirstBasicBlock(_function); bb != nullptr; bb = DynamicLLVM::LLVMGetNextBasicBlock(bb)) {
 		for (LLVMValueRef inst = DynamicLLVM::LLVMGetFirstInstruction(bb); inst != nullptr; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
 			auto operandCount = DynamicLLVM::LLVMGetNumOperands(inst);
@@ -2699,6 +2752,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					}
 
 					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+
+					if (name == "air.get_read_sampler") {
+						// the sampler that read() uses; it has no value of its own (see translateAirTexture)
+						readSamplerCalls.insert(inst);
+						break;
+					}
+
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
 					if (name == "air.is_function_constant_defined") {
@@ -2725,6 +2785,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					} else if (translateAirTexture(builder, inst, name, type, funcInfo.type, [&](LLVMValueRef sampler) {
 						auto constantSampler = constantSamplers.find(sampler);
 						return constantSampler != constantSamplers.end() ? constantSampler->second : llvmValueToResultID(builder, sampler);
+					}, [&](LLVMValueRef sampler) {
+						return readSamplerCalls.count(sampler) != 0;
 					}, resID)) {
 						// handled
 					} else if (isFloatWidthConversion(name)) {

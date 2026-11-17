@@ -139,6 +139,10 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareType(const Type& type) 
 	_reverseTypeIDs.try_emplace(id, &it2->first);
 	++_currentResultID;
 
+	if (typeCopy.backingType == Type::BackingType::Image && typeCopy.imageDimensionality == Dim::e1D) {
+		_requiredCapabilities.insert(typeCopy.imageIsSampledIndication == 2 ? Capability::Image1D : Capability::Sampled1D);
+	}
+
 	if (typeCopy.backingType == Type::BackingType::Matrix) {
 		_requiredCapabilities.insert(Capability::Matrix);
 	} else if (typeCopy.backingType == Type::BackingType::FloatingPoint) {
