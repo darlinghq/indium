@@ -40,6 +40,19 @@ namespace Indium {
 		 */
 		virtual void encodeWaitForEvent(const std::shared_ptr<Event>& event, uint64_t value) = 0;
 
+		/**
+		 * Reserves the command buffer's place in the order its queue executes in: command buffers run in the order
+		 * they were enqueued, whatever the order of their `commit()` calls, and a command buffer that is
+		 * enqueued but not committed yet holds back the ones enqueued after it. `commit()` enqueues a command
+		 * buffer that has not been. Calling it again changes nothing.
+		 */
+		virtual void enqueue() = 0;
+
+		/**
+		 * Hands the command buffer to its queue and returns without waiting for the GPU or for the submission:
+		 * the queue's submission thread submits it once everything enqueued before it has been, and the handlers
+		 * run on the queue's handler thread, in the order of the command buffers.
+		 */
 		virtual void commit() = 0;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) = 0;
 
