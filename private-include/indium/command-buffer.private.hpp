@@ -46,6 +46,7 @@ namespace Indium {
 		virtual void encodeSignalEvent(const std::shared_ptr<Event>& event, uint64_t value) override;
 		virtual void encodeWaitForEvent(const std::shared_ptr<Event>& event, uint64_t value) override;
 
+		virtual void enqueue() override;
 		virtual void commit() override;
 		virtual void presentDrawable(std::shared_ptr<Drawable> drawable) override;
 		virtual void addScheduledHandler(std::function<void(std::shared_ptr<CommandBuffer>)> handler) override;
@@ -58,13 +59,29 @@ namespace Indium {
 
 		/**
 		 * Submits what can be submitted now: the batches up to the first one that waits for an event value nothing
-		 * has signaled yet, for which it arranges for `PrivateCommandQueue::drain()` to be called once the value is
-		 * there. The calls to make once nothing is held (the handlers) are added to `afterSubmit` when the last
-		 * batch has been submitted.
+		 * has signaled yet, for which it arranges for the queue's submission thread to be woken once the value is
+		 * there. The calls to make once nothing is held (presenting the drawables) are added to `afterSubmit` when
+		 * the last batch has been submitted.
 		 *
 		 * @returns whether the whole command buffer has been submitted.
 		 */
 		bool submitReady(std::vector<std::function<void()>>& afterSubmit);
+
+		/** The GPU has finished the command buffer (called by the queue, from the device's event loop). */
+		void markCompleted();
+		/** The value its queue's completion timeline semaphore reaches when the GPU has finished it. */
+		uint64_t completionValue() const { return _completionValue; }
+
+		/** The GPU has finished the command buffer and its scheduled handlers have returned. */
+		bool retirable();
+		/** Calls the scheduled handlers; runs on the queue's handler thread once the command buffer has been submitted. */
+		void runScheduledHandlers();
+		/**
+		 * Calls the completed handlers and releases what the command buffer held for the GPU (encoders and the
+		 * resources they reference, drawables, Vulkan command buffers); runs on the queue's handler thread, for
+		 * the command buffers in order.
+		 */
+		void retire();
 
 		void addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
 		void addCompletedHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
@@ -146,7 +163,12 @@ namespace Indium {
 		std::unique_ptr<Submission> _submission;
 
 		void prepareSubmission();
+		void freeSegments(VkCommandPool pool, const std::vector<VkCommandBuffer>& segments);
+		/** Runs on the submission thread right after the last batch has been submitted. */
 		void finishSubmission(const std::vector<std::shared_ptr<Texture>>& readWriteTextures, const std::vector<std::shared_ptr<BinarySemaphore>>& presentationSemaphores);
+
+		uint64_t _completionValue = 0;
+		std::vector<std::shared_ptr<BinarySemaphore>> _retainedSemaphores;
 
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		// the finished segments in execution order (`_commandBuffer` is the one being recorded), and every one allocated

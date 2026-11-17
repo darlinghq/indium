@@ -4,6 +4,9 @@
 
 #include <indium/indium.private.hpp>
 
+#include <memory>
+#include <mutex>
+
 namespace IndiumKit {
 	class PrivateLayer;
 
@@ -57,6 +60,14 @@ namespace IndiumKit {
 		std::vector<VkImageView> _imageViews;
 		size_t _width;
 		size_t _height;
+
+		// An image that has been acquired from the swapchain but is not usable yet (the presentation engine still
+		// holds it), which the next nextDrawable() call goes on waiting for; see nextDrawable().
+		std::mutex _acquireMutex;
+		VkFence _acquireFence = VK_NULL_HANDLE;
+		bool _acquirePending = false;
+		uint32_t _acquiredIndex = 0;
+		std::shared_ptr<Indium::BinarySemaphore> _acquiredSemaphore;
 
 	public:
 		PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight);

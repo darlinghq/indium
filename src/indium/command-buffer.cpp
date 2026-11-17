@@ -154,10 +154,13 @@ void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shar
 };
 
 Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
-	for (auto segment: _allSegments) {
-		DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), _commandPool, 1, &segment);
+	if (!_committed) {
+		// one that was enqueued must not hold the queue back
+		_privateCommandQueue->abandon(this);
 	}
-	_privateCommandQueue->releaseCommandPool(_commandPool);
+	if (_commandPool != VK_NULL_HANDLE) {
+		freeSegments(_commandPool, _allSegments);
+	}
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
@@ -293,9 +296,19 @@ void Indium::PrivateCommandBuffer::commit() {
 		}
 	}
 
-	// the queue submits it once everything it waits for has happened and the command buffers committed before it
-	// have been submitted
-	_privateCommandQueue->submit(shared_from_this());
+	// the queue's submission thread submits it once everything it waits for has happened and the command buffers
+	// enqueued before it have been submitted
+	_privateCommandQueue->commit(shared_from_this());
+};
+
+void Indium::PrivateCommandBuffer::enqueue() {
+	{
+		std::scoped_lock lock(_mutex);
+		if (_committed) {
+			return;
+		}
+	}
+	_privateCommandQueue->enqueue(shared_from_this());
 };
 
 bool Indium::PrivateCommandBuffer::submitReady(std::vector<std::function<void()>>& afterSubmit) {
@@ -331,7 +344,7 @@ bool Indium::PrivateCommandBuffer::submitReady(std::vector<std::function<void()>
 							self->_submission->waiterRegistered = false;
 						}
 					}
-					self->_privateCommandQueue->drain();
+					self->_privateCommandQueue->wakeSubmission();
 				});
 			}
 			break;
@@ -408,9 +421,6 @@ void Indium::PrivateCommandBuffer::prepareSubmission() {
 
 	// to keep ourselves alive until we're done
 	auto self = shared_from_this();
-
-	// for the event loop
-	auto timelineSemaphore = _privateDevice->getWrappedTimelineSemaphore();
 
 	std::vector<std::shared_ptr<Texture>> readOnlyTextures;
 	std::vector<std::shared_ptr<Texture>>& readWriteTextures = submission.readWriteTextures;
@@ -577,39 +587,29 @@ void Indium::PrivateCommandBuffer::prepareSubmission() {
 	batches.front().waits.insert(batches.front().waits.begin(), waitInfos.begin(), waitInfos.end());
 	batches.back().signals.insert(batches.back().signals.end(), signalInfos.begin(), signalInfos.end());
 
-	// the event loop waits for this signal of the last batch (see commit() for why it comes after the others)
-	++timelineSemaphore->count;
+	// the queue watches this signal of the last batch (see commit() for why it comes after the others): its
+	// timeline semaphore reaches the value once the GPU has finished the command buffer
 	VkSemaphoreSubmitInfo completionInfo {};
 	completionInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-	completionInfo.semaphore = timelineSemaphore->semaphore;
 	completionInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-	completionInfo.value = timelineSemaphore->count;
+	_privateCommandQueue->nextCompletion(completionInfo.semaphore, _completionValue);
+	completionInfo.value = _completionValue;
 	batches.back().signals.push_back(completionInfo);
 
-	// FIXME: apparently, sometimes, this callback will not be invoked. this is obviously bad because users might want to know when we're done,
-	//        but it also leaves the resources for this command buffer tied up, essentially becoming a memory leak.
-	//        i've observed this in the cube example, and it happens more than once (because the example display semaphore is exhausted and never signaled).
-	// UPDATE: upon further testing, it seems that this only occurs when the view is off-screen/hidden. weird.
-	_privateDevice->waitForSemaphore(timelineSemaphore->semaphore, timelineSemaphore->count, [self, timelineSemaphore, extraWaitSemaphores, presentationSemaphores]() {
-		std::vector<Handler> handlers;
-		{
-			std::unique_lock lock(self->_mutex);
-			self->_completed = true;
-			if (self->_scheduledHandlersFinished) {
-				handlers.swap(self->_completedHandlers);
-			}
+	// what the submission waits on and signals has to outlive the GPU's use of it
+	for (const auto& semaphore: extraWaitSemaphores) {
+		_retainedSemaphores.push_back(semaphore);
+	}
+	for (const auto& semaphore: presentationSemaphores) {
+		if (semaphore) {
+			_retainedSemaphores.push_back(semaphore);
 		}
-
-		self->_completedCondvar.notify_all();
-		invokeHandlers(handlers, self);
-	});
+	}
 
 	_submission = std::move(submissionPtr);
 };
 
 void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::shared_ptr<Texture>>& readWriteTextures, const std::vector<std::shared_ptr<BinarySemaphore>>& presentationSemaphores) {
-	auto self = shared_from_this();
-
 	// now that the binary semaphore signals are pending, we can allow them to be used
 	for (size_t i = 0; i < readWriteTextures.size(); ++i) {
 		if (presentationSemaphores[i]) {
@@ -617,28 +617,91 @@ void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::share
 		}
 	}
 
+	// we can now queue drawables for presentation and they'll be synchronized properly
+	std::vector<std::shared_ptr<Drawable>> drawables;
+	{
+		std::scoped_lock lock(_mutex);
+		drawables = _drawablesToPresent;
+	}
+	for (const auto& drawable: drawables) {
+		drawable->present();
+	}
+};
+
+void Indium::PrivateCommandBuffer::markCompleted() {
+	{
+		std::unique_lock lock(_mutex);
+		_completed = true;
+	}
+	_completedCondvar.notify_all();
+};
+
+void Indium::PrivateCommandBuffer::runScheduledHandlers() {
+	auto self = shared_from_this();
+
 	std::vector<Handler> scheduledHandlers;
 	{
-		std::unique_lock callbackLock(_mutex);
+		std::unique_lock lock(_mutex);
 		scheduledHandlers.swap(_scheduledHandlers);
 	}
 	invokeHandlers(scheduledHandlers, self);
 
-	std::vector<Handler> completedHandlers;
 	{
-		std::unique_lock callbackLock(_mutex);
+		std::unique_lock lock(_mutex);
 		_scheduledHandlersFinished = true;
-		if (_completed) {
-			completedHandlers.swap(_completedHandlers);
-		}
 	}
 	_scheduledCondvar.notify_all();
+};
+
+bool Indium::PrivateCommandBuffer::retirable() {
+	std::unique_lock lock(_mutex);
+	return _completed && _scheduledHandlersFinished;
+};
+
+void Indium::PrivateCommandBuffer::retire() {
+	auto self = shared_from_this();
+
+	std::vector<Handler> completedHandlers;
+	{
+		std::unique_lock lock(_mutex);
+		completedHandlers.swap(_completedHandlers);
+	}
 	invokeHandlers(completedHandlers, self);
 
-	// we can now queue drawables for presentation and they'll be synchronized properly
-	for (const auto& drawable: _drawablesToPresent) {
-		drawable->present();
+	// The GPU is done with everything the command buffer recorded: release what it held for the GPU's sake, though
+	// the client may keep the command buffer itself for as long as it likes.
+	std::vector<std::shared_ptr<CommandEncoder>> encoders;
+	std::vector<std::shared_ptr<Drawable>> drawables;
+	std::vector<EventOperation> eventOperations;
+	std::vector<VkCommandBuffer> segments;
+	std::vector<std::shared_ptr<BinarySemaphore>> semaphores;
+	VkCommandPool pool = VK_NULL_HANDLE;
+	{
+		std::unique_lock lock(_mutex);
+		semaphores.swap(_retainedSemaphores);
+		encoders.swap(_commandEncoders);
+		drawables.swap(_drawablesToPresent);
+		eventOperations.swap(_eventOperations);
+		segments.swap(_allSegments);
+		_finishedSegments.clear();
+		_commandBuffer = VK_NULL_HANDLE;
+		std::swap(pool, _commandPool);
 	}
+	if (pool != VK_NULL_HANDLE) {
+		freeSegments(pool, segments);
+	}
+	// what these held may have been the last reference to the device: nothing is locked here
+	encoders.clear();
+	drawables.clear();
+	eventOperations.clear();
+	semaphores.clear();
+};
+
+void Indium::PrivateCommandBuffer::freeSegments(VkCommandPool pool, const std::vector<VkCommandBuffer>& segments) {
+	for (auto segment: segments) {
+		DynamicVK::vkFreeCommandBuffers(_privateDevice->device(), pool, 1, &segment);
+	}
+	_privateCommandQueue->releaseCommandPool(pool);
 };
 
 void Indium::PrivateCommandBuffer::presentDrawable(std::shared_ptr<Drawable> drawable) {

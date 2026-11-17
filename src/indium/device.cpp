@@ -212,6 +212,8 @@ auto result = DynamicVK::vkEnumeratePhysicalDevices(globalInstance, &count, null
 };
 
 void Indium::finitGlobalDeviceList() {
+	// the command queues' threads release command buffers (and so devices) in the background
+	waitForQueueActivity(std::chrono::seconds(2));
 	// objects the devices keep for themselves hold a reference to the device, which would keep it from being destroyed
 	for (const auto& device: globalDeviceList) {
 		device->releaseCachedObjects();

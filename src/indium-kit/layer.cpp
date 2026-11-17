@@ -1,3 +1,4 @@
+#include <chrono>
 #include <indium-kit/layer.private.hpp>
 #include <indium/dynamic-vk.hpp>
 #include <stdexcept>
@@ -209,24 +210,63 @@ IndiumKit::PrivateLayer::~PrivateLayer() {
 		DynamicVK::vkDestroyImageView(privateDevice->device(), imageView, nullptr);
 	}
 
+	if (_acquireFence != VK_NULL_HANDLE) {
+		if (_acquirePending) {
+			// the image's semaphore goes back to the device's pool once it has been signaled
+			DynamicVK::vkWaitForFences(privateDevice->device(), 1, &_acquireFence, VK_TRUE, 1000000000ULL);
+		}
+		DynamicVK::vkDestroyFence(privateDevice->device(), _acquireFence, nullptr);
+	}
+	_acquiredSemaphore.reset();
+
 	DynamicVK::vkDestroySwapchainKHR(privateDevice->device(), _swapchain, nullptr);
 
 	DynamicVK::vkDestroySurfaceKHR(Indium::globalInstance, _surface, nullptr);
 };
 
 std::shared_ptr<IndiumKit::Drawable> IndiumKit::PrivateLayer::nextDrawable() {
+	using Clock = std::chrono::steady_clock;
+	constexpr auto timeout = std::chrono::seconds(1);
+
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
-	auto binarySemaphore = privateDevice->getWrappedBinarySemaphore();
-	uint32_t index;
+	std::scoped_lock lock(_acquireMutex);
+	const auto deadline = Clock::now() + timeout;
 
-	auto result = DynamicVK::vkAcquireNextImageKHR(privateDevice->device(), _swapchain, /* 1 sec = 1e9 nsec */ 1000000000ULL, binarySemaphore->semaphore, nullptr, &index);
+	if (!_acquirePending) {
+		if (_acquireFence == VK_NULL_HANDLE) {
+			VkFenceCreateInfo fenceInfo {};
+			fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+			if (DynamicVK::vkCreateFence(privateDevice->device(), &fenceInfo, nullptr, &_acquireFence) != VK_SUCCESS) {
+				return nullptr;
+			}
+		}
 
-	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		// none was available
-		return nullptr;
+		auto binarySemaphore = privateDevice->getWrappedBinarySemaphore();
+		uint32_t index;
+		auto result = DynamicVK::vkAcquireNextImageKHR(privateDevice->device(), _swapchain, std::chrono::nanoseconds(timeout).count(), binarySemaphore->semaphore, _acquireFence, &index);
+
+		if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			// none was available
+			return nullptr;
+		}
+		_acquirePending = true;
+		_acquiredIndex = index;
+		_acquiredSemaphore = std::move(binarySemaphore);
 	}
 
-	return std::make_shared<IndiumKit::PrivateDrawable>(shared_from_this(), _swapchain, index, _imageViews[index], _images[index], binarySemaphore, _width, _height, _pixelFormat);
+	// The presentation engine signals the semaphore when the image is free, and that may be long after the call
+	// returned an index (a window that is hidden or minimized gets no frames, so its images are not given back).
+	// Work that waited for the semaphore would never start, its command buffer would never complete, and the
+	// queue behind it would stall. So the image is handed out once it is usable; if it is not within the time
+	// limit, there is no drawable now, and the next call goes on waiting for the same image.
+	auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - Clock::now());
+	if (DynamicVK::vkWaitForFences(privateDevice->device(), 1, &_acquireFence, VK_TRUE, remaining.count() > 0 ? remaining.count() : 0) != VK_SUCCESS) {
+		return nullptr;
+	}
+	DynamicVK::vkResetFences(privateDevice->device(), 1, &_acquireFence);
+	_acquirePending = false;
+
+	return std::make_shared<IndiumKit::PrivateDrawable>(shared_from_this(), _swapchain, _acquiredIndex, _imageViews[_acquiredIndex], _images[_acquiredIndex], std::move(_acquiredSemaphore), _width, _height, _pixelFormat);
 };
 
 Indium::PixelFormat IndiumKit::PrivateLayer::pixelFormat() {

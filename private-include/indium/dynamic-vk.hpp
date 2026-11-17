@@ -203,6 +203,7 @@ namespace Indium {
 			_macro(vkUnmapMemory) \
 			_macro(vkUpdateDescriptorSets) \
 			_macro(vkWaitForFences) \
+			_macro(vkResetFences) \
 			_macro(vkWaitSemaphores)
 
 		#define INDIUM_DYNAMICVK_FUNCTION_DECL(_name) \
