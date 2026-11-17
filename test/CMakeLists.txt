@@ -42,6 +42,7 @@ add_subdirectory(command-queue-submission)
 add_subdirectory(parallel-render)
 add_subdirectory(texture-write)
 add_subdirectory(threadgroup)
+add_subdirectory(atomics)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
