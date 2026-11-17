@@ -97,6 +97,13 @@ public:
 // memory requires.
 static thread_local bool g_layoutFreeTypes = false;
 
+// Objects in these storage classes are single variables of their declared type, not memory at an address: they
+// are reached through access chains and cannot be reinterpreted.
+static bool isLogicalStorageClass(Iridium::SPIRV::StorageClass storageClass) {
+	using Iridium::SPIRV::StorageClass;
+	return storageClass == StorageClass::Function || storageClass == StorageClass::Private || storageClass == StorageClass::Workgroup;
+}
+
 class LayoutFreeScope {
 public:
 	explicit LayoutFreeScope(bool enabled): _previous(g_layoutFreeTypes) { g_layoutFreeTypes = enabled; }
@@ -488,6 +495,18 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 
 	switch (kind) {
 		case LLVMGlobalVariableValueKind: {
+			// a threadgroup variable (address space 3), shared by the threads of a threadgroup
+			if (DynamicLLVM::LLVMGetPointerAddressSpace(type) == 3) {
+				LayoutFreeScope layoutFree(true);
+				auto valueType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGlobalGetValueType(llvmValue));
+				auto pointerType = builder.declareType(Type(Type::PointerTag {}, StorageClass::Workgroup, valueType, 8));
+				auto result = builder.addGlobalVariable(pointerType, StorageClass::Workgroup);
+				builder.setResultType(result, pointerType);
+				builder.associateExistingResultID(result, reinterpret_cast<uintptr_t>(llvmValue));
+				builder.referenceGlobalVariable(result);
+				return result;
+			}
+
 			// a constant the function keeps in memory, such as a lookup table
 			auto initializer = DynamicLLVM::LLVMGetInitializer(llvmValue);
 			if (!initializer) {
@@ -586,7 +605,7 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 					auto base = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(llvmValue, 0));
 					auto pointer = builder.reverseLookupType(builder.lookupResultType(base));
 					if (!pointer || pointer->backingType != Type::BackingType::Pointer ||
-						(pointer->pointerStorageClass != StorageClass::PhysicalStorageBuffer && pointer->pointerStorageClass != StorageClass::Private))
+						(pointer->pointerStorageClass != StorageClass::PhysicalStorageBuffer && !isLogicalStorageClass(pointer->pointerStorageClass)))
 					{
 						throw ImpossibleResultID("constant getelementptr requires a known physical buffer pointer or a global variable");
 					}
@@ -722,7 +741,7 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 		throw ImpossibleResultID("getelementptr base has no recorded pointer type");
 	}
 	auto origType = *maybeOrigType;
-	bool logical = origType.pointerStorageClass == SPIRV::StorageClass::Function || origType.pointerStorageClass == SPIRV::StorageClass::Private;
+	bool logical = isLogicalStorageClass(origType.pointerStorageClass);
 	LayoutFreeScope layoutFree(logical);
 
 	auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
@@ -810,6 +829,34 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 	builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 	builder.setResultType(resID, resultType);
 	return resID;
+}
+
+// An opaque-pointer load or store may name the first scalar or element of an aggregate variable through the
+// variable itself (offset zero). Steps the pointer into the first array element or structure member until
+// it points at `wantedType`, or leaves it untouched when that is not reachable.
+static Iridium::SPIRV::ResultID descendToFirstElement(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID pointer, Iridium::SPIRV::ResultID wantedType) {
+	using namespace Iridium::SPIRV;
+	auto pointerType = *builder.reverseLookupType(builder.lookupResultType(pointer));
+	auto current = pointerType.targetType;
+	std::vector<uint32_t> indices;
+	while (current != wantedType) {
+		auto type = *builder.reverseLookupType(current);
+		if (type.backingType == Type::BackingType::Array) {
+			current = type.targetType;
+		} else if (type.backingType == Type::BackingType::Structure && !type.structureMembers.empty()) {
+			current = type.structureMembers.at(0).id;
+		} else {
+			return pointer;
+		}
+		indices.push_back(builder.declareConstantScalar<int32_t>(0));
+	}
+	if (indices.empty()) {
+		return pointer;
+	}
+	auto resultType = builder.declareType(Type(Type::PointerTag {}, pointerType.pointerStorageClass, wantedType, 8));
+	auto access = builder.encodeAccessChain(resultType, pointer, indices);
+	builder.setResultType(access, resultType);
+	return access;
 }
 
 // The same integer type, scalar or vector, with the given signedness. LLVM integers have no sign, while
@@ -1358,6 +1405,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 	SPIRV::ResultID computeLocalSizeY = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID computeLocalSizeZ = SPIRV::ResultIDInvalid;
 	SPIRV::ResultID globalInvocationIdVar = SPIRV::ResultIDInvalid;
+	std::unordered_map<uint32_t, SPIRV::ResultID> computeInputVars;
+
+	// The Input variable of a compute built-in, declared on first use.
+	auto computeInput = [&](SPIRV::BuiltinID builtin, SPIRV::ResultID valueType) {
+		auto [it, inserted] = computeInputVars.try_emplace(static_cast<uint32_t>(builtin), SPIRV::ResultIDInvalid);
+		if (inserted) {
+			auto pointerType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Input, valueType, 8));
+			it->second = builder.addGlobalVariable(pointerType, SPIRV::StorageClass::Input);
+			builder.addDecoration(it->second, SPIRV::Decoration { SPIRV::DecorationType::Builtin, { static_cast<uint32_t>(builtin) } });
+			builder.referenceGlobalVariable(it->second);
+		}
+		return builder.encodeLoad(valueType, it->second);
+	};
 
 	auto firstLabelID = builder.beginFunction(funcID.id);
 
@@ -1888,9 +1948,29 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
-		} else if (kind == "air.thread_position_in_grid") {
+		} else if (kind == "air.thread_index_in_threadgroup") {
+			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, u32Type);
+		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
+				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			auto load = builder.encodeLoad(uvec3Type, globalInvocationIdVar);
+			SPIRV::ResultID load;
+			if (kind == "air.thread_position_in_grid") {
+				load = builder.encodeLoad(uvec3Type, globalInvocationIdVar);
+			} else if (kind == "air.thread_position_in_threadgroup") {
+				load = computeInput(SPIRV::BuiltinID::LocalInvocationId, uvec3Type);
+			} else if (kind == "air.threadgroup_position_in_grid") {
+				load = computeInput(SPIRV::BuiltinID::WorkgroupId, uvec3Type);
+			} else if (kind == "air.threadgroups_per_grid") {
+				load = computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type);
+			} else {
+				// the threadgroup size is the specialization constants the dispatch sets
+				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, { computeLocalSizeX, computeLocalSizeY, computeLocalSizeZ });
+				if (kind == "air.threads_per_grid") {
+					load = builder.encodeArithBinop(SPIRV::Opcode::IMul, uvec3Type, load, computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type));
+				}
+			}
 			auto typeInst = *builder.reverseLookupType(type);
 			auto target = load;
 			auto resultType = type;
@@ -2652,7 +2732,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					// always carries a pointee, and llvmTypeToSPIRVType refuses to
 					// resolve an opaque one, so targetType is a declared type.
 					auto opDerefType = *builder.reverseLookupType(opType.targetType);
-					bool logical = opType.pointerStorageClass == SPIRV::StorageClass::Function || opType.pointerStorageClass == SPIRV::StorageClass::Private;
+					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
 
 					if (logical) {
 						// A local variable or global constant cannot be re-typed: its pointer has no address
@@ -2660,7 +2740,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						LayoutFreeScope layoutFree(true);
 						type = llvmTypeToSPIRVType(builder, targetType);
 						if (type != opType.targetType) {
-							throw ImpossibleResultID("load reinterprets a local or constant object");
+							auto stepped = descendToFirstElement(builder, op, type);
+							if (stepped == op) {
+								throw ImpossibleResultID("load reinterprets a local or constant object");
+							}
+							op = stepped;
 						}
 						alignment = 0;
 					} else if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
@@ -2720,14 +2804,17 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						throw ImpossibleResultID("store's pointer operand has no recorded result type");
 					}
 					auto opType = *maybeOpType;
-					bool logical = opType.pointerStorageClass == SPIRV::StorageClass::Function || opType.pointerStorageClass == SPIRV::StorageClass::Private;
+					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
 					LayoutFreeScope layoutFree(logical);
 					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval)), 8));
 
 					if (logical) {
 						// see the LLVMLoad case
 						if (storePtrType != builder.lookupResultType(ptr)) {
-							throw ImpossibleResultID("store reinterprets a local object");
+							ptr = descendToFirstElement(builder, ptr, builder.reverseLookupType(storePtrType)->targetType);
+							if (storePtrType != builder.lookupResultType(ptr)) {
+								throw ImpossibleResultID("store reinterprets a local object");
+							}
 						}
 						alignment = 0;
 					} else if (storePtrType != builder.lookupResultType(ptr)) {
@@ -2779,6 +2866,25 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 
 						resID = builder.encodeConvertUToF(type, llvmValueToResultID(builder, arg));
+					} else if (name == "air.wg.barrier") {
+						// threadgroup_barrier(flags): every thread of the group arrives before any continues, and the
+						// memory the flags name is made visible to the group
+						auto flags = DynamicLLVM::LLVMGetOperand(inst, 0);
+						if (DynamicLLVM::LLVMGetNumOperands(inst) < 2 || !DynamicLLVM::LLVMIsAConstantInt(flags)) {
+							throw ImpossibleResultID("threadgroup barrier without constant memory flags");
+						}
+						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// SPIR-V memory semantics: AcquireRelease 0x8, UniformMemory 0x40, WorkgroupMemory 0x100, ImageMemory 0x800
+						uint32_t semantics = 0x8;
+						semantics |= (memFlags & 1) ? 0x40 : 0;
+						semantics |= (memFlags & 2) ? 0x100 : 0;
+						semantics |= (memFlags & 4) ? 0x800 : 0;
+						// scopes: Device 1, Workgroup 2
+						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
+							builder.declareConstantScalar<uint32_t>(2),
+							builder.declareConstantScalar<uint32_t>((memFlags & 1) ? 1 : 2),
+							builder.declareConstantScalar<uint32_t>(semantics),
+						});
 					} else if (name == "air.discard_fragment") {
 						builder.encodeOpWithoutResult(SPIRV::Opcode::Kill, {});
 						blockTerminated = true;
