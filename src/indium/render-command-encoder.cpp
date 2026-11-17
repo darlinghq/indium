@@ -281,10 +281,17 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		_visibilityResults = std::make_unique<VisibilityResults>(_privateDevice, visibilityBuffer);
 	}
 
-	// set default values
+	_defaultWidth = firstTexture->width();
+	_defaultHeight = firstTexture->height();
+	applyDefaultState();
+};
 
-	setViewport(Viewport { 0, 0, static_cast<double>(firstTexture->width()), static_cast<double>(firstTexture->height()), 0, 1 });
-	setScissorRect(ScissorRect { firstTexture->height(), firstTexture->width(), 0, 0 });
+void Indium::PrivateRenderCommandEncoder::applyDefaultState() {
+	auto buf = _privateCommandBuffer.lock();
+	auto vkCmdBuf = buf->commandBuffer();
+
+	setViewport(Viewport { 0, 0, static_cast<double>(_defaultWidth), static_cast<double>(_defaultHeight), 0, 1 });
+	setScissorRect(ScissorRect { _defaultHeight, _defaultWidth, 0, 0 });
 	setCullMode(CullMode::None);
 	setFrontFacingWinding(Winding::Clockwise);
 
@@ -298,6 +305,16 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 	setBlendColor(0, 0, 0, 0);
 	DynamicVK::vkCmdSetRasterizerDiscardEnable(vkCmdBuf, false);
+};
+
+void Indium::PrivateRenderCommandEncoder::resetState() {
+	_privatePSO.reset();
+	_functionResources = {};
+	_triangleFillMode = TriangleFillMode::Fill;
+	_depthClipMode = DepthClipMode::Clip;
+	applyDefaultState();
+	setStencilReferenceValue(0);
+	setVisibilityResultMode(VisibilityResultMode::Disabled, 0);
 };
 
 Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {

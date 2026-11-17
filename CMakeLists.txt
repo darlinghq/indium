@@ -66,6 +66,7 @@ set(indium_sources
 	src/indium/indium.cpp
 	src/indium/library.cpp
 	src/indium/memory-pool.cpp
+	src/indium/parallel-render-command-encoder.cpp
 	src/indium/render-command-encoder.cpp
 	src/indium/render-pipeline.cpp
 	src/indium/resource.cpp
