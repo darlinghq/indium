@@ -7,6 +7,7 @@
 #include <indium/memory-pool.private.hpp>
 #include <indium/buffer.private.hpp>
 #include <indium/heap.private.hpp>
+#include <indium/hazard-tracker.private.hpp>
 
 #include <mutex>
 #include <optional>
@@ -59,6 +60,12 @@ namespace Indium {
 		virtual VkImage image() = 0;
 
 		virtual VkImageLayout imageLayout() = 0;
+
+		/**
+		 * Where the image's bytes are, for hazard tracking. A view says the same as the texture it was made from, a
+		 * texture made over a buffer's memory the same as that buffer, so that they are one resource to the tracker.
+		 */
+		virtual HazardRange hazardRange() { return HazardRange::image(image()); }
 
 		/**
 		 * The Vulkan format the underlying image was created with. Views of other pixel formats are made
@@ -181,6 +188,8 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() override;
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
+		virtual HazardRange hazardRange() override { return _original->hazardRange(); }
+		virtual HazardTrackingMode hazardTrackingMode() const override { return _original->hazardTrackingMode(); }
 
 		// a view is part of its texture's memory
 		virtual std::shared_ptr<Heap> heap() override;
@@ -224,6 +233,8 @@ namespace Indium {
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
 		bool _shadow = false;
+		HazardTrackingMode _hazardTrackingMode = HazardTrackingMode::HazardTrackingModeTracked;
+		HazardRange _hazardRange;
 		VkDeviceSize _requiredSize = 0;
 		// set for a texture made from a heap, which owns the memory
 		std::unique_ptr<HeapAllocation> _heapAllocation;
@@ -288,6 +299,8 @@ namespace Indium {
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
 		virtual size_t vulkanArrayLength() const override;
+		virtual HazardRange hazardRange() override { return _hazardRange.valid() ? _hazardRange : HazardRange::image(_image); }
+		virtual HazardTrackingMode hazardTrackingMode() const override { return _hazardTrackingMode; }
 
 		virtual bool isBufferShadow() override;
 		virtual void recordBufferToImage(VkCommandBuffer commandBuffer) override;

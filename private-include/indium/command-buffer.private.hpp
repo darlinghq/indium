@@ -6,6 +6,7 @@
 #include <indium/command-encoder.hpp>
 #include <indium/event.private.hpp>
 #include <indium/types.private.hpp>
+#include <indium/hazard-tracker.private.hpp>
 
 #include <vector>
 #include <atomic>
@@ -82,8 +83,24 @@ namespace Indium {
 		 * before the encoder is created, the second when it ends, with the textures it used and wrote. The
 		 * segments are submitted in order, with the copies in between.
 		 */
-		void beginEncoderSegment();
-		void endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written);
+		void beginEncoderSegment(bool wantsPrologue = false);
+		/**
+		 * `hazardBarriers` are barriers the encoder needs in front of its first command: a render encoder cannot
+		 * know what its draws use until it ends, and cannot take a barrier once its pass has begun, so they are
+		 * recorded into a command buffer that runs before the encoder's.
+		 */
+		void endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written, const HazardTracker::Barriers& hazardBarriers = {});
+
+		/**
+		 * Orders the commands of the command buffer by what they access (see HazardTracker). Only while
+		 * hazardsTracked(): a command buffer that holds a texture that is kept equal to a buffer with copies
+		 * orders every encoder with a barrier on everything instead.
+		 */
+		HazardTracker& hazards() { return _hazards; }
+		/** Whether the encoder that was begun last is ordered by what it accesses. */
+		bool hazardsTracked() const { return _hazardsTracked; }
+		/** Ends an encoder of a command buffer that does not track hazards: everything it did is ordered before what follows. */
+		void endUntrackedEncoder();
 
 	private:
 		VkCommandBuffer newSegment();
@@ -136,6 +153,8 @@ namespace Indium {
 		std::vector<VkCommandBuffer> _finishedSegments;
 		std::vector<VkCommandBuffer> _allSegments;
 		bool _encoderSegmentOpen = false;
+		HazardTracker _hazards;
+		bool _hazardsTracked = true;
 
 	private:
 		std::condition_variable _scheduledCondvar;

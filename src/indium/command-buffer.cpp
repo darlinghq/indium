@@ -60,9 +60,21 @@ VkCommandBuffer Indium::PrivateCommandBuffer::newSegment() {
 	return segment;
 };
 
-void Indium::PrivateCommandBuffer::beginEncoderSegment() {
-	if (!_privateDevice->hasBufferShadowTextures()) {
+void Indium::PrivateCommandBuffer::endUntrackedEncoder() {
+	_hazards.fullBarrier(_commandBuffer);
+};
+
+void Indium::PrivateCommandBuffer::beginEncoderSegment(bool wantsPrologue) {
+	// A texture kept equal to a buffer by copies around the encoders is outside what the tracker knows, and the
+	// copies are recorded between the encoders, so with one every encoder ends with a barrier on everything.
+	bool shadow = _privateDevice->hasBufferShadowTextures();
+	_hazardsTracked = !shadow;
+	if (!shadow && !wantsPrologue) {
 		return;
+	}
+	if (shadow && _hazards.dirty()) {
+		// what the encoders before this one left unordered must be before the copies that come next
+		_hazards.fullBarrier(_commandBuffer);
 	}
 	// what was recorded so far ends here, so that copies for the encoder can go in front of its commands
 	if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {
@@ -74,7 +86,7 @@ void Indium::PrivateCommandBuffer::beginEncoderSegment() {
 	_encoderSegmentOpen = true;
 };
 
-void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written) {
+void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shared_ptr<Texture>>& used, const std::vector<std::shared_ptr<Texture>>& written, const HazardTracker::Barriers& hazardBarriers) {
 	_encoderActive = false;
 
 	// an encoder that began before the first such texture was made has no segment of its own and cannot have
@@ -118,8 +130,9 @@ void Indium::PrivateCommandBuffer::endEncoderSegment(const std::vector<std::shar
 	}
 	auto encoderSegment = _commandBuffer;
 
-	if (!toRead.empty()) {
+	if (!toRead.empty() || !hazardBarriers.empty()) {
 		auto prologue = newSegment();
+		HazardTracker::record(prologue, hazardBarriers);
 		for (const auto& texture: toRead) {
 			texture->recordBufferToImage(prologue);
 		}
@@ -148,7 +161,8 @@ Indium::PrivateCommandBuffer::~PrivateCommandBuffer() {
 };
 
 std::shared_ptr<Indium::RenderCommandEncoder> Indium::PrivateCommandBuffer::renderCommandEncoder(const RenderPassDescriptor& descriptor) {
-	beginEncoderSegment();
+	// the barriers for what the pass reads cannot be recorded once it has begun: they go in front of it
+	beginEncoderSegment(true);
 	auto encoder = std::make_shared<Indium::PrivateRenderCommandEncoder>(shared_from_this(), descriptor);
 	{
 		std::scoped_lock lock(_mutex);
@@ -270,7 +284,7 @@ void Indium::PrivateCommandBuffer::commit() {
 		// not finish in order, but the command buffer is completed by the signal of the last one. The barrier
 		// that ends it covers every earlier command of the queue, so that signal comes after theirs.
 		if (!_eventOperations.empty()) {
-			finishTrackedEncoder(_commandBuffer);
+			_hazards.fullBarrier(_commandBuffer);
 		}
 
 		if (DynamicVK::vkEndCommandBuffer(_commandBuffer) != VK_SUCCESS) {

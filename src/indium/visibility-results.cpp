@@ -116,8 +116,11 @@ void Indium::VisibilityResults::resolve(const std::shared_ptr<PrivateCommandBuff
 	_resolver->setBytes(&spanCount, sizeof(spanCount), 3);
 	_resolver->dispatchThreadgroups(Size { 1, 1, 1 }, Size { 1, 1, 1 });
 
-	// whatever reads the result buffer later sees it
-	finishTrackedEncoder(vkCommandBuffer);
+	// whatever reads the result buffer later sees it: the dispatch wrote it as a tracked buffer, or, where nothing
+	// is tracked, everything is ordered before what follows
+	if (!commandBuffer->hazardsTracked()) {
+		commandBuffer->endUntrackedEncoder();
+	}
 };
 
 std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::visibilityResolvePipeline() {

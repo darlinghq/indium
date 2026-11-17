@@ -19,3 +19,7 @@ void Indium::Resource::makeAliasable() {};
 bool Indium::Resource::isAliasable() {
 	return false;
 };
+
+Indium::HazardTrackingMode Indium::Resource::hazardTrackingMode() const {
+	return HazardTrackingMode::HazardTrackingModeTracked;
+};

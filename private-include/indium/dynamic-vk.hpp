@@ -109,6 +109,7 @@ namespace Indium {
 			_macro(vkCmdEndRenderPass) \
 			_macro(vkCmdFillBuffer) \
 			_macro(vkCmdPipelineBarrier) \
+			_macro(vkCmdPipelineBarrier2) \
 			_macro(vkCmdSetBlendConstants) \
 			_macro(vkCmdSetCullMode) \
 			_macro(vkCmdSetDepthBias) \

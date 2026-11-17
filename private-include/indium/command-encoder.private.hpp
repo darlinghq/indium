@@ -19,9 +19,6 @@
 #include <indium/dynamic-vk.hpp>
 
 namespace Indium {
-	// Metal tracks hazards between the encoders of a command buffer: what one encoder writes,
-	// the next one sees. Vulkan commands in one command buffer are not ordered that way, so
-	// every encoder ends with a full memory dependency on everything recorded before it.
 	/**
 	 * Whether `size` bytes of indirect arguments at `offset` can be read from `buffer`: a Vulkan indirect
 	 * command may only read inside the buffer, from an offset that is a multiple of 4 (which is also the
@@ -29,14 +26,6 @@ namespace Indium {
 	 */
 	inline bool indirectArgumentsFit(const std::shared_ptr<Buffer>& buffer, size_t offset, size_t size) {
 		return buffer && offset % 4 == 0 && offset <= buffer->length() && size <= buffer->length() - offset;
-	}
-
-	inline void finishTrackedEncoder(VkCommandBuffer commandBuffer) {
-		VkMemoryBarrier barrier {};
-		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-		barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
 	}
 
 	/**
@@ -135,6 +124,107 @@ namespace Indium {
 			}
 		};
 	};
+
+	/**
+	 * Tells `fn(range, access)` about every tracked resource the function can reach through the bindings it was
+	 * compiled with, with the access it may make: a texture as its binding says, a buffer as read and written
+	 * (the binding does not say whether the function writes through it). Returns whether it can also reach a
+	 * resource that is not tracked, which the caller orders itself, if the encoder says anything about it.
+	 */
+	template<typename Fn>
+	bool forEachBoundResource(const FunctionResources& resources, const FunctionInfo& info, Fn&& fn) {
+		bool untracked = false;
+		for (const auto& binding: info.bindings) {
+			if (binding.type == BindingType::Buffer) {
+				if (binding.index >= resources.buffers.size()) {
+					continue;
+				}
+				auto buffer = std::dynamic_pointer_cast<PrivateBuffer>(resources.buffers[binding.index].first);
+				if (!buffer) {
+					continue;
+				}
+				if (buffer->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeUntracked) {
+					untracked = true;
+					continue;
+				}
+				fn(buffer->hazardRange(resources.buffers[binding.index].second), VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+			} else if (binding.type == BindingType::Texture) {
+				if (binding.index >= resources.textures.size()) {
+					continue;
+				}
+				auto texture = std::dynamic_pointer_cast<PrivateTexture>(resources.textures[binding.index]);
+				if (!texture) {
+					continue;
+				}
+				if (texture->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeUntracked) {
+					untracked = true;
+					continue;
+				}
+				VkAccessFlags2 access = 0;
+				switch (binding.textureAccessType) {
+					case TextureAccessType::Sample:
+					case TextureAccessType::Read:
+						access = VK_ACCESS_2_SHADER_READ_BIT;
+						break;
+					case TextureAccessType::Write:
+						access = VK_ACCESS_2_SHADER_WRITE_BIT;
+						break;
+					case TextureAccessType::ReadWrite:
+						access = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+						break;
+				}
+				fn(texture->hazardRange(), access);
+			}
+		}
+		return untracked;
+	}
+
+	/**
+	 * What a resource declared with useResource: or useHeap: is accessed with, for the stages that may reach it.
+	 * Metal asks for the declaration because the resource is reached through memory the encoder cannot see into
+	 * (an argument buffer, a pointer written into a buffer), so nothing but the declaration says it is used.
+	 */
+	inline VkAccessFlags2 resourceUsageAccess(ResourceUsage usage) {
+		VkAccessFlags2 access = 0;
+		if (!!(usage & (ResourceUsage::Read | ResourceUsage::Sample))) {
+			access |= VK_ACCESS_2_SHADER_READ_BIT;
+		}
+		if (!!(usage & ResourceUsage::Write)) {
+			access |= VK_ACCESS_2_SHADER_WRITE_BIT;
+		}
+		return access;
+	}
+
+	/**
+	 * Adds the range of a resource that `useResource` names to `set`. A heap that is tracked is added whole. Returns false
+	 * for a resource that is not tracked (or is neither a buffer, a texture nor a heap): its ordering is not
+	 * Indium's to add.
+	 */
+	inline bool addDeclaredResource(HazardAccessSet& set, const std::shared_ptr<Resource>& resource, ResourceUsage usage, VkPipelineStageFlags2 stages) {
+		if (!resource || resource->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeUntracked) {
+			return false;
+		}
+		auto access = resourceUsageAccess(usage);
+		if (auto buffer = std::dynamic_pointer_cast<PrivateBuffer>(resource)) {
+			set.add(buffer->hazardRange(), stages, access);
+			return true;
+		}
+		if (auto texture = std::dynamic_pointer_cast<PrivateTexture>(resource)) {
+			set.add(texture->hazardRange(), stages, access);
+			return true;
+		}
+		return false;
+	}
+
+	inline bool addDeclaredHeap(HazardAccessSet& set, const std::shared_ptr<Heap>& heap, VkPipelineStageFlags2 stages) {
+		auto privateHeap = std::dynamic_pointer_cast<PrivateHeap>(heap);
+		// a heap's resources take the heap's mode unless they say otherwise, and an untracked heap's are the application's to order
+		if (!privateHeap || privateHeap->hazardTrackingMode() != HazardTrackingMode::HazardTrackingModeTracked) {
+			return false;
+		}
+		set.add(HazardRange::memory(privateHeap->memory(), privateHeap->memoryOffset(0), privateHeap->memoryOffset(0) + privateHeap->size()), stages, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+		return true;
+	}
 
 	static constexpr std::array<VkDescriptorPoolSize, 4> poolSizes {
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },

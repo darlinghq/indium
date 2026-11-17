@@ -104,12 +104,12 @@ namespace Indium {
 
 	/**
 	 * Fences order work between encoders, and Indium submits all of a device's command queues on one Vulkan
-	 * queue. Every encoder ends with a memory dependency on everything recorded before it (in submission order,
-	 * so also across command buffers), which makes the work an encoder updated a fence after done and visible
-	 * to every encoder that comes later: nothing more has to be recorded for a fence, and a wait that comes
-	 * before the update (which Metal also accepts) holds nothing up. A wait in a compute or blit encoder still
-	 * records that dependency, so that it holds for the commands after it in the same encoder even if the
-	 * encoders stop ending with one; a render pass cannot take a barrier of that kind in the middle of it.
+	 * queue. Resources that are not tracked are ordered by nothing but fences, events and memory barriers, so
+	 * a wait records a memory dependency on everything recorded before it (in submission order, so also across
+	 * command buffers): the work an encoder updated a fence after is done and visible to what comes after
+	 * the wait, whichever resources it touched. An update records nothing, and a wait that comes before the
+	 * update (which Metal also accepts) holds nothing up. A render pass cannot take a barrier in the
+	 * middle of it, so its encoder records the dependency in front of the whole pass.
 	 */
 	inline void checkFence(const std::shared_ptr<Fence>& fence, const std::shared_ptr<Device>& device) {
 		if (!fence || fence->device() != device) {

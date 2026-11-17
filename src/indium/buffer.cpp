@@ -39,6 +39,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	_length(length)
 {
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+	_hazardTrackingMode = resolveHazardTrackingMode(options, HazardTrackingMode::HazardTrackingModeDefault);
 
 	auto info = bufferCreateInfo(length);
 
@@ -76,6 +77,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	_length(length)
 {
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+	_hazardTrackingMode = resolveHazardTrackingMode(options, placement.heap->hazardTrackingMode());
 
 	// a Vulkan buffer has at least one byte
 	auto info = bufferCreateInfo(std::max<size_t>(length, 1));

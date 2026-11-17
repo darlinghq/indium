@@ -1,5 +1,7 @@
 #pragma once
 
+#include <indium/types.hpp>
+
 #include <memory>
 
 namespace Indium {
@@ -29,6 +31,13 @@ namespace Indium {
 
 		/** Whether the resource's memory may be shared with other resources: always true in a placement heap. */
 		virtual bool isAliasable();
+
+		/**
+		 * Whether Indium orders the commands that use the resource (HazardTrackingModeTracked) or leaves that to
+		 * the application's fences, events and memory barriers (HazardTrackingModeUntracked). Never Default: the
+		 * default has been resolved, to the mode of the resource's heap, or to tracked.
+		 */
+		virtual HazardTrackingMode hazardTrackingMode() const;
 
 		// TODO: other properties
 	};
