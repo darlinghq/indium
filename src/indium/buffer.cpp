@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <unistd.h>
 
 // TODO: use the VulkanMemoryAllocator library to manage memory allocation efficiently
 
@@ -127,10 +128,111 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, cons
 	}
 };
 
+Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, void* pointer, size_t length, ResourceOptions options, std::function<void(void*, size_t)> deallocator, NoCopy):
+	_privateDevice(device),
+	_length(length)
+{
+	_storageMode = static_cast<StorageMode>((static_cast<size_t>(options) >> 4) & 0xf);
+	_hazardTrackingMode = resolveHazardTrackingMode(options, HazardTrackingMode::HazardTrackingModeDefault);
+
+	// The GPU gets the pages the range lies in, so the range has to start on one; the device must also be happy
+	// with a page as its import granularity, because the size handed to it is rounded up to a whole page (the
+	// bytes after the end of the range, up to the end of its last page, are mapped like the rest).
+	const size_t pageSize = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+	VkDeviceSize alignment = 0;
+	{
+		VkPhysicalDeviceExternalMemoryHostPropertiesEXT hostProperties {};
+		hostProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT;
+		VkPhysicalDeviceProperties2 properties {};
+		properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		properties.pNext = &hostProperties;
+		DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &properties);
+		alignment = hostProperties.minImportedHostPointerAlignment;
+	}
+
+	if (pointer == nullptr || length == 0
+		|| (_storageMode != StorageMode::Shared && _storageMode != StorageMode::Managed)
+		|| alignment == 0 || alignment > pageSize || pageSize % alignment != 0
+		|| reinterpret_cast<uintptr_t>(pointer) % pageSize != 0
+		|| length > SIZE_MAX - pageSize) {
+		throw std::runtime_error("The memory cannot be imported as a buffer");
+	}
+	const VkDeviceSize importSize = (length + pageSize - 1) / pageSize * pageSize;
+
+	VkMemoryHostPointerPropertiesEXT pointerProperties {};
+	pointerProperties.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT;
+	if (DynamicVK::vkGetMemoryHostPointerPropertiesEXT(_privateDevice->device(), VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, pointer, &pointerProperties) != VK_SUCCESS) {
+		throw std::runtime_error("The device cannot import this memory");
+	}
+
+	VkExternalMemoryBufferCreateInfo externalInfo {};
+	externalInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+	externalInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+	auto info = bufferCreateInfo(length);
+	info.pNext = &externalInfo;
+
+	if (DynamicVK::vkCreateBuffer(_privateDevice->device(), &info, nullptr, &_buffer) != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create a buffer");
+	}
+
+	VkMemoryRequirements requirements;
+	DynamicVK::vkGetBufferMemoryRequirements(_privateDevice->device(), _buffer, &requirements);
+
+	// A shared buffer's memory is coherent, so the CPU and the GPU see each other's writes without flushes.
+	size_t typeIndex = _privateDevice->findMemoryType(requirements.memoryTypeBits & pointerProperties.memoryTypeBits, StorageMode::Shared);
+	if (typeIndex == SIZE_MAX || requirements.size > importSize) {
+		DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+		throw std::runtime_error("The device cannot use this memory as a buffer");
+	}
+
+	VkImportMemoryHostPointerInfoEXT importInfo {};
+	importInfo.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT;
+	importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+	importInfo.pHostPointer = pointer;
+
+	VkMemoryAllocateFlagsInfo flagsInfo {};
+	flagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+	flagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+	flagsInfo.pNext = &importInfo;
+
+	VkMemoryAllocateInfo allocateInfo {};
+	allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocateInfo.pNext = &flagsInfo;
+	allocateInfo.allocationSize = importSize;
+	allocateInfo.memoryTypeIndex = static_cast<uint32_t>(typeIndex);
+
+	if (DynamicVK::vkAllocateMemory(_privateDevice->device(), &allocateInfo, nullptr, &_memory) != VK_SUCCESS) {
+		DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+		throw std::runtime_error("The device cannot import this memory");
+	}
+	if (DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, 0) != VK_SUCCESS) {
+		DynamicVK::vkFreeMemory(_privateDevice->device(), _memory, nullptr);
+		DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
+		throw std::runtime_error("The device cannot bind this memory to a buffer");
+	}
+
+	_memoryTypeIndex = static_cast<uint32_t>(typeIndex);
+	_requiredSize = importSize;
+	_allocation.memory = _memory;
+	_allocation.offset = 0;
+	_allocation.size = importSize;
+	_mapped = pointer;
+	_importedMemory = true;
+	_importedPointer = pointer;
+	// from here on the constructor cannot fail, so the caller's deallocator is ours to call
+	_deallocator = std::move(deallocator);
+};
+
 Indium::PrivateBuffer::~PrivateBuffer() {
 	// the mapping belongs to the memory block and goes away with it
 	DynamicVK::vkDestroyBuffer(_privateDevice->device(), _buffer, nullptr);
-	if (!_heapAllocation) {
+	if (_importedMemory) {
+		// the GPU is done with the buffer (command buffers hold it until they retire), so the caller's memory can go
+		DynamicVK::vkFreeMemory(_privateDevice->device(), _memory, nullptr);
+		if (_deallocator) {
+			_deallocator(_importedPointer, _length);
+		}
+	} else if (!_heapAllocation) {
 		_privateDevice->memoryPool().free(_privateDevice->device(), _allocation);
 	}
 	// a heap buffer's range goes back to its heap with _heapAllocation
@@ -161,6 +263,10 @@ void* Indium::PrivateBuffer::contents() {
 };
 
 void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
+	if (_importedMemory) {
+		// the memory is coherent and was never mapped through Vulkan: nothing to flush
+		return;
+	}
 	// Vulkan only flushes whole multiples of nonCoherentAtomSize (or up to the end of the memory)
 	auto vulkanRange = MemoryPool::flushRange(_allocation, range.start, range.length, _privateDevice->properties().limits.nonCoherentAtomSize);
 	if (vulkanRange.size == 0) {

@@ -37,6 +37,7 @@ add_subdirectory(heaps)
 add_subdirectory(visibility-results)
 add_subdirectory(texture-uploads)
 add_subdirectory(hazard-tracking)
+add_subdirectory(buffer-no-copy)
 add_subdirectory(command-queue-submission)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
