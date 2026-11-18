@@ -16,6 +16,108 @@ namespace DynamicLLVM = Iridium::DynamicLLVM;
 
 // we use LLVM's C API because it's much more stable than the C++ API and it's good enough for our needs
 
+// Calls to helper functions are resolved by inlining the callee into the kernel before translation, so that
+// every pointer keeps the type the kernel's argument description gives it and the translator only ever sees
+// one function. Metal Shading Language has no recursion and no function pointers, so a module that has either
+// (or a call that has no body to inline) is not valid AIR and is refused here. The module comes from outside,
+// so the walk is bounded in depth and in the size of the expanded function.
+namespace {
+
+constexpr unsigned maxCallDepth = 128;
+constexpr uint64_t maxInlinedInstructions = 1u << 20;
+
+struct CallGraphWalk {
+	LLVMContextRef context;
+	// functions on the current path (true) and finished ones (false)
+	std::unordered_map<LLVMValueRef, bool> onPath;
+	// the instruction count of a finished function with everything it calls expanded
+	std::unordered_map<LLVMValueRef, uint64_t> expandedSize;
+	std::vector<std::pair<LLVMValueRef, LLVMValueRef>> inlinedCalls; // call, callee
+
+	static std::string nameOf(LLVMValueRef function) {
+		size_t length = 0;
+		auto name = DynamicLLVM::LLVMGetValueName2(function, &length);
+		return name ? std::string(name, length) : std::string();
+	}
+
+	uint64_t visit(LLVMValueRef function, unsigned depth) {
+		if (depth > maxCallDepth) {
+			throw std::runtime_error("Calls are nested too deeply (function " + nameOf(function) + ")");
+		}
+		onPath[function] = true;
+		uint64_t size = 0;
+		for (auto block = DynamicLLVM::LLVMGetFirstBasicBlock(function); block; block = DynamicLLVM::LLVMGetNextBasicBlock(block)) {
+			for (auto inst = DynamicLLVM::LLVMGetFirstInstruction(block); inst; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+				++size;
+				auto opcode = DynamicLLVM::LLVMGetInstructionOpcode(inst);
+				if (opcode == LLVMInvoke || opcode == LLVMCallBr) {
+					throw std::runtime_error("Unsupported call instruction in function " + nameOf(function));
+				}
+				if (opcode != LLVMCall) {
+					continue;
+				}
+				auto callee = DynamicLLVM::LLVMGetCalledValue(inst);
+				if (!callee || DynamicLLVM::LLVMGetValueKind(callee) != LLVMFunctionValueKind) {
+					throw std::runtime_error("Indirect calls are not supported (in function " + nameOf(function) + ")");
+				}
+				auto calleeName = nameOf(callee);
+				if (DynamicLLVM::LLVMIsDeclaration(callee)) {
+					// intrinsics are translated one by one later; anything else has nothing to inline
+					if (calleeName.compare(0, 4, "air.") != 0 && calleeName.compare(0, 5, "llvm.") != 0) {
+						throw std::runtime_error("Call to function " + calleeName + ", which has no body");
+					}
+					continue;
+				}
+				auto calleeType = DynamicLLVM::LLVMGlobalGetValueType(callee);
+				if (DynamicLLVM::LLVMGetCalledFunctionType(inst) != calleeType || DynamicLLVM::LLVMIsFunctionVarArg(calleeType)) {
+					throw std::runtime_error("Call to function " + calleeName + " does not match its definition");
+				}
+				auto state = onPath.find(callee);
+				if (state != onPath.end() && state->second) {
+					throw std::runtime_error("Recursive call of function " + calleeName);
+				}
+				uint64_t calleeSize;
+				if (state == onPath.end()) {
+					calleeSize = visit(callee, depth + 1);
+				} else {
+					calleeSize = expandedSize.at(callee);
+				}
+				size += calleeSize;
+				if (size > maxInlinedInstructions) {
+					throw std::runtime_error("The function is too large once its calls are inlined");
+				}
+				inlinedCalls.emplace_back(inst, callee);
+			}
+		}
+		onPath[function] = false;
+		expandedSize[function] = size;
+		return size;
+	}
+};
+
+// Checks the calls reachable from the kernel and marks the called functions so that the always-inline pass
+// expands them (including the ones the compiler marked noinline).
+void prepareCallsForInlining(LLVMModuleRef module, LLVMValueRef kernel) {
+	CallGraphWalk walk;
+	walk.context = DynamicLLVM::LLVMGetModuleContext(module);
+	walk.visit(kernel, 0);
+
+	if (walk.inlinedCalls.empty()) {
+		return;
+	}
+
+	auto noinline = DynamicLLVM::LLVMGetEnumAttributeKindForName("noinline", 8);
+	auto alwaysinline = DynamicLLVM::LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+	auto always = DynamicLLVM::LLVMCreateEnumAttribute(walk.context, alwaysinline, 0);
+	for (auto& [call, callee]: walk.inlinedCalls) {
+		DynamicLLVM::LLVMRemoveEnumAttributeAtIndex(callee, LLVMAttributeFunctionIndex, noinline);
+		DynamicLLVM::LLVMAddAttributeAtIndex(callee, LLVMAttributeFunctionIndex, always);
+		DynamicLLVM::LLVMRemoveCallSiteEnumAttribute(call, LLVMAttributeFunctionIndex, noinline);
+	}
+}
+
+}
+
 Iridium::AIR::Function::Function(Type type, const std::string& name, const void* bitcode, size_t bitcodeSize):
 	_name(name),
 	_type(type)
@@ -43,6 +145,14 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 
 	_module = LLVMSupport::Module(moduleRef, DynamicLLVM::LLVMDisposeModule);
 
+	// Helper functions called by the kernel are expanded into it first (see prepareCallsForInlining).
+	{
+		auto kernel = DynamicLLVM::LLVMGetNamedFunction(moduleRef, _name.c_str());
+		if (kernel) {
+			prepareCallsForInlining(moduleRef, kernel);
+		}
+	}
+
 	// SPIR-V requires structured control flow, while AIR may contain any reducible CFG and keeps local
 	// aggregates in memory. Promote locals to SSA values and give every selection and loop its own merge
 	// block before translating. LLVM has no AIR target, so present the module as the SPIR-V it is being
@@ -50,7 +160,7 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	std::string triple = DynamicLLVM::LLVMGetTarget(moduleRef);
 	DynamicLLVM::LLVMSetTarget(moduleRef, "spirv64-unknown-unknown");
 	auto passOptions = DynamicLLVM::LLVMCreatePassBuilderOptions();
-	auto passError = DynamicLLVM::LLVMRunPasses(moduleRef, "function(sroa,mem2reg,loop-unroll,sroa,mem2reg,simplifycfg,structurizecfg)", nullptr, passOptions);
+	auto passError = DynamicLLVM::LLVMRunPasses(moduleRef, "always-inline,function(sroa,mem2reg,loop-unroll,sroa,mem2reg,simplifycfg,structurizecfg)", nullptr, passOptions);
 	DynamicLLVM::LLVMDisposePassBuilderOptions(passOptions);
 	DynamicLLVM::LLVMSetTarget(moduleRef, triple.c_str());
 
@@ -3545,7 +3655,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					} else if (translateAirIntrinsic(builder, inst, name, type, resID)) {
 						// handled
 					} else {
-						 throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + std::string(name) + ")");
+						 throw std::runtime_error(std::string("Unsupported function call (name = ") + std::string(name) + ")");
 					}
 
 					if (resID != SPIRV::ResultIDInvalid) {
