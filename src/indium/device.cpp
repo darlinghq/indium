@@ -96,6 +96,7 @@ namespace {
 				descriptor.internalIndex = binding.internalIndex;
 				descriptor.textureAccessType = static_cast<Indium::TextureAccessType>(binding.textureAccessType);
 				descriptor.embeddedSamplerIndex = binding.embeddedSamplerIndex;
+				descriptor.texelBuffer = binding.texelBuffer;
 
 				functionInfo.bindings.push_back(descriptor);
 			}

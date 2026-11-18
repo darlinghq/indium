@@ -45,7 +45,7 @@ namespace Indium {
 				} else if (bindingInfo.type == BindingType::Texture) {
 					auto& binding = bindings.emplace_back();
 					binding.binding = bindingInfo.internalIndex;
-					binding.descriptorType = (bindingInfo.textureAccessType == TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+					binding.descriptorType = textureDescriptorType(bindingInfo);
 					binding.descriptorCount = 1;
 					binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
 				} else if (bindingInfo.type == BindingType::Sampler) {

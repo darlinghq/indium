@@ -1437,3 +1437,152 @@ void Indium::TextureView::makeAliasable() {
 bool Indium::TextureView::isAliasable() {
 	return _original->isAliasable();
 };
+
+
+Indium::BufferTexture::BufferTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, std::shared_ptr<PrivateBuffer> buffer, size_t offset):
+	PrivateTexture(device),
+	_descriptor(descriptor),
+	_buffer(std::move(buffer)),
+	_offset(offset)
+{
+	auto format = pixelFormatToVkFormat(_descriptor.pixelFormat);
+	size_t texelSize = pixelFormatToByteCount(_descriptor.pixelFormat);
+	if (format == VK_FORMAT_UNDEFINED || texelSize == 0 || _descriptor.width == 0) {
+		throw std::runtime_error("A texture buffer needs an uncompressed color pixel format and at least one texel");
+	}
+	// the texels have to lie inside the buffer; the products are checked so a huge width cannot wrap
+	if (_offset > _buffer->length() || _descriptor.width > (_buffer->length() - _offset) / texelSize) {
+		throw std::runtime_error("The buffer is too small for the texture buffer");
+	}
+
+	VkFormatProperties formatProperties {};
+	DynamicVK::vkGetPhysicalDeviceFormatProperties(_device->physicalDevice(), format, &formatProperties);
+	bool write = (_descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown;
+	VkFormatFeatureFlags required = write ? VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_BIT : VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+	if ((_descriptor.usage & TextureUsage::ShaderRead) != TextureUsage::Unknown && write) {
+		required |= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
+	}
+	if ((formatProperties.bufferFeatures & required) != required) {
+		throw std::runtime_error("The device cannot make a texel buffer with this pixel format and usage");
+	}
+
+	VkBufferViewCreateInfo info {};
+	info.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
+	info.buffer = _buffer->buffer();
+	info.format = format;
+	info.offset = _buffer->bufferOffset() + _offset;
+	info.range = _descriptor.width * texelSize;
+	if (DynamicVK::vkCreateBufferView(_device->device(), &info, nullptr, &_view) != VK_SUCCESS) {
+		throw std::runtime_error("Failed to create a buffer view");
+	}
+};
+
+Indium::BufferTexture::~BufferTexture() {
+	if (_view != VK_NULL_HANDLE) {
+		DynamicVK::vkDestroyBufferView(_device->device(), _view, nullptr);
+	}
+};
+
+Indium::TextureType Indium::BufferTexture::textureType() const {
+	return TextureType::eTextureBuffer;
+};
+
+Indium::PixelFormat Indium::BufferTexture::pixelFormat() const {
+	return _descriptor.pixelFormat;
+};
+
+size_t Indium::BufferTexture::width() const {
+	return _descriptor.width;
+};
+
+size_t Indium::BufferTexture::height() const {
+	return 1;
+};
+
+size_t Indium::BufferTexture::depth() const {
+	return 1;
+};
+
+size_t Indium::BufferTexture::mipmapLevelCount() const {
+	return 1;
+};
+
+size_t Indium::BufferTexture::arrayLength() const {
+	return 1;
+};
+
+size_t Indium::BufferTexture::sampleCount() const {
+	return 1;
+};
+
+bool Indium::BufferTexture::framebufferOnly() const {
+	return false;
+};
+
+bool Indium::BufferTexture::allowGPUOptimizedContents() const {
+	return false;
+};
+
+bool Indium::BufferTexture::shareable() const {
+	return false;
+};
+
+Indium::TextureSwizzleChannels Indium::BufferTexture::swizzle() const {
+	return _descriptor.swizzle;
+};
+
+VkImageView Indium::BufferTexture::imageView() {
+	return VK_NULL_HANDLE;
+};
+
+VkImage Indium::BufferTexture::image() {
+	return VK_NULL_HANDLE;
+};
+
+VkImageLayout Indium::BufferTexture::imageLayout() {
+	return VK_IMAGE_LAYOUT_UNDEFINED;
+};
+
+VkBufferView Indium::BufferTexture::bufferView() {
+	return _view;
+};
+
+Indium::HazardRange Indium::BufferTexture::hazardRange() {
+	return _buffer->hazardRange(_offset, _descriptor.width * pixelFormatToByteCount(_descriptor.pixelFormat));
+};
+
+Indium::HazardTrackingMode Indium::BufferTexture::hazardTrackingMode() const {
+	return _buffer->hazardTrackingMode();
+};
+
+bool Indium::BufferTexture::mayBeWrittenByShader() {
+	return (_descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown;
+};
+
+std::shared_ptr<Indium::Buffer> Indium::BufferTexture::buffer() const {
+	return _buffer;
+};
+
+size_t Indium::BufferTexture::bufferOffset() const {
+	return _offset;
+};
+
+size_t Indium::BufferTexture::bufferBytesPerRow() const {
+	return _descriptor.width * pixelFormatToByteCount(_descriptor.pixelFormat);
+};
+
+std::shared_ptr<Indium::Texture> Indium::BufferTexture::newTextureView(PixelFormat, TextureType, const Range<size_t>&, const Range<size_t>&) {
+	return nullptr;
+};
+
+std::shared_ptr<Indium::Texture> Indium::BufferTexture::newTextureView(PixelFormat, TextureType, const Range<size_t>&, const Range<size_t>&, const TextureSwizzleChannels&) {
+	return nullptr;
+};
+
+void Indium::BufferTexture::replaceRegion(Indium::Region, size_t, const void*, size_t) {
+	throw std::runtime_error("The texels of a texture buffer are the buffer's contents; write them through the buffer");
+};
+
+void Indium::BufferTexture::replaceRegion(Indium::Region, size_t, size_t, const void*, size_t, size_t) {
+	throw std::runtime_error("The texels of a texture buffer are the buffer's contents; write them through the buffer");
+};

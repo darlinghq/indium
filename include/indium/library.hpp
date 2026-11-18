@@ -103,6 +103,13 @@ namespace Indium {
 
 		BindingType type = BindingType::Buffer;
 		TextureAccessType textureAccessType = TextureAccessType::Sample;
+
+		/**
+		 * Only meaningful for BindingType::Texture: the function declares a texture_buffer, which is bound as a
+		 * texel buffer (uniform for Sample and Read, storage for Write and ReadWrite) and has to be a
+		 * MTLTextureTypeTextureBuffer texture.
+		 */
+		bool texelBuffer = false;
 	};
 
 	/**
