@@ -1514,6 +1514,25 @@ static std::vector<Iridium::StructMemberInfo> airStructMembers(LLVMValueRef node
 	return members;
 }
 
+// The packed state of a constant sampler, from the initializer of its global variable. The state is one 64-bit
+// integer, or the first of the integers of an array (the compiler also emits a second word, which holds no
+// sampler state this translation uses).
+static uint64_t airSamplerStateWord(LLVMValueRef initializer) {
+	if (initializer && DynamicLLVM::LLVMIsAConstantInt(initializer)) {
+		return DynamicLLVM::LLVMConstIntGetZExtValue(initializer);
+	}
+	if (initializer && DynamicLLVM::LLVMGetValueKind(initializer) == LLVMConstantAggregateZeroValueKind) {
+		return 0;
+	}
+	if (initializer && DynamicLLVM::LLVMGetValueKind(initializer) == LLVMConstantDataArrayValueKind) {
+		auto word = DynamicLLVM::LLVMGetElementAsConstant(initializer, 0);
+		if (word && DynamicLLVM::LLVMIsAConstantInt(word)) {
+			return DynamicLLVM::LLVMConstIntGetZExtValue(word);
+		}
+	}
+	throw ImpossibleResultID("constant sampler state is not an integer or an array of integers");
+}
+
 // The reflection information for a buffer, texture, sampler or vertex input parameter; other parameters
 // (fragment stage inputs and built-ins) have none.
 static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef parameterOperand) {
@@ -2477,8 +2496,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			std::vector<LLVMValueRef> suboperands(DynamicLLVM::LLVMGetMDNodeNumOperands(operand));
 			DynamicLLVM::LLVMGetMDNodeOperands(operand, suboperands.data());
 
-			auto init = DynamicLLVM::LLVMGetInitializer(suboperands[1]);
-			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(init);
+			auto val = airSamplerStateWord(DynamicLLVM::LLVMGetInitializer(suboperands[1]));
 
 			declareEmbeddedSampler(val, reinterpret_cast<uintptr_t>(suboperands[1]));
 		}
