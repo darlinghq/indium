@@ -2,6 +2,7 @@
 #include <indium/device.private.hpp>
 #include <indium/event.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/pipeline-timing.private.hpp>
 
 Indium::ComputeCommandEncoder::~ComputeCommandEncoder() {};
 
@@ -49,6 +50,23 @@ void Indium::PrivateComputeCommandEncoder::waitForFence(const std::shared_ptr<Fe
 		if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
 			commandBuffer->hazards().beginUnorderedGroup();
 		}
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::beginTimedDispatch(VkCommandBuffer commandBuffer) {
+	if (!_privateDevice->pipelineTimingEnabled()) {
+		return;
+	}
+	if (!_timer) {
+		_timer = std::make_shared<PipelineTimer>(_privateDevice);
+		_privateCommandBuffer.lock()->addPipelineTimer(_timer);
+	}
+	_timer->begin(commandBuffer, _pso->timingName());
+};
+
+void Indium::PrivateComputeCommandEncoder::endTimedDispatch(VkCommandBuffer commandBuffer) {
+	if (_timer) {
+		_timer->end(commandBuffer);
 	}
 };
 
@@ -128,7 +146,9 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 
 	orderDispatch(nullptr, 0);
 
+	beginTimedDispatch(buf->commandBuffer());
 	DynamicVK::vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
+	endTimedDispatch(buf->commandBuffer());
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);
@@ -157,7 +177,9 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 	// the buffer has to stay alive until the command buffer has completed
 	_keepAliveBuffers.push_back(indirectBuffer);
 
+	beginTimedDispatch(buf->commandBuffer());
 	DynamicVK::vkCmdDispatchIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->bufferOffset());
+	endTimedDispatch(buf->commandBuffer());
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);

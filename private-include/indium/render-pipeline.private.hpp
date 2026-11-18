@@ -61,6 +61,9 @@ namespace Indium {
 			 */
 			VkPipeline pipelineFor(size_t topologyClass, bool lines, bool clamp);
 
+			/** "render <vertex function> <fragment function>", the name pipeline timing reports. */
+			std::string timingName() const;
+
 			const FunctionInfo& vertexFunctionInfo();
 			const FunctionInfo& fragmentFunctionInfo();
 

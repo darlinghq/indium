@@ -127,6 +127,10 @@ bool Indium::PrivateComputePipelineState::supportsPartialThreadgroups() const {
 	return functionInfo().gridSizeSpecializationIDs.has_value();
 };
 
+std::string Indium::PrivateComputePipelineState::timingName() const {
+	return "compute " + _descriptor.computeFunction->name();
+};
+
 const Indium::FunctionInfo& Indium::PrivateComputePipelineState::functionInfo() const {
 	return std::dynamic_pointer_cast<PrivateFunction>(_descriptor.computeFunction)->functionInfo();
 };

@@ -28,6 +28,9 @@ namespace Indium {
 		/** Whether the function can be dispatched over a grid that is not a multiple of the threadgroup size. */
 		bool supportsPartialThreadgroups() const;
 
+		/** "compute <kernel>", the name pipeline timing reports. */
+		std::string timingName() const;
+
 		const FunctionInfo& functionInfo() const;
 
 		virtual std::shared_ptr<Device> device() override;

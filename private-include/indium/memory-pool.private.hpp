@@ -4,6 +4,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -95,7 +96,34 @@ namespace Indium {
 		 */
 		static VkMappedMemoryRange flushRange(const Allocation& allocation, VkDeviceSize start, VkDeviceSize length, VkDeviceSize atomSize);
 
+		/**
+		 * What the pool has handed out, for Device::currentAllocatedSize() and Device::statistics(). These
+		 * count the bytes of live allocations (what the resources and heaps asked for, rounded to the
+		 * granule for pooled ones), not the memory objects the pool holds, and are safe to read from any thread.
+		 */
+		struct Counters {
+			uint64_t liveBytes;
+			uint64_t peakBytes;
+			uint64_t liveAllocations;
+			uint64_t totalAllocations;
+			uint64_t totalBytes;
+			uint64_t liveMemoryObjects;
+			uint64_t totalMemoryObjects;
+		};
+		Counters counters() const;
+
 	private:
+		void noteAllocated(VkDeviceSize size);
+		void noteFreed(VkDeviceSize size);
+
+		std::atomic<uint64_t> _liveBytes { 0 };
+		std::atomic<uint64_t> _peakBytes { 0 };
+		std::atomic<uint64_t> _liveAllocations { 0 };
+		std::atomic<uint64_t> _totalAllocations { 0 };
+		std::atomic<uint64_t> _totalBytes { 0 };
+		std::atomic<uint64_t> _liveMemoryObjects { 0 };
+		std::atomic<uint64_t> _totalMemoryObjects { 0 };
+
 		std::mutex _mutex;
 		std::unordered_map<uint32_t, std::vector<std::shared_ptr<Block>>> _blocks;
 	};

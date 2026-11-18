@@ -46,6 +46,45 @@ namespace Indium {
 		bool deviceLocal;
 	};
 
+	/**
+	 * Counts of what a device has allocated and made since it was created. Always kept (they are plain
+	 * counters); only reporting them is opt-in.
+	 */
+	struct DeviceStatistics {
+		/** The bytes of live buffers, textures and heaps (see Device::currentAllocatedSize()). */
+		uint64_t allocatedBytes;
+		/** The largest value `allocatedBytes` has had. */
+		uint64_t peakAllocatedBytes;
+		/** Live device memory allocations made for buffers, textures and heaps. */
+		uint64_t liveAllocations;
+		/** Device memory allocations made, live or not. */
+		uint64_t totalAllocations;
+		/** Bytes of all allocations made, live or not. */
+		uint64_t totalAllocatedBytes;
+		/** Live Vulkan memory objects (pooled blocks and dedicated allocations). */
+		uint64_t liveMemoryObjects;
+		/** Vulkan memory objects made, live or not. */
+		uint64_t totalMemoryObjects;
+		/** Live heaps and the bytes they hold. */
+		uint64_t liveHeaps;
+		uint64_t liveHeapBytes;
+		/** Heaps made, live or not. */
+		uint64_t totalHeaps;
+	};
+
+	/** The GPU time spent in the draws or dispatches of one pipeline, while pipeline timing was enabled. */
+	struct PipelineTiming {
+		/**
+		 * "compute <kernel>" for a compute pipeline, "render <vertex function> <fragment function>" for a render
+		 * pipeline (the fragment function is empty when there is none).
+		 */
+		std::string name;
+		/** The summed GPU time, in nanoseconds. */
+		uint64_t gpuNanoseconds;
+		/** The number of timed spans: dispatches for compute, runs of draws between pipeline changes for render. */
+		uint64_t spans;
+	};
+
 	class Device {
 	public:
 		virtual ~Device() = 0;
@@ -120,6 +159,32 @@ namespace Indium {
 		 * Whether color and depth render targets with `sampleCount` samples per pixel can be created.
 		 */
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const = 0;
+
+		/**
+		 * The bytes of device memory currently allocated for this device's buffers, textures and heaps. A resource
+		 * made from a heap adds nothing (the heap's memory is counted whole), a texture view adds nothing, and the
+		 * value goes down when a resource or heap is released. Memory that the caller supplied (a no-copy buffer)
+		 * and memory the library keeps for itself is not counted. Safe to call from any thread.
+		 */
+		virtual uint64_t currentAllocatedSize() const = 0;
+
+		virtual DeviceStatistics statistics() const = 0;
+
+		/**
+		 * Whether pipeline timing is possible: the device has hostQueryReset and timestamps on the graphics queue.
+		 */
+		virtual bool supportsPipelineTiming() const = 0;
+
+		/**
+		 * Turns GPU timing of the pipelines on or off (off by default). Command buffers encoded while it is on write
+		 * Vulkan timestamps around the dispatches and the runs of draws of each pipeline, and add the elapsed
+		 * time to `pipelineTimings()` when they have completed. Does nothing where `supportsPipelineTiming()` is false.
+		 */
+		virtual void setPipelineTimingEnabled(bool enabled) = 0;
+		virtual bool pipelineTimingEnabled() const = 0;
+
+		/** The time accumulated so far for each pipeline, ordered by name. */
+		virtual std::vector<PipelineTiming> pipelineTimings() const = 0;
 
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;

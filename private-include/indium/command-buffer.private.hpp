@@ -18,6 +18,7 @@
 namespace Indium {
 	class PrivateCommandQueue;
 	class PrivateDevice;
+	class PipelineTimer;
 
 	class PrivateCommandBuffer: public CommandBuffer, public std::enable_shared_from_this<PrivateCommandBuffer> {
 	private:
@@ -91,6 +92,15 @@ namespace Indium {
 		void retainResource(std::shared_ptr<Resource> resource) {
 			std::scoped_lock lock(_mutex);
 			_retainedResources.push_back(std::move(resource));
+		}
+
+		/**
+		 * Keeps `timer` until the command buffer retires, when the timestamps it wrote are read back
+		 * (see PipelineTimer).
+		 */
+		void addPipelineTimer(std::shared_ptr<PipelineTimer> timer) {
+			std::scoped_lock lock(_mutex);
+			_pipelineTimers.push_back(std::move(timer));
 		}
 
 		void addScheduledHandlerLocked(std::function<void(std::shared_ptr<CommandBuffer>)> handler);
@@ -180,6 +190,7 @@ namespace Indium {
 		uint64_t _completionValue = 0;
 		std::vector<std::shared_ptr<BinarySemaphore>> _retainedSemaphores;
 		std::vector<std::shared_ptr<Resource>> _retainedResources;
+		std::vector<std::shared_ptr<PipelineTimer>> _pipelineTimers;
 
 		VkCommandPool _commandPool = VK_NULL_HANDLE;
 		// the finished segments in execution order (`_commandBuffer` is the one being recorded), and every one allocated

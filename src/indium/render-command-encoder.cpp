@@ -14,6 +14,7 @@
 #include <indium/command-encoder.private.hpp>
 #include <indium/visibility-results.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/pipeline-timing.private.hpp>
 #include <vulkan/vulkan_core.h>
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
@@ -331,6 +332,14 @@ void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shar
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
 	if (_privatePSO) {
 		_privatePSO->recreatePipeline(_renderPass, false);
+		if (_privateDevice->pipelineTimingEnabled()) {
+			// the draws up to the next pipeline change or the end of the pass are timed as this pipeline's
+			if (!_timer) {
+				_timer = std::make_shared<PipelineTimer>(_privateDevice);
+				buf->addPipelineTimer(_timer);
+			}
+			_timer->begin(buf->commandBuffer(), _privatePSO->timingName());
+		}
 	}
 };
 
@@ -637,6 +646,9 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	if (_visibilityResults) {
 		_visibilityResults->end(buf->commandBuffer());
+	}
+	if (_timer) {
+		_timer->end(buf->commandBuffer());
 	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 	// What the pass reads has to be ordered after what came before, and a pass cannot take barriers once begun, so
