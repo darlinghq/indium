@@ -62,6 +62,12 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() = 0;
 
 		/**
+		 * The Vulkan buffer view of a texture_buffer texture (MTLTextureTypeTextureBuffer), which is bound as a
+		 * texel buffer; VK_NULL_HANDLE for every other texture, which has an image instead.
+		 */
+		virtual VkBufferView bufferView() { return VK_NULL_HANDLE; }
+
+		/**
 		 * Where the image's bytes are, for hazard tracking. A view says the same as the texture it was made from, a
 		 * texture made over a buffer's memory the same as that buffer, so that they are one resource to the tracker.
 		 */
@@ -215,6 +221,57 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) override;
 		virtual bool needsExportablePresentationSemaphore() const override;
+	};
+
+	/**
+	 * A texture of type TextureBuffer: a range of a buffer that shaders read and write as one-dimensional texels
+	 * (the texture_buffer class). It has no image of its own: the buffer holds the texels, and a buffer view
+	 * describes the format and range. Texels are not accessed from the host through the texture.
+	 */
+	class BufferTexture: public PrivateTexture {
+		INDIUM_PREVENT_COPY(BufferTexture);
+
+	private:
+		TextureDescriptor _descriptor;
+		std::shared_ptr<PrivateBuffer> _buffer;
+		size_t _offset;
+		VkBufferView _view = VK_NULL_HANDLE;
+
+	public:
+		/** Throws std::runtime_error if the format cannot be a texel buffer on the device or the range is outside the buffer. */
+		BufferTexture(std::shared_ptr<PrivateDevice> device, const TextureDescriptor& descriptor, std::shared_ptr<PrivateBuffer> buffer, size_t offset);
+		virtual ~BufferTexture();
+
+		virtual TextureType textureType() const override;
+		virtual PixelFormat pixelFormat() const override;
+		virtual size_t width() const override;
+		virtual size_t height() const override;
+		virtual size_t depth() const override;
+		virtual size_t mipmapLevelCount() const override;
+		virtual size_t arrayLength() const override;
+		virtual size_t sampleCount() const override;
+		virtual bool framebufferOnly() const override;
+		virtual bool allowGPUOptimizedContents() const override;
+		virtual bool shareable() const override;
+		virtual TextureSwizzleChannels swizzle() const override;
+
+		virtual VkImageView imageView() override;
+		virtual VkImage image() override;
+		virtual VkImageLayout imageLayout() override;
+		virtual VkBufferView bufferView() override;
+		virtual HazardRange hazardRange() override;
+		virtual HazardTrackingMode hazardTrackingMode() const override;
+		virtual bool mayBeWrittenByShader() override;
+
+		virtual std::shared_ptr<Buffer> buffer() const override;
+		virtual size_t bufferOffset() const override;
+		virtual size_t bufferBytesPerRow() const override;
+
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers) override;
+		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers, const TextureSwizzleChannels& swizzle) override;
+
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
+		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
 	};
 
 	class ConcreteTexture: public PrivateTexture {

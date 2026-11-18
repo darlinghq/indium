@@ -140,6 +140,7 @@ namespace Indium {
 			_macro(vkCreateFence) \
 			_macro(vkCreateFramebuffer) \
 			_macro(vkCreateGraphicsPipelines) \
+			_macro(vkCreateBufferView) \
 			_macro(vkCreateImage) \
 			_macro(vkCreateImageView) \
 			_macro(vkCreatePipelineCache) \
@@ -159,6 +160,7 @@ namespace Indium {
 			_macro(vkDestroyDevice) \
 			_macro(vkDestroyFence) \
 			_macro(vkDestroyFramebuffer) \
+			_macro(vkDestroyBufferView) \
 			_macro(vkDestroyImage) \
 			_macro(vkDestroyImageView) \
 			_macro(vkDestroyInstance) \

@@ -1552,7 +1552,8 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	auto imageTypeID = pointerType->targetType;
 	auto imageType = *builder.reverseLookupType(imageTypeID);
 	auto image = builder.encodeLoad(imageTypeID, texturePointer);
-	unsigned dims = imageType.imageDimensionality == Dim::e1D ? 1 : (imageType.imageDimensionality == Dim::e2D ? 2 : 3);
+	bool texelBuffer = imageType.imageDimensionality == Dim::eBuffer;
+	unsigned dims = (imageType.imageDimensionality == Dim::e1D || texelBuffer) ? 1 : (imageType.imageDimensionality == Dim::e2D ? 2 : 3);
 	bool arrayed = imageType.imageIsArrayed;
 	bool storage = imageType.imageIsSampledIndication == 2;
 	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
@@ -1570,7 +1571,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		}
 		if (numLevels) {
 			// a storage image view covers one level
-			resID = (storage || multisampled) ? builder.declareConstantScalar<int32_t>(1) : builder.encodeOp(Opcode::ImageQueryLevels, resultType, { image });
+			resID = (storage || multisampled || texelBuffer) ? builder.declareConstantScalar<int32_t>(1) : builder.encodeOp(Opcode::ImageQueryLevels, resultType, { image });
 			return true;
 		}
 		unsigned component = width ? 0 : (height ? 1 : (depthQuery ? 2 : sizeDims));
@@ -1580,8 +1581,8 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		// a one-dimensional texture without layers has a scalar size
 		auto scalarSize = sizeDims + (arrayed ? 1 : 0) == 1;
 		auto sizeType = scalarSize ? int32Type : builder.declareType(Type(Type::VectorTag {}, sizeDims + (arrayed ? 1 : 0), int32Type));
-		// a storage image or a multisample image has no levels to choose from
-		auto sizes = (storage || multisampled)
+		// a storage image, a multisample image or a texel buffer has no levels to choose from
+		auto sizes = (storage || multisampled || texelBuffer)
 			? builder.encodeOp(Opcode::ImageQuerySize, sizeType, { image })
 			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, arraySize ? builder.declareConstantScalar<int32_t>(0) : operand(1) });
 		resID = scalarSize ? sizes : builder.encodeCompositeExtract(resultType, sizes, { component });
@@ -1599,6 +1600,9 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 
 	if (compare && arrayed) {
 		throw ImpossibleResultID("depth comparison on an array texture is unsupported");
+	}
+	if (texelBuffer && (sample || gather)) {
+		throw ImpossibleResultID("a texture buffer can only be read and written, not sampled or gathered");
 	}
 	bool cubeImage = imageType.imageDimensionality == Dim::eCube;
 	if (gather && (dims == 1 || (dims == 3 && !cubeImage) || (cubeImage && arrayed))) {
@@ -1641,8 +1645,9 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			throw ImpossibleResultID("write to a texture that is not declared writable");
 		}
 		// the level follows the color; a storage image view covers one level, so only level 0 is written
+		// (a texture buffer has no levels: its last operand is a flag)
 		auto level = argument(3 + layerOperands);
-		if (!DynamicLLVM::LLVMIsAConstantInt(level) || DynamicLLVM::LLVMConstIntGetZExtValue(level) != 0) {
+		if (!texelBuffer && (!DynamicLLVM::LLVMIsAConstantInt(level) || DynamicLLVM::LLVMConstIntGetZExtValue(level) != 0)) {
 			throw ImpossibleResultID("texture write to a level other than 0 is unsupported");
 		}
 		auto color = operand(2 + layerOperands);
@@ -1763,7 +1768,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		value = builder.encodeOp(Opcode::ImageFetch, texelType, { image, coordinates, 0x40, operand(coordinatesIndex + 1 + layerOperands) });
 	} else {
 		std::vector<uint32_t> arguments { image, coordinates };
-		if (!storage) {
+		if (!storage && !texelBuffer) {
 			// a sampled image is read with OpImageFetch, which takes the level
 			// (a one-dimensional texture has no offset)
 			bool hasOffsetOperand = readsWithSampler && dims > 1;
@@ -2600,7 +2605,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				accessType = TextureAccessType::ReadWrite;
 			}
 
-			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType });
+			// a texture_buffer is a range of a buffer bound as a texel buffer, not an image
+			bool texelBuffer = textureClassName == "texture_buffer";
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType, 0, texelBuffer });
 
 			SPIRV::ResultID fakeSampleType = SPIRV::ResultIDInvalid;
 			SPIRV::ResultID realSampleType = SPIRV::ResultIDInvalid;
@@ -2656,8 +2663,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				isArrayed = true;
 			} else if (colorClassName == "texture3d") {
 				dimensionality = SPIRV::Dim::e3D;
+			} else if (texelBuffer) {
+				dimensionality = SPIRV::Dim::eBuffer;
 			} else {
-				// texture buffers and any other class
+				// any other class
 				throw std::runtime_error(std::string("unsupported texture class ") + std::string(textureClassName));
 			}
 

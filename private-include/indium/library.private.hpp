@@ -18,6 +18,15 @@ namespace Indium {
 	class PrivateDevice;
 	class SamplerState;
 
+	/** The Vulkan descriptor type a texture binding is written as. */
+	inline VkDescriptorType textureDescriptorType(const BindingDescriptor& binding) {
+		bool storage = binding.textureAccessType != TextureAccessType::Sample;
+		if (binding.texelBuffer) {
+			return storage ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+		}
+		return storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+	};
+
 	struct FunctionInfo {
 		FunctionType functionType;
 		// note that these bindings use the same set of indices between different resource types (e.g. stage-ins, buffers, and textures)

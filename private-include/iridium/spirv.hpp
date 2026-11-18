@@ -90,6 +90,8 @@ namespace Iridium {
 			Sampled1D = 43,
 			Image1D = 44,
 			ImageQuery = 50,
+			SampledBuffer = 46,
+			ImageBuffer = 47,
 			GroupNonUniform = 61,
 			GroupNonUniformVote = 62,
 			GroupNonUniformArithmetic = 63,

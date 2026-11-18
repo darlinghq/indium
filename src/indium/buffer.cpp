@@ -341,6 +341,16 @@ uint64_t Indium::PrivateBuffer::gpuAddress() {
 };
 
 std::shared_ptr<Indium::Texture> Indium::PrivateBuffer::newTexture(const TextureDescriptor& descriptor, size_t offset, size_t bytesPerRow) {
+	if (descriptor.textureType == TextureType::eTextureBuffer) {
+		// the texels are the buffer's bytes, read and written through a buffer view
+		try {
+			return std::make_shared<BufferTexture>(_privateDevice, descriptor, shared_from_this(), offset);
+		} catch (const std::runtime_error&) {
+			// a format or usage the device cannot have as a texel buffer, or a range outside the buffer
+			return nullptr;
+		}
+	}
+
 	// the texture shares the buffer's memory, so it has the buffer's storage mode
 	auto textureStorageMode = static_cast<StorageMode>((static_cast<size_t>(descriptor.resourceOptions) >> 4) & 0xf);
 	// Metal asks for rows and a start that are a multiple of 16 bytes
