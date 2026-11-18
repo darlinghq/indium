@@ -45,6 +45,7 @@ add_subdirectory(threadgroup)
 add_subdirectory(atomics)
 add_subdirectory(bit-ops)
 add_subdirectory(texture-gather)
+add_subdirectory(texture-size)
 add_subdirectory(pipeline-bench)
 add_subdirectory(pipeline-cache)
 

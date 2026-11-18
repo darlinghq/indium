@@ -23,6 +23,12 @@ const char* const kIntrinsics[] = {
 	"air.gather_compare_depth_2d.f32",
 	"air.gather_compare_depth_2d_array.f32",
 	"air.gather_compare_depth_cube.f32",
+	"air.get_width_texture_2d",
+	"air.get_height_depth_cube",
+	"air.get_depth_texture_3d",
+	"air.get_array_size_texture_2d_array",
+	"air.get_num_mip_levels_texture_2d",
+	"air.get_num_samples_texture_2d_ms",
 };
 
 // translates a vertex function that calls `intrinsic` with `count` zero integers; returns the error message, or "" when it translated

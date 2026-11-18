@@ -1312,14 +1312,23 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
 	bool read = name.substr(0, 17) == "air.read_texture_";
 	bool write = name.substr(0, 18) == "air.write_texture_";
-	bool width = name == "air.get_width_texture_2d";
-	bool height = name == "air.get_height_texture_2d";
+	// the size, sample count and level count of a texture of any class that has them
+	auto queryName = [&](std::string_view prefix) {
+		return name.substr(0, prefix.size()) == prefix && (name.substr(prefix.size(), 8) == "texture_" || name.substr(prefix.size(), 6) == "depth_");
+	};
+	bool width = queryName("air.get_width_");
+	bool height = queryName("air.get_height_");
+	bool depthQuery = queryName("air.get_depth_");
+	bool arraySize = queryName("air.get_array_size_");
+	bool numSamples = queryName("air.get_num_samples_");
+	bool numLevels = queryName("air.get_num_mip_levels_");
+	bool query = width || height || depthQuery || arraySize || numSamples || numLevels;
 	// gather() of a color texture, gather() of a depth texture and gather_compare()
 	bool gatherColor = name.substr(0, 19) == "air.gather_texture_";
 	bool gatherDepth = name.substr(0, 17) == "air.gather_depth_";
 	bool gatherCompare = name.substr(0, 25) == "air.gather_compare_depth_";
 	bool gather = gatherColor || gatherDepth || gatherCompare;
-	if (!sample && !read && !write && !width && !height && !gather) {
+	if (!sample && !read && !write && !query && !gather) {
 		return false;
 	}
 
@@ -1349,14 +1358,34 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	bool storage = imageType.imageIsSampledIndication == 2;
 	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
 
-	if (width || height) {
+	if (query) {
 		builder.requireCapability(Capability::ImageQuery);
-		auto sizeType = builder.declareType(Type(Type::VectorTag {}, dims + (arrayed ? 1 : 0), int32Type));
-		// a storage image has no levels to choose from
-		auto sizes = storage
+		bool cube = imageType.imageDimensionality == Dim::eCube;
+		bool multisampled = imageType.imageIsMultisampled;
+		// the size has a component per dimension (two for a cube) and one more for the layers
+		unsigned sizeDims = cube ? 2 : dims;
+		if (numSamples) {
+			// a texture that is not multisampled has one sample
+			resID = multisampled ? builder.encodeOp(Opcode::ImageQuerySamples, resultType, { image }) : builder.declareConstantScalar<int32_t>(1);
+			return true;
+		}
+		if (numLevels) {
+			// a storage image view covers one level
+			resID = (storage || multisampled) ? builder.declareConstantScalar<int32_t>(1) : builder.encodeOp(Opcode::ImageQueryLevels, resultType, { image });
+			return true;
+		}
+		unsigned component = width ? 0 : (height ? 1 : (depthQuery ? 2 : sizeDims));
+		if ((height && sizeDims < 2) || (depthQuery && imageType.imageDimensionality != Dim::e3D) || (arraySize && !arrayed) || (!arraySize && component >= sizeDims)) {
+			throw ImpossibleResultID("size query of a dimension the texture does not have");
+		}
+		// a one-dimensional texture without layers has a scalar size
+		auto scalarSize = sizeDims + (arrayed ? 1 : 0) == 1;
+		auto sizeType = scalarSize ? int32Type : builder.declareType(Type(Type::VectorTag {}, sizeDims + (arrayed ? 1 : 0), int32Type));
+		// a storage image or a multisample image has no levels to choose from
+		auto sizes = (storage || multisampled)
 			? builder.encodeOp(Opcode::ImageQuerySize, sizeType, { image })
-			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, operand(1) });
-		resID = builder.encodeCompositeExtract(resultType, sizes, { height ? 1u : 0u });
+			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, arraySize ? builder.declareConstantScalar<int32_t>(0) : operand(1) });
+		resID = scalarSize ? sizes : builder.encodeCompositeExtract(resultType, sizes, { component });
 		return true;
 	}
 

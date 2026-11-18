@@ -496,6 +496,8 @@ namespace Iridium {
 			ImageWrite = 99,
 			ImageQuerySizeLod = 103,
 			ImageQuerySize = 104,
+			ImageQueryLevels = 106,
+			ImageQuerySamples = 107,
 			ConvertFToU = 109,
 			ConvertFToS = 110,
 			ConvertSToF = 111,
