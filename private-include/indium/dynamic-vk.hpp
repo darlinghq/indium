@@ -14,6 +14,7 @@ namespace Indium {
 		extern PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 		extern PFN_vkCreateInstance vkCreateInstance;
 		extern PFN_vkEnumerateInstanceLayerProperties vkEnumerateInstanceLayerProperties;
+		extern PFN_vkEnumerateInstanceExtensionProperties vkEnumerateInstanceExtensionProperties;
 
 		bool init();
 		void finit();
@@ -195,11 +196,13 @@ namespace Indium {
 			_macro(vkGetPhysicalDeviceQueueFamilyProperties) \
 			_macro(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
 			_macro(vkGetPhysicalDeviceSurfaceFormatsKHR) \
+			_macro(vkGetPhysicalDeviceSurfaceSupportKHR) \
 			_macro(vkGetPhysicalDeviceSurfacePresentModesKHR) \
 			_macro(vkGetSemaphoreCounterValue) \
 			_macro(vkGetSwapchainImagesKHR) \
 			_macro(vkMapMemory) \
 			_macro(vkMergePipelineCaches) \
+			_macro(vkDeviceWaitIdle) \
 			_macro(vkQueuePresentKHR) \
 			_macro(vkQueueSubmit) \
 			_macro(vkQueueSubmit2) \
@@ -208,6 +211,7 @@ namespace Indium {
 			_macro(vkUnmapMemory) \
 			_macro(vkUpdateDescriptorSets) \
 			_macro(vkWaitForFences) \
+			_macro(vkWaitForPresentKHR) \
 			_macro(vkResetFences) \
 			_macro(vkWaitSemaphores)
 
@@ -215,5 +219,15 @@ namespace Indium {
 			extern DynamicFunction<PFN_ ## _name> _name;
 
 		INDIUM_DYNAMICVK_FUNCTION_FOREACH(INDIUM_DYNAMICVK_FUNCTION_DECL)
+
+		// Window system surface entry points. They are declared here with plain pointer types
+		// instead of the platform's (Xlib's Display and Window, Wayland's wl_display and wl_surface)
+		// so that no window system header is needed; the arguments are laid out as the
+		// Vulkan specification defines them for VK_KHR_xlib_surface and VK_KHR_wayland_surface.
+		// They resolve only when the instance was created with the matching extension.
+		extern DynamicFunction<VkResult (*)(VkInstance, const void* /* Xlib or Wayland create info */, const VkAllocationCallbacks*, VkSurfaceKHR*)> vkCreateXlibSurfaceKHR;
+		extern DynamicFunction<VkResult (*)(VkInstance, const void*, const VkAllocationCallbacks*, VkSurfaceKHR*)> vkCreateWaylandSurfaceKHR;
+		extern DynamicFunction<VkBool32 (*)(VkPhysicalDevice, uint32_t, void* /* Display* */, unsigned long /* VisualID */)> vkGetPhysicalDeviceXlibPresentationSupportKHR;
+		extern DynamicFunction<VkBool32 (*)(VkPhysicalDevice, uint32_t, void* /* wl_display* */)> vkGetPhysicalDeviceWaylandPresentationSupportKHR;
 	};
 };

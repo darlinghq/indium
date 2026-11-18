@@ -42,7 +42,7 @@ endif()
 find_package(LLVM REQUIRED CONFIG)
 
 if (DARLING)
-	set(INDIUM_TARGETS indium indium_private iridium)
+	set(INDIUM_TARGETS indium indium_kit indium_private indium_kit_private iridium)
 else()
 	set(INDIUM_TARGETS indium indium_kit indium_private indium_kit_private iridium mtl2spv)
 endif()
@@ -96,13 +96,19 @@ endif()
 
 add_library(indium_private INTERFACE)
 
-if (NOT DARLING)
+# Presents to native windows through Vulkan swapchains. Darling's QuartzCore presents
+# CAMetalLayer this way, so it is built there as well.
+if (DARLING)
+	set(DYLIB_INSTALL_NAME "/usr/lib/darling/libindium_kit.dylib")
+	add_darling_library(indium_kit src/indium-kit/layer.cpp)
+	make_fat(indium_kit)
+else()
 	add_library(indium_kit SHARED
 		src/indium-kit/layer.cpp
 	)
-
-	add_library(indium_kit_private INTERFACE)
 endif()
+
+add_library(indium_kit_private INTERFACE)
 
 if (DARLING)
 	set(DYLIB_INSTALL_NAME "/usr/lib/darling/libiridium.dylib")
@@ -129,12 +135,10 @@ target_include_directories(indium PUBLIC
 	include
 )
 
-if (NOT DARLING)
-	target_include_directories(indium_kit PUBLIC
-		${Vulkan_INCLUDE_DIRS}
-		include
-	)
-endif()
+target_include_directories(indium_kit PUBLIC
+	${Vulkan_INCLUDE_DIRS}
+	include
+)
 
 target_include_directories(iridium PUBLIC
 	include
@@ -145,22 +149,18 @@ target_include_directories(indium_private INTERFACE
 	private-include
 )
 
-if (NOT DARLING)
-	target_include_directories(indium_kit_private INTERFACE
-		private-include
-	)
-endif()
+target_include_directories(indium_kit_private INTERFACE
+	private-include
+)
 
 target_include_directories(indium PRIVATE
 	${Vulkan_INCLUDE_DIRS}
 	private-include
 )
 
-if (NOT DARLING)
-	target_include_directories(indium_kit PRIVATE
-		private-include
-	)
-endif()
+target_include_directories(indium_kit PRIVATE
+	private-include
+)
 
 target_include_directories(iridium PRIVATE
 	private-include
@@ -190,20 +190,25 @@ else()
 	)
 endif()
 
-if (NOT DARLING)
-	target_link_libraries(indium_kit PUBLIC
-		indium
-	)
+target_link_libraries(indium_kit PUBLIC
+	indium
+)
 
+target_link_libraries(indium_kit PRIVATE
+	indium_private
+)
+
+if (DARLING)
 	target_link_libraries(indium_kit PRIVATE
-		indium_private
-	)
-
-	target_link_libraries(indium_kit_private INTERFACE
-		indium_kit
-		indium_private
+		cxx
+		system
 	)
 endif()
+
+target_link_libraries(indium_kit_private INTERFACE
+	indium_kit
+	indium_private
+)
 
 # Use an llvm-config of the same major as the headers found above. A stale cached LLVM_DIR can point at
 # a removed LLVM whose llvm-config exists but whose library is gone, so fall back to the one on PATH.
@@ -253,7 +258,7 @@ if (NOT DARLING)
 endif()
 
 if (DARLING)
-	install(TARGETS indium iridium DESTINATION libexec/darling/usr/lib/darling)
+	install(TARGETS indium indium_kit iridium DESTINATION libexec/darling/usr/lib/darling)
 else()
 	install(TARGETS indium indium_kit iridium LIBRARY)
 	install(TARGETS mtl2spv RUNTIME)
