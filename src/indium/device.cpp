@@ -395,6 +395,23 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		}
 	}
 
+	// 32-bit float atomics (atomic_float in Metal): load, store, exchange and add on buffers and shared memory. The
+	// features are enabled when the device is created (see createLogicalDevice()).
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME) == 0;
+	})) {
+		VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloat {};
+		atomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &atomicFloat;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		if (atomicFloat.shaderBufferFloat32Atomics || atomicFloat.shaderBufferFloat32AtomicAdd || atomicFloat.shaderSharedFloat32Atomics || atomicFloat.shaderSharedFloat32AtomicAdd) {
+			_enabledExtensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+			indiumFeatures = indiumFeatures | Feature::ShaderAtomicFloat;
+		}
+	}
+
 	_features = indiumFeatures;
 
 	// VK_FORMAT_A8_UNORM_KHR comes with VK_KHR_maintenance5 (core in Vulkan 1.4). It is only useful for A8Unorm
@@ -459,6 +476,25 @@ void Indium::PrivateDevice::createLogicalDevice() {
 		maintenance5.maintenance5 = VK_TRUE;
 		maintenance5.pNext = features13.pNext;
 		features13.pNext = &maintenance5;
+	}
+
+	// enable the float atomics the device has, and nothing else the extension offers
+	VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloat {};
+	if (!!(_features & Feature::ShaderAtomicFloat)) {
+		atomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &atomicFloat;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		VkPhysicalDeviceShaderAtomicFloatFeaturesEXT enabled {};
+		enabled.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		enabled.shaderBufferFloat32Atomics = atomicFloat.shaderBufferFloat32Atomics;
+		enabled.shaderBufferFloat32AtomicAdd = atomicFloat.shaderBufferFloat32AtomicAdd;
+		enabled.shaderSharedFloat32Atomics = atomicFloat.shaderSharedFloat32Atomics;
+		enabled.shaderSharedFloat32AtomicAdd = atomicFloat.shaderSharedFloat32AtomicAdd;
+		atomicFloat = enabled;
+		atomicFloat.pNext = features13.pNext;
+		features13.pNext = &atomicFloat;
 	}
 
 	VkDeviceCreateInfo deviceCreateInfo {};
