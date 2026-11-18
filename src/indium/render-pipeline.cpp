@@ -302,6 +302,10 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	}
 };
 
+std::string Indium::PrivateRenderPipelineState::timingName() const {
+	return "render " + _vertexFunction->name() + " " + (_fragmentFunction ? _fragmentFunction->name() : std::string());
+};
+
 const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::vertexFunctionInfo() {
 	return _vertexFunction->functionInfo();
 };

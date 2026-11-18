@@ -307,6 +307,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	//       to make it to create CommandBuffers that can do either one.
 
 	if (_graphicsQueueFamilyIndex) {
+		_timestampValidBits = queueFamilies[*_graphicsQueueFamilyIndex].timestampValidBits;
 		_queueFamilyIndices.insert(*_graphicsQueueFamilyIndex);
 	}
 
@@ -748,6 +749,45 @@ Indium::DeviceType Indium::PrivateDevice::deviceType() const {
 		case VK_PHYSICAL_DEVICE_TYPE_CPU:            return DeviceType::CPU;
 		default:                                     return DeviceType::Other;
 	}
+};
+
+uint64_t Indium::PrivateDevice::currentAllocatedSize() const {
+	return _memoryPool.counters().liveBytes;
+};
+
+Indium::DeviceStatistics Indium::PrivateDevice::statistics() const {
+	auto counters = _memoryPool.counters();
+	DeviceStatistics result {};
+	result.allocatedBytes = counters.liveBytes;
+	result.peakAllocatedBytes = counters.peakBytes;
+	result.liveAllocations = counters.liveAllocations;
+	result.totalAllocations = counters.totalAllocations;
+	result.totalAllocatedBytes = counters.totalBytes;
+	result.liveMemoryObjects = counters.liveMemoryObjects;
+	result.totalMemoryObjects = counters.totalMemoryObjects;
+	result.liveHeaps = _liveHeaps.load();
+	result.liveHeapBytes = _liveHeapBytes.load();
+	result.totalHeaps = _totalHeaps.load();
+	return result;
+};
+
+bool Indium::PrivateDevice::supportsPipelineTiming() const {
+	return _hostQueryReset && _timestampValidBits != 0 && _properties.limits.timestampComputeAndGraphics;
+};
+
+void Indium::PrivateDevice::setPipelineTimingEnabled(bool enabled) {
+	_pipelineTiming.store(enabled && supportsPipelineTiming(), std::memory_order_relaxed);
+};
+
+void Indium::PrivateDevice::noteHeapCreated(uint64_t size) {
+	++_liveHeaps;
+	++_totalHeaps;
+	_liveHeapBytes += size;
+};
+
+void Indium::PrivateDevice::noteHeapDestroyed(uint64_t size) {
+	--_liveHeaps;
+	_liveHeapBytes -= size;
 };
 
 std::vector<Indium::MemoryHeap> Indium::PrivateDevice::memoryHeaps() const {

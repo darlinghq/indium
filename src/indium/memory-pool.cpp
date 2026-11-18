@@ -57,6 +57,9 @@ Indium::MemoryPool::Allocation Indium::MemoryPool::allocateDedicated(VkDevice de
 	result.offset = 0;
 	result.size = size;
 	result.block = std::move(block);
+	++_liveMemoryObjects;
+	++_totalMemoryObjects;
+	noteAllocated(size);
 	return result;
 };
 
@@ -90,6 +93,7 @@ Indium::MemoryPool::Allocation Indium::MemoryPool::allocate(VkDevice device, uin
 
 	for (auto& block: list) {
 		if (place(block)) {
+			noteAllocated(size);
 			return result;
 		}
 	}
@@ -101,6 +105,9 @@ Indium::MemoryPool::Allocation Indium::MemoryPool::allocate(VkDevice device, uin
 	block->ranges = RangeAllocator(blockSize);
 	list.push_back(block);
 	place(block);
+	++_liveMemoryObjects;
+	++_totalMemoryObjects;
+	noteAllocated(size);
 	return result;
 };
 
@@ -113,8 +120,11 @@ void Indium::MemoryPool::free(VkDevice device, Allocation& allocation) {
 		return;
 	}
 
+	noteFreed(size);
+
 	if (block->dedicated) {
 		DynamicVK::vkFreeMemory(device, block->memory, nullptr);
+		--_liveMemoryObjects;
 		return;
 	}
 
@@ -136,6 +146,7 @@ void Indium::MemoryPool::free(VkDevice device, Allocation& allocation) {
 	list.erase(std::find(list.begin(), list.end(), block));
 	DynamicVK::vkFreeMemory(device, block->memory, nullptr);
 	block->memory = VK_NULL_HANDLE;
+	--_liveMemoryObjects;
 };
 
 void* Indium::MemoryPool::map(VkDevice device, const Allocation& allocation) {
@@ -185,4 +196,26 @@ VkMappedMemoryRange Indium::MemoryPool::flushRange(const Allocation& allocation,
 	range.offset = allocation.offset + first;
 	range.size = last - first;
 	return range;
+};
+
+void Indium::MemoryPool::noteAllocated(VkDeviceSize size) {
+	uint64_t live = _liveBytes.fetch_add(size) + size;
+	++_liveAllocations;
+	++_totalAllocations;
+	_totalBytes += size;
+	uint64_t peak = _peakBytes.load();
+	while (live > peak && !_peakBytes.compare_exchange_weak(peak, live)) {
+	}
+};
+
+void Indium::MemoryPool::noteFreed(VkDeviceSize size) {
+	_liveBytes -= size;
+	--_liveAllocations;
+};
+
+Indium::MemoryPool::Counters Indium::MemoryPool::counters() const {
+	return Counters {
+		_liveBytes.load(), _peakBytes.load(), _liveAllocations.load(), _totalAllocations.load(),
+		_totalBytes.load(), _liveMemoryObjects.load(), _totalMemoryObjects.load(),
+	};
 };

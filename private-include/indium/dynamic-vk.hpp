@@ -108,6 +108,7 @@ namespace Indium {
 			_macro(vkCmdDrawIndirect) \
 			_macro(vkCmdEndQuery) \
 			_macro(vkCmdEndRenderPass) \
+			_macro(vkCmdWriteTimestamp) \
 			_macro(vkCmdFillBuffer) \
 			_macro(vkCmdPipelineBarrier) \
 			_macro(vkCmdPipelineBarrier2) \
@@ -206,6 +207,7 @@ namespace Indium {
 			_macro(vkQueuePresentKHR) \
 			_macro(vkQueueSubmit) \
 			_macro(vkQueueSubmit2) \
+			_macro(vkGetQueryPoolResults) \
 			_macro(vkResetQueryPool) \
 			_macro(vkSignalSemaphore) \
 			_macro(vkUnmapMemory) \

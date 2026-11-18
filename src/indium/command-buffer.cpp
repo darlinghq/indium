@@ -688,9 +688,11 @@ void Indium::PrivateCommandBuffer::retire() {
 	std::vector<VkCommandBuffer> segments;
 	std::vector<std::shared_ptr<BinarySemaphore>> semaphores;
 	std::vector<std::shared_ptr<Resource>> resources;
+	std::vector<std::shared_ptr<PipelineTimer>> timers;
 	VkCommandPool pool = VK_NULL_HANDLE;
 	{
 		std::unique_lock lock(_mutex);
+		timers.swap(_pipelineTimers);
 		semaphores.swap(_retainedSemaphores);
 		resources.swap(_retainedResources);
 		encoders.swap(_commandEncoders);
@@ -704,6 +706,11 @@ void Indium::PrivateCommandBuffer::retire() {
 	if (pool != VK_NULL_HANDLE) {
 		freeSegments(pool, segments);
 	}
+	// the GPU is done, so the timestamps are there
+	for (auto& timer: timers) {
+		timer->resolve();
+	}
+	timers.clear();
 	// what these held may have been the last reference to the device: nothing is locked here
 	encoders.clear();
 	drawables.clear();
