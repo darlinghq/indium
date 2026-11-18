@@ -252,6 +252,31 @@ static std::vector<LLVMValueRef> airParameterOperands(LLVMValueRef parameterOper
 	return info;
 }
 
+// The kind of a parameter (air.buffer, air.texture, ...): the second operand of its description, which a malformed
+// module may not have.
+static std::string_view airParameterKind(const std::vector<LLVMValueRef>& parameterInfo) {
+	if (parameterInfo.size() < 2 || !parameterInfo[1] || !DynamicLLVM::LLVMIsAMDString(parameterInfo[1])) {
+		throw ImpossibleResultID("a parameter description has no kind");
+	}
+	return llvmMDStringToStringView(parameterInfo[1]);
+}
+
+// The integer operand at `index` of a parameter description, which a malformed module may not have.
+static int64_t airParameterInteger(const std::vector<LLVMValueRef>& parameterInfo, size_t index) {
+	if (index >= parameterInfo.size() || !parameterInfo[index] || !DynamicLLVM::LLVMIsAConstantInt(parameterInfo[index])) {
+		throw ImpossibleResultID("a parameter description has a missing or non-integer operand");
+	}
+	return DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[index]);
+}
+
+// The string operand at `index` of a parameter description, which a malformed module may not have.
+static std::string_view airParameterString(const std::vector<LLVMValueRef>& parameterInfo, size_t index) {
+	if (index >= parameterInfo.size() || !parameterInfo[index] || !DynamicLLVM::LLVMIsAMDString(parameterInfo[index])) {
+		throw ImpossibleResultID("a parameter description has a missing or non-string operand");
+	}
+	return llvmMDStringToStringView(parameterInfo[index]);
+}
+
 // Returns the operand that follows the given MDString key in an AIR argument
 // descriptor, or nullptr if the key is absent.
 static LLVMValueRef findAIMDValue(LLVMValueRef mdNode, std::string_view key) {
@@ -1768,7 +1793,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			std::vector<LLVMValueRef> info(fields);
 			DynamicLLVM::LLVMGetMDNodeOperands(entry, info.data());
 			if (info[0] != _function) continue;
-			if (fields < 3 || selectedStage != SIZE_MAX) {
+			if (fields < 3 || selectedStage != SIZE_MAX || !info[1] || !info[2]) {
 				throw ImpossibleResultID("entry function has malformed or duplicate stage metadata");
 			}
 			selectedStage = stage;
@@ -2060,7 +2085,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.buffer") {
 			++bufferCount;
@@ -2080,7 +2105,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// everything after that depends on the kind
 			auto parameterInfo = airParameterOperands(parameterOperand);
 
-			auto kind = llvmMDStringToStringView(parameterInfo[1]);
+			auto kind = airParameterKind(parameterInfo);
 
 			if (kind == "air.buffer") {
 				auto typeNameNode = findAIMDValue(parameterOperand, "air.arg_type_name");
@@ -2141,7 +2166,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 		auto llparam = DynamicLLVM::LLVMGetParam(_function, i);
 		auto llparamVal = reinterpret_cast<uintptr_t>(llparam);
 
@@ -2163,7 +2188,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2177,8 +2202,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex, 0 });
 
@@ -2252,7 +2276,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2266,8 +2290,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
-			uint32_t locationIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t locationIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::VertexInput, locationIndex, /* ignored: */ 0, /* ignored: */ TextureAccessType::Read, /* ignored: */ 0 });
 
@@ -2335,7 +2358,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.texture") {
 			// find the location index info, determine the access type, and find the arg type info
@@ -2343,7 +2366,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			TextureAccessType accessType = TextureAccessType::Sample;
 			size_t argTypeIdx = SIZE_MAX;
 			for (size_t idx = 0; idx < parameterInfo.size(); ++idx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[idx])) {
+				if (parameterInfo[idx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[idx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[idx]);
 
 					if (str == "air.location_index") {
@@ -2358,20 +2381,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			if (infoIdx >= parameterInfo.size()) {
 				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				throw ImpossibleResultID("a texture or sampler description has no air.location_index");
 			}
 
 			if (argTypeIdx >= parameterInfo.size()) {
-				std::runtime_error("Failed to find arg type info for buffer");
+				throw ImpossibleResultID("a texture description has no air.arg_type_name");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
-			auto argType = llvmMDStringToStringView(parameterInfo[argTypeIdx + 1]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
+			auto argType = airParameterString(parameterInfo, argTypeIdx + 1);
 			auto firstAngle = argType.find('<');
 			auto lastAngle = argType.find('>');
 			auto comma = argType.find(',');
-			auto notWhitespace = argType.find_first_not_of(" ", comma + 1);
+			auto notWhitespace = comma == argType.npos ? argType.npos : argType.find_first_not_of(" ", comma + 1);
+			// the type name has the form class<sample type, access>
+			if (firstAngle == argType.npos || comma == argType.npos || lastAngle == argType.npos || notWhitespace == argType.npos
+				|| !(firstAngle < comma && comma < notWhitespace && notWhitespace < lastAngle)) {
+				throw ImpossibleResultID("malformed texture type name " + std::string(argType));
+			}
 
 			std::string_view textureClassName(argType.data(), firstAngle);
 			std::string_view sampleTypeName(argType.data() + (firstAngle + 1), comma - (firstAngle + 1));
@@ -2472,13 +2499,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.sampler") {
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2489,11 +2516,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			if (infoIdx >= parameterInfo.size()) {
 				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				throw ImpossibleResultID("a texture or sampler description has no air.location_index");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, bindingIndex, internalBindingIndex, /* ignored: */ TextureAccessType::Read, /* ignored: */ SIZE_MAX });
 

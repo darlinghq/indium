@@ -89,6 +89,8 @@ add_iridium_check(indium-test-function-constants function-constants/function-con
 add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
 add_iridium_check(indium-test-air-intrinsic-arguments air-intrinsic-arguments/air-intrinsic-arguments.cpp)
 add_test(NAME air-intrinsic-arguments COMMAND indium-test-air-intrinsic-arguments)
+add_iridium_check(indium-test-air-malformed-parameters air-malformed-parameters/air-malformed-parameters.cpp)
+add_test(NAME air-malformed-parameters COMMAND indium-test-air-malformed-parameters)
 add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
 add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 
