@@ -4,8 +4,12 @@
 
 #include <indium/indium.private.hpp>
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace IndiumKit {
@@ -89,6 +93,28 @@ namespace IndiumKit {
 		std::shared_ptr<Indium::BinarySemaphore> _acquiredSemaphore;
 		std::shared_ptr<SwapchainState> _acquiredState;
 
+		// Presents that VK_KHR_present_wait can tell about: the waiter thread waits for each in turn and then runs the
+		// presenter's callback, so that it runs when the image reached the display.
+		struct PendingPresent {
+			std::shared_ptr<SwapchainState> state;
+			uint64_t id;
+			std::function<void(bool)> callback;
+		};
+		std::atomic<uint64_t> _presentCounter { 0 };
+
+		// Shared with the waiter thread, which can outlive the layer when the layer's last reference is
+		// released from one of its callbacks.
+		struct Waiter {
+			std::mutex mutex;
+			std::condition_variable condition;
+			std::deque<PendingPresent> pending;
+			bool stop = false;
+		};
+		std::shared_ptr<Waiter> _waiterState = std::make_shared<Waiter>();
+		std::thread _waiter;
+
+		static void runWaiter(std::shared_ptr<Waiter> waiter, std::shared_ptr<Indium::PrivateDevice> device);
+
 		// Builds a swapchain for the current settings, or returns null when the surface cannot present them.
 		std::shared_ptr<SwapchainState> createSwapchain(VkSwapchainKHR oldSwapchain);
 
@@ -108,6 +134,16 @@ namespace IndiumKit {
 		virtual void setDisplaySyncEnabled(bool enabled) override;
 
 		std::shared_ptr<Indium::Device> device();
+
+		// Whether presented callbacks wait for the display (VK_KHR_present_wait), instead of running when
+		// the image was handed to the presentation engine.
+		bool waitsForPresents();
+
+		// Numbers a present for VkPresentIdKHR.
+		uint64_t nextPresentID() { return ++_presentCounter; }
+
+		// Runs `callback(true)` once present `id` of `state` reached the display (or its wait gave up).
+		void callWhenPresented(std::shared_ptr<SwapchainState> state, uint64_t id, std::function<void(bool)> callback);
 
 		// Whether `state` is the layer's current swapchain, not one that a resize or a setting replaced.
 		bool isCurrent(const std::shared_ptr<SwapchainState>& state);

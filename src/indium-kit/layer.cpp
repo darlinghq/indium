@@ -221,8 +221,19 @@ void IndiumKit::PrivateDrawable::present() {
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(device());
 
 	VkResult result = VK_ERROR_OUT_OF_DATE_KHR;
+	bool waitForDisplay = false;
+	uint64_t presentID = 0;
 
 	if (_layer->isCurrent(_state)) {
+		waitForDisplay = _layer->waitsForPresents() && _presentCallback;
+		VkPresentIdKHR idInfo {};
+		if (waitForDisplay) {
+			presentID = _layer->nextPresentID();
+			idInfo.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
+			idInfo.swapchainCount = 1;
+			idInfo.pPresentIds = &presentID;
+		}
+
 		VkPresentInfoKHR info {};
 		info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 		info.waitSemaphoreCount = sema ? 1 : 0;
@@ -231,6 +242,7 @@ void IndiumKit::PrivateDrawable::present() {
 		info.pSwapchains = &_state->swapchain;
 		info.pImageIndices = &_swapchainImageIndex;
 		info.pResults = nullptr;
+		info.pNext = waitForDisplay ? &idInfo : nullptr;
 
 		std::lock_guard queueLock(privateDevice->graphicsQueueMutex());
 		result = DynamicVK::vkQueuePresentKHR(privateDevice->graphicsQueue(), &info);
@@ -259,7 +271,12 @@ void IndiumKit::PrivateDrawable::present() {
 	if (_presentCallback) {
 		auto callback = std::move(_presentCallback);
 		_presentCallback = nullptr;
-		callback(result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
+		bool ok = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+		if (ok && waitForDisplay) {
+			_layer->callWhenPresented(_state, presentID, std::move(callback));
+		} else {
+			callback(ok);
+		}
 	}
 };
 
@@ -299,9 +316,66 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 		_surface = VK_NULL_HANDLE;
 		throw std::runtime_error("Cannot create a swapchain for the surface");
 	}
+
+	if (waitsForPresents()) {
+		_waiter = std::thread(&PrivateLayer::runWaiter, _waiterState, std::dynamic_pointer_cast<Indium::PrivateDevice>(_device));
+	}
+};
+
+bool IndiumKit::PrivateLayer::waitsForPresents() {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	return !!(privateDevice->features() & Indium::PrivateDevice::Feature::PresentWait) && DynamicVK::vkWaitForPresentKHR.isAvailable();
+};
+
+void IndiumKit::PrivateLayer::callWhenPresented(std::shared_ptr<SwapchainState> state, uint64_t id, std::function<void(bool)> callback) {
+	{
+		std::scoped_lock lock(_waiterState->mutex);
+		_waiterState->pending.push_back({ std::move(state), id, std::move(callback) });
+	}
+	_waiterState->condition.notify_one();
+};
+
+void IndiumKit::PrivateLayer::runWaiter(std::shared_ptr<Waiter> waiter, std::shared_ptr<Indium::PrivateDevice> privateDevice) {
+	for (;;) {
+		PendingPresent pending;
+		{
+			std::unique_lock lock(waiter->mutex);
+			waiter->condition.wait(lock, [&]() { return waiter->stop || !waiter->pending.empty(); });
+			if (waiter->pending.empty()) {
+				return;
+			}
+			pending = std::move(waiter->pending.front());
+			waiter->pending.pop_front();
+		}
+
+		// A presentation engine that is not showing frames (a hidden window) never completes a present; the
+		// wait gives up after a while and the present counts as done, as it does without present_wait.
+		for (int attempt = 0; attempt < 2; ++attempt) {
+			auto result = DynamicVK::vkWaitForPresentKHR(privateDevice->device(), pending.state->swapchain, pending.id, 500000000ULL);
+			if (result != VK_TIMEOUT) {
+				break;
+			}
+		}
+
+		pending.callback(true);
+	}
 };
 
 IndiumKit::PrivateLayer::~PrivateLayer() {
+	if (_waiter.joinable()) {
+		{
+			std::scoped_lock lock(_waiterState->mutex);
+			_waiterState->stop = true;
+		}
+		_waiterState->condition.notify_all();
+		if (_waiter.get_id() == std::this_thread::get_id()) {
+			// the last reference went in a callback that runs on the waiter itself
+			_waiter.detach();
+		} else {
+			_waiter.join();
+		}
+	}
+
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
 
 	if (_acquireFence != VK_NULL_HANDLE) {

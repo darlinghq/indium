@@ -108,6 +108,7 @@ namespace Indium {
 			Maintenance5        = 1 << 7,
 			ExternalMemoryHost  = 1 << 8,
 			ShaderAtomicFloat   = 1 << 9,
+			PresentWait         = 1 << 10,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {

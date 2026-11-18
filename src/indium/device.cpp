@@ -412,6 +412,33 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		}
 	}
 
+	// Knowing when a presented image reached the display: VK_KHR_present_id numbers presents and
+	// VK_KHR_present_wait waits for one. Both features are enabled when the device is created.
+	{
+		auto hasExtension = [&](const char* name) {
+			return std::any_of(extProps.begin(), extProps.end(), [&](const VkExtensionProperties& prop) {
+				return strcmp(prop.extensionName, name) == 0;
+			});
+		};
+
+		if (hasExtension(VK_KHR_PRESENT_ID_EXTENSION_NAME) && hasExtension(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) && !!(indiumFeatures & Feature::Swapchain)) {
+			VkPhysicalDevicePresentIdFeaturesKHR presentId {};
+			presentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+			VkPhysicalDevicePresentWaitFeaturesKHR presentWait {};
+			presentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+			presentWait.pNext = &presentId;
+			VkPhysicalDeviceFeatures2 query {};
+			query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			query.pNext = &presentWait;
+			DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+			if (presentId.presentId && presentWait.presentWait) {
+				_enabledExtensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+				_enabledExtensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+				indiumFeatures = indiumFeatures | Feature::PresentWait;
+			}
+		}
+	}
+
 	_features = indiumFeatures;
 
 	// VK_FORMAT_A8_UNORM_KHR comes with VK_KHR_maintenance5 (core in Vulkan 1.4). It is only useful for A8Unorm
@@ -495,6 +522,18 @@ void Indium::PrivateDevice::createLogicalDevice() {
 		atomicFloat = enabled;
 		atomicFloat.pNext = features13.pNext;
 		features13.pNext = &atomicFloat;
+	}
+
+	VkPhysicalDevicePresentIdFeaturesKHR presentId {};
+	VkPhysicalDevicePresentWaitFeaturesKHR presentWait {};
+	if (!!(_features & Feature::PresentWait)) {
+		presentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+		presentId.presentId = VK_TRUE;
+		presentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+		presentWait.presentWait = VK_TRUE;
+		presentWait.pNext = &presentId;
+		presentId.pNext = features13.pNext;
+		features13.pNext = &presentWait;
 	}
 
 	VkDeviceCreateInfo deviceCreateInfo {};

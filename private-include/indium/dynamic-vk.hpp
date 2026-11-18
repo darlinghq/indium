@@ -211,6 +211,7 @@ namespace Indium {
 			_macro(vkUnmapMemory) \
 			_macro(vkUpdateDescriptorSets) \
 			_macro(vkWaitForFences) \
+			_macro(vkWaitForPresentKHR) \
 			_macro(vkResetFences) \
 			_macro(vkWaitSemaphores)
 
