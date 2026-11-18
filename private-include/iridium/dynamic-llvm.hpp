@@ -141,6 +141,15 @@ namespace Iridium {
 			_macro(LLVMRunPasses) \
 			_macro(LLVMSetTarget) \
 			_macro(LLVMStructGetTypeAtIndex) \
+			_macro(LLVMAddAttributeAtIndex) \
+			_macro(LLVMCreateEnumAttribute) \
+			_macro(LLVMGetCalledFunctionType) \
+			_macro(LLVMGetEnumAttributeKindForName) \
+			_macro(LLVMGetModuleContext) \
+			_macro(LLVMIsDeclaration) \
+			_macro(LLVMIsFunctionVarArg) \
+			_macro(LLVMRemoveCallSiteEnumAttribute) \
+			_macro(LLVMRemoveEnumAttributeAtIndex) \
 			_macro(LLVMTypeOf)
 
 		#define IRIDIUM_DYNAMICLLVM_FUNCTION_DECL(_name) \

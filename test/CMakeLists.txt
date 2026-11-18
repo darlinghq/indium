@@ -94,6 +94,8 @@ add_iridium_check(indium-test-air-intrinsic-arguments air-intrinsic-arguments/ai
 add_test(NAME air-intrinsic-arguments COMMAND indium-test-air-intrinsic-arguments)
 add_iridium_check(indium-test-air-malformed-parameters air-malformed-parameters/air-malformed-parameters.cpp)
 add_test(NAME air-malformed-parameters COMMAND indium-test-air-malformed-parameters)
+add_iridium_check(indium-test-air-calls air-calls/air-calls.cpp)
+add_test(NAME air-calls COMMAND indium-test-air-calls)
 add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
 add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 
