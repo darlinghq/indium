@@ -100,6 +100,7 @@ namespace Indium {
 			_macro(vkCmdCopyImage) \
 			_macro(vkCmdCopyImageToBuffer) \
 			_macro(vkCmdCopyQueryPoolResults) \
+			_macro(vkCmdResetQueryPool) \
 			_macro(vkCmdDispatch) \
 			_macro(vkCmdDispatchIndirect) \
 			_macro(vkCmdDraw) \
@@ -181,6 +182,7 @@ namespace Indium {
 			_macro(vkFreeCommandBuffers) \
 			_macro(vkFreeMemory) \
 			_macro(vkGetBufferDeviceAddress) \
+			_macro(vkGetCalibratedTimestampsEXT) \
 			_macro(vkGetBufferMemoryRequirements) \
 			_macro(vkGetDeviceQueue) \
 			_macro(vkGetImageMemoryRequirements) \

@@ -34,6 +34,7 @@ namespace Indium {
 		virtual void copy(const std::shared_ptr<Texture>& source, size_t sourceSlice, size_t sourceLevel, Origin sourceOrigin, Size sourceSize, const std::shared_ptr<Texture>& destination, size_t destinationSlice, size_t destinationLevel, Origin destinationOrigin) override;
 		virtual void fillBuffer(const std::shared_ptr<Buffer>& buffer, Range<size_t> range, uint8_t value) override;
 		virtual void generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) override;
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) override;
 
 		virtual void updateFence(const std::shared_ptr<Fence>& fence) override;
 		virtual void waitForFence(const std::shared_ptr<Fence>& fence) override;

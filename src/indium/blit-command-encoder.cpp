@@ -1,4 +1,5 @@
 #include <indium/blit-command-encoder.private.hpp>
+#include <indium/counter.private.hpp>
 #include <indium/event.private.hpp>
 #include <indium/command-encoder.private.hpp>
 #include <indium/command-buffer.private.hpp>
@@ -58,7 +59,11 @@ Indium::PrivateBlitCommandEncoder::PrivateBlitCommandEncoder(std::shared_ptr<Pri
 	_privateCommandBuffer(commandBuffer),
 	_privateDevice(commandBuffer->privateDevice()),
 	_descriptor(descriptor)
-	{};
+{
+	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.startOfEncoderSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	}
+};
 
 Indium::PrivateBlitCommandEncoder::~PrivateBlitCommandEncoder() {
 	// nothing for now
@@ -554,10 +559,20 @@ void Indium::PrivateBlitCommandEncoder::waitForFence(const std::shared_ptr<Fence
 
 void Indium::PrivateBlitCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+			PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.endOfEncoderSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		}
 		// a tracked encoder leaves nothing to record: what follows waits for what it wrote when it uses it
 		if (!commandBuffer->hazardsTracked()) {
 			commandBuffer->endUntrackedEncoder();
 		}
 		commandBuffer->endEncoderSegment(_readOnlyTextures, _readWriteTextures);
+	}
+};
+
+void Indium::PrivateBlitCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		// the sample is taken once the commands before it have finished, whether or not a barrier was asked for
+		PrivateCounterSampleBuffer::record(sampleBuffer, commandBuffer->commandBuffer(), sampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 	}
 };

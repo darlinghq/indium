@@ -32,6 +32,12 @@ void Indium::RecordingRenderCommandEncoder::setRenderPipelineState(const std::sh
 	});
 };
 
+void Indium::RecordingRenderCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	record([sampleBuffer = sampleBuffer, sampleIndex = sampleIndex, barrier = barrier](RenderCommandEncoder& encoder) mutable {
+		encoder.sampleCounters(sampleBuffer, sampleIndex, barrier);
+	});
+};
+
 void Indium::RecordingRenderCommandEncoder::setFrontFacingWinding(Winding frontFaceWinding) {
 	record([frontFaceWinding = frontFaceWinding](RenderCommandEncoder& encoder) mutable {
 		encoder.setFrontFacingWinding(frontFaceWinding);

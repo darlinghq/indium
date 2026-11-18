@@ -12,13 +12,10 @@ namespace Indium {
 	class Texture;
 	class Buffer;
 
-	// TODO: check what the actual value is (this is just a good guess)
-	static constexpr size_t counterDontSample = SIZE_MAX;
-
 	struct BlitPassSampleBufferAttachmentDescriptor {
 		std::shared_ptr<CounterSampleBuffer> sampleBuffer;
-		size_t startOfEncoderSampleIndex;
-		size_t endOfEncoderSampleIndex;
+		size_t startOfEncoderSampleIndex = counterDontSample;
+		size_t endOfEncoderSampleIndex = counterDontSample;
 	};
 
 	struct BlitPassDescriptor {
@@ -37,6 +34,12 @@ namespace Indium {
 		virtual void copy(const std::shared_ptr<Texture>& source, size_t sourceSlice, size_t sourceLevel, Origin sourceOrigin, Size sourceSize, const std::shared_ptr<Texture>& destination, size_t destinationSlice, size_t destinationLevel, Origin destinationOrigin) = 0;
 		virtual void fillBuffer(const std::shared_ptr<Buffer>& buffer, Range<size_t> range, uint8_t value) = 0;
 		virtual void generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) = 0;
+
+		/**
+		 * Samples the counters of `sampleBuffer` into `sampleIndex` at this point in the encoder.
+		 * Does nothing for a buffer that is not from this device or an index outside the buffer.
+		 */
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) = 0;
 
 		/**
 		 * Updates `fence` once the commands encoded so far in this encoder have finished. A fence from another

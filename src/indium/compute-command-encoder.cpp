@@ -1,5 +1,6 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/counter.private.hpp>
 #include <indium/event.private.hpp>
 #include <indium/dynamic-vk.hpp>
 #include <indium/pipeline-timing.private.hpp>
@@ -12,6 +13,9 @@ Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_p
 	_descriptor(descriptor),
 	_descriptorPools(_privateDevice->device())
 {
+	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.startOfEncoderSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	}
 	_tracked = commandBuffer->hazardsTracked();
 	if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
 		// the dispatches may run together: only what came before the encoder is waited for
@@ -27,6 +31,9 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+			PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.endOfEncoderSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		}
 		if (_tracked) {
 			// nothing is recorded: the next command that uses what this encoder wrote waits for it
 			commandBuffer->hazards().endUnorderedGroup();
@@ -333,4 +340,11 @@ void Indium::PrivateComputeCommandEncoder::memoryBarrier(BarrierScope scope) {
 void Indium::PrivateComputeCommandEncoder::memoryBarrier(const std::vector<std::shared_ptr<Resource>>& resources) {
 	// ordering the given resources only is not cheaper than ordering all of them
 	memoryBarrier(BarrierScope::Buffers | BarrierScope::Textures);
+};
+
+void Indium::PrivateComputeCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		// the sample is taken once the commands before it have finished, whether or not a barrier was asked for
+		PrivateCounterSampleBuffer::record(sampleBuffer, commandBuffer->commandBuffer(), sampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+	}
 };

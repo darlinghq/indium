@@ -96,6 +96,7 @@ namespace Indium {
 		 */
 		void resetState();
 
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) override;
 		virtual void setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) override;
 		virtual void setFrontFacingWinding(Winding frontFaceWinding) override;
 		virtual void setCullMode(CullMode cullMode) override;
