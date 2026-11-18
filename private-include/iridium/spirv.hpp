@@ -490,6 +490,8 @@ namespace Iridium {
 			ImageSampleDrefImplicitLod = 89,
 			ImageSampleDrefExplicitLod = 90,
 			ImageFetch = 95,
+			ImageGather = 96,
+			ImageDrefGather = 97,
 			ImageRead = 98,
 			ImageWrite = 99,
 			ImageQuerySizeLod = 103,

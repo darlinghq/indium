@@ -44,6 +44,7 @@ add_subdirectory(texture-write)
 add_subdirectory(threadgroup)
 add_subdirectory(atomics)
 add_subdirectory(bit-ops)
+add_subdirectory(texture-gather)
 add_subdirectory(pipeline-bench)
 add_subdirectory(pipeline-cache)
 
@@ -84,6 +85,8 @@ add_iridium_check(indium-test-interface-locations interface-locations/interface-
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
 add_iridium_check(indium-test-function-constants function-constants/function-constants.cpp)
 add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
+add_iridium_check(indium-test-air-intrinsic-arguments air-intrinsic-arguments/air-intrinsic-arguments.cpp)
+add_test(NAME air-intrinsic-arguments COMMAND indium-test-air-intrinsic-arguments)
 add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
 add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 

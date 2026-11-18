@@ -1302,7 +1302,7 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
 }
 
-// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), reads, writes and size
+// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), gathers, reads, writes and size
 // queries. Returns false when `name` is not one of them. `samplerFor` resolves a sampler operand (a constant sampler has no value of its own).
 template<typename SamplerFor, typename IsReadSampler>
 static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::FunctionType stage, SamplerFor&& samplerFor, IsReadSampler&& isReadSampler, Iridium::SPIRV::ResultID& resID) {
@@ -1314,7 +1314,12 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	bool write = name.substr(0, 18) == "air.write_texture_";
 	bool width = name == "air.get_width_texture_2d";
 	bool height = name == "air.get_height_texture_2d";
-	if (!sample && !read && !write && !width && !height) {
+	// gather() of a color texture, gather() of a depth texture and gather_compare()
+	bool gatherColor = name.substr(0, 19) == "air.gather_texture_";
+	bool gatherDepth = name.substr(0, 17) == "air.gather_depth_";
+	bool gatherCompare = name.substr(0, 25) == "air.gather_compare_depth_";
+	bool gather = gatherColor || gatherDepth || gatherCompare;
+	if (!sample && !read && !write && !width && !height && !gather) {
 		return false;
 	}
 
@@ -1367,12 +1372,17 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	if (compare && arrayed) {
 		throw ImpossibleResultID("depth comparison on an array texture is unsupported");
 	}
+	bool cubeImage = imageType.imageDimensionality == Dim::eCube;
+	if (gather && (dims == 1 || (dims == 3 && !cubeImage) || (cubeImage && arrayed))) {
+		throw ImpossibleResultID("gather on a texture class that has no gather is unsupported");
+	}
 
 	// A read of a texture that is only read names a sampler (the result of air.get_read_sampler, which has no
 	// value of its own) before the coordinates and, after them (and after the layer), an offset (not for one-dimensional textures). A texture that is also written
 	// (and a write) has neither.
 	bool readsWithSampler = read && argumentCount > 1 && isReadSampler(DynamicLLVM::LLVMGetOperand(inst, 1));
-	unsigned coordinatesIndex = compare ? 3 : ((sample || readsWithSampler) ? 2 : 1);
+	// (a gather of a depth texture has a constant before the coordinates, as the comparing sample does)
+	unsigned coordinatesIndex = (compare || gatherDepth || gatherCompare) ? 3 : ((sample || gather || readsWithSampler) ? 2 : 1);
 
 	// an array texture takes the layer as another coordinate (a float one when sampling)
 	auto coordinates = operand(coordinatesIndex);
@@ -1384,7 +1394,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			components.push_back(dims == 1 ? coordinates : builder.encodeCompositeExtract(componentType, coordinates, { i }));
 		}
 		auto layer = operand(coordinatesIndex + 1);
-		if (sample) {
+		if (sample || gather) {
 			layer = builder.encodeOp(Opcode::ConvertSToF, componentType, { layer });
 		}
 		components.push_back(layer);
@@ -1413,7 +1423,61 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		return true;
 	}
 
-	if (sample && isReadSampler(argument(1))) {
+	if (gather) {
+		// The operands after the coordinates (and the layer): gather() of a color texture has a flag, the offset
+		// (2D textures only) and the component (0 to 3 for x to w); gather() of a depth texture the flag and the
+		// offset, and gather_compare() the reference value in front of them. A trailing zero follows in each case.
+		// The flag is true in every compiled kernel observed and does not change what the call does.
+		unsigned next = coordinatesIndex + 1 + layerOperands;
+		ResultID reference = 0;
+		if (gatherCompare) {
+			reference = operand(next++);
+		}
+		std::optional<unsigned> offsetIndex;
+		if (!cubeImage) {
+			offsetIndex = next + 1;
+		}
+		ResultID component = 0;
+		if (gatherColor) {
+			auto componentValue = argument(cubeImage ? next : next + 2);
+			if (!DynamicLLVM::LLVMIsAConstantInt(componentValue) || DynamicLLVM::LLVMConstIntGetZExtValue(componentValue) > 3) {
+				throw ImpossibleResultID("texture gather with a component that is not a constant between 0 and 3");
+			}
+			component = builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(componentValue)));
+		}
+		auto samplerPointer = samplerFor(argument(1));
+		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
+		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
+		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
+		auto sampled = builder.encodeSampledImage(sampledType, image, sampler);
+
+		std::vector<uint32_t> arguments { sampled, coordinates };
+		if (gatherCompare) {
+			arguments.push_back(reference);
+		} else if (gatherColor) {
+			arguments.push_back(component);
+		} else {
+			// the components of a depth texture are all the depth value
+			arguments.push_back(builder.declareConstantScalar<uint32_t>(0));
+		}
+		if (offsetIndex) {
+			auto offset = argument(*offsetIndex);
+			if (!DynamicLLVM::LLVMIsNull(offset)) {
+				if (!DynamicLLVM::LLVMIsConstant(offset)) {
+					throw ImpossibleResultID("texture gather with a non-constant offset");
+				}
+				// image operands: ConstOffset = 0x8
+				arguments.push_back(0x8);
+				arguments.push_back(llvmValueToResultID(builder, offset));
+			}
+		}
+
+		if (gatherCompare) {
+			finish(builder.encodeOp(Opcode::ImageDrefGather, valueTypeID, arguments));
+			return true;
+		}
+		value = builder.encodeOp(Opcode::ImageGather, texelType, arguments);
+	} else if (sample && isReadSampler(argument(1))) {
 		} else if (sample) {
 		auto samplerPointer = samplerFor(argument(1));
 		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
