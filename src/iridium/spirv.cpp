@@ -212,6 +212,10 @@ void Iridium::SPIRV::Builder::requireCapability(Capability capability) {
 	_requiredCapabilities.insert(capability);
 };
 
+void Iridium::SPIRV::Builder::requireExtension(const std::string& name) {
+	_extensions.insert(name);
+};
+
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::reserveResultID() {
 	auto id = _currentResultID;
 	++_currentResultID;

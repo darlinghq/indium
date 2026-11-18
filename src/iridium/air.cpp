@@ -890,9 +890,10 @@ static Iridium::SPIRV::ResultID descendToFirstElement(Iridium::SPIRV::Builder& b
 	return access;
 }
 
-// Translates the AIR atomic functions of 32-bit integers, air.atomic.<global|local>.<operation>[.<s|u>].i32, whose
-// arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
-// false when `name` is not one of them. The order is relaxed unless the module asks for more.
+// Translates the AIR atomic functions of 32-bit and 64-bit integers and of 32-bit floats,
+// air.atomic.<global|local>.<operation>[.<s|u>].<i32|i64|f32>, whose arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
+// false when `name` is not one of them. The order is relaxed unless the module asks for more. The functions that update
+// memory return the value that was there before, except the 64-bit minimum and maximum, which return nothing.
 static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.atomic.";
@@ -907,8 +908,14 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		parts.push_back(rest.substr(0, dot));
 		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
 	}
-	if (parts.size() < 3 || parts.size() > 4 || parts.back() != "i32" || (parts[0] != "global" && parts[0] != "local")) {
+	if (parts.size() < 3 || parts.size() > 4 || (parts.back() != "i32" && parts.back() != "i64" && parts.back() != "f32") || (parts[0] != "global" && parts[0] != "local")) {
 		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
+	}
+	unsigned width = parts.back() == "i64" ? 64 : 32;
+	bool isFloat = parts.back() == "f32";
+	if (width == 64) {
+		builder.requireCapability(Capability::Int64);
+		builder.requireCapability(Capability::Int64Atomics);
 	}
 	auto operation = parts[1];
 	bool isSigned = parts.size() == 4 && parts[2] == "s";
@@ -943,7 +950,7 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		throw ImpossibleResultID("atomic function on something that is not a pointer");
 	}
 	auto storageClass = pointerInfo->pointerStorageClass;
-	auto integerType = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+	auto integerType = isFloat ? builder.declareType(Type(Type::FloatTag {}, 32)) : builder.declareType(Type(Type::IntegerTag {}, width, true));
 	if (isLogicalStorageClass(storageClass)) {
 		pointer = descendToFirstElement(builder, pointer, ResultIDInvalid);
 	} else if (pointerInfo->targetType != integerType) {
@@ -956,8 +963,8 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	// a threadgroup variable keeps the type it was declared with; values are cast to it
 	auto memoryType = builder.reverseLookupType(builder.lookupResultType(pointer))->targetType;
 	auto memoryInfo = *builder.reverseLookupType(memoryType);
-	if (memoryInfo.backingType != Type::BackingType::Integer || memoryInfo.scalarWidth != 32) {
-		throw ImpossibleResultID("atomic function on memory that is not a 32-bit integer");
+	if (memoryInfo.backingType != (isFloat ? Type::BackingType::FloatingPoint : Type::BackingType::Integer) || memoryInfo.scalarWidth != width) {
+		throw ImpossibleResultID("atomic function on memory that is not a " + std::to_string(width) + (isFloat ? "-bit float" : "-bit integer"));
 	}
 	auto asMemoryType = [&](ResultID value) {
 		return builder.lookupResultType(value) == memoryType ? value : builder.encodeBitcast(memoryType, value);
@@ -973,6 +980,9 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	}
 
 	if (compareExchange) {
+		if (isFloat) {
+			throw ImpossibleResultID("compare-and-exchange of floats is unsupported");
+		}
 		// (pointer, pointer to the expected value, desired value, success order, failure order, ...): the value found in
 		// memory is also written to the expected value (on a success it equals it already)
 		auto expectedPointer = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1));
@@ -999,8 +1009,19 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	}
 
 	Opcode opcode;
+	if (isFloat && operation != "xchg" && operation != "add" && operation != "sub") {
+		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
+	}
 	if (operation == "xchg") {
 		opcode = Opcode::AtomicExchange;
+	} else if (isFloat) {
+		// there is no float subtraction: add the negated value
+		builder.requireExtension("SPV_EXT_shader_atomic_float_add");
+		builder.requireCapability(Capability::AtomicFloat32AddEXT);
+		if (operation == "sub") {
+			value = builder.encodeOp(Opcode::FNegate, memoryType, { value });
+		}
+		opcode = Opcode::AtomicFAddEXT;
 	} else if (operation == "add") {
 		opcode = Opcode::AtomicIAdd;
 	} else if (operation == "sub") {
@@ -1019,7 +1040,10 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
 	}
 	auto old = builder.encodeOp(opcode, memoryType, { pointer, scopeID, semanticsID, value });
-	resID = builder.lookupResultType(old) == resultType ? old : builder.encodeBitcast(resultType, old);
+	// a call that returns nothing has no use for the old value
+	if (DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMTypeOf(inst)) != LLVMVoidTypeKind) {
+		resID = builder.lookupResultType(old) == resultType ? old : builder.encodeBitcast(resultType, old);
+	}
 	return true;
 }
 
@@ -3251,6 +3275,34 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(2),
 							builder.declareConstantScalar<uint32_t>((memFlags & 1) ? 1 : 2),
+							builder.declareConstantScalar<uint32_t>(semantics),
+						});
+					} else if (name == "air.atomic.fence") {
+						// atomic_thread_fence(flags, order, scope): memory the flags name is ordered for the threads of the scope
+						if (DynamicLLVM::LLVMGetNumOperands(inst) < 4) {
+							throw ImpossibleResultID("atomic fence has too few arguments");
+						}
+						auto flags = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto order = DynamicLLVM::LLVMGetOperand(inst, 1);
+						auto scope = DynamicLLVM::LLVMGetOperand(inst, 2);
+						if (!DynamicLLVM::LLVMIsAConstantInt(flags) || !DynamicLLVM::LLVMIsAConstantInt(order) || !DynamicLLVM::LLVMIsAConstantInt(scope)) {
+							throw ImpossibleResultID("atomic fence with a flags, order or scope that is not constant");
+						}
+						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						auto airScope = DynamicLLVM::LLVMConstIntGetZExtValue(scope);
+						if (airScope != 1 && airScope != 2) {
+							throw ImpossibleResultID("atomic fence with a scope other than threadgroup or device");
+						}
+						// the same memory classes as a threadgroup barrier (see air.wg.barrier); a relaxed fence orders nothing
+						uint32_t semantics = DynamicLLVM::LLVMConstIntGetZExtValue(order) == 0 ? 0 : 0x8;
+						if (semantics) {
+							semantics |= (memFlags & 1) ? 0x40 : 0;
+							semantics |= (memFlags & 2) ? 0x100 : 0;
+							semantics |= (memFlags & 4) ? 0x800 : 0;
+						}
+						// SPIR-V scopes: Device 1, Workgroup 2
+						builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
+							builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
 							builder.declareConstantScalar<uint32_t>(semantics),
 						});
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {

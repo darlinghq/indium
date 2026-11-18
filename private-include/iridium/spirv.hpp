@@ -84,6 +84,7 @@ namespace Iridium {
 			Float16 = 9,
 			Float64 = 10,
 			Int64 = 11,
+			Int64Atomics = 12,
 			Int16 = 22,
 			Int8 = 39,
 			Sampled1D = 43,
@@ -93,6 +94,7 @@ namespace Iridium {
 			StorageImageReadWithoutFormat = 55,
 			StorageImageWriteWithoutFormat = 56,
 			PhysicalStorageBufferAddresses = 5347,
+			AtomicFloat32AddEXT = 6033,
 		};
 
 		struct Decoration {
@@ -583,6 +585,7 @@ namespace Iridium {
 			Branch = 249,
 			BranchConditional = 250,
 			ControlBarrier = 224,
+			MemoryBarrier = 225,
 			AtomicLoad = 227,
 			AtomicStore = 228,
 			AtomicExchange = 229,
@@ -596,6 +599,7 @@ namespace Iridium {
 			AtomicAnd = 240,
 			AtomicOr = 241,
 			AtomicXor = 242,
+			AtomicFAddEXT = 6035,
 			Kill = 252,
 			Return = 253,
 			ReturnValue = 254,
@@ -767,6 +771,7 @@ namespace Iridium {
 			void setGeneratorID(uint16_t id, uint16_t version);
 
 			void requireCapability(Capability capability);
+			void requireExtension(const std::string& name);
 
 			ResultID reserveResultID();
 			ResultID associateResultID(uintptr_t association);

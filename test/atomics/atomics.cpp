@@ -164,6 +164,65 @@ int main() {
 			return result == Words { 32, 496, 32, 496, 32, 496 };
 		});
 
+		check("min_max_64", "64-bit minimum and maximum of values above 32 bits", [&] {
+			// two 64-bit counters as pairs of words, low word first: a maximum from 0 and a minimum from the largest value
+			auto result = run("min_max_64", { { 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu } }, 1, 64)[0];
+			uint64_t maximum = static_cast<uint64_t>(result[1]) << 32 | result[0];
+			uint64_t minimum = static_cast<uint64_t>(result[3]) << 32 | result[2];
+			return maximum == ((63ull << 32) | 5) && minimum == 0x100000000ull + 100 - 63;
+		});
+
+		check("fences", "stores around device and threadgroup fences all happen", [&] {
+			auto result = run("fences", { Words(64 * 3, 0xA5A5A5A5u) }, 1, 64)[0];
+			bool ok = true;
+			for (size_t i = 0; i < 64; ++i) {
+				ok = ok && result[i * 3] == 1 && result[i * 3 + 1] == 2 && result[i * 3 + 2] == 3;
+			}
+			return ok;
+		});
+
+		auto asFloat = [](uint32_t word) {
+			float value;
+			std::memcpy(&value, &word, sizeof(value));
+			return value;
+		};
+		auto floatBits = [](float value) {
+			uint32_t word;
+			std::memcpy(&word, &value, sizeof(word));
+			return word;
+		};
+
+		check("float_add", "float add and subtract from every thread", [&] {
+			// 64 threads add 1 to the first and subtract 0.5 from the second (all sums are exact in a float)
+			auto result = run("float_add", { { floatBits(0), floatBits(100) } }, 1, 64)[0];
+			return asFloat(result[0]) == 64.0f && asFloat(result[1]) == 68.0f;
+		});
+
+		check("float_exchange", "each float exchange returns the value the previous one stored", [&] {
+			auto result = run("float_exchange", { { floatBits(0) }, Words(64, 0xA5A5A5A5u) }, 1, 64);
+			// the values that went through the slot: the initial 0, then every thread's id + 1; one of them is left in the slot
+			std::vector<float> seen;
+			for (auto word: result[1]) {
+				seen.push_back(asFloat(word));
+			}
+			seen.push_back(asFloat(result[0][0]));
+			std::sort(seen.begin(), seen.end());
+			bool ok = true;
+			for (size_t i = 0; i < seen.size(); ++i) {
+				ok = ok && seen[i] == static_cast<float>(i);
+			}
+			return ok;
+		});
+
+		check("float_load_store", "a stored float is loaded back", [&] {
+			auto result = run("float_load_store", { Words(64, 0xA5A5A5A5u), Words(64, 0xA5A5A5A5u) }, 1, 64);
+			bool ok = true;
+			for (size_t i = 0; i < 64; ++i) {
+				ok = ok && asFloat(result[0][i]) == i * 2.5f + 1.0f && asFloat(result[1][i]) == i * 2.5f + 1.0f;
+			}
+			return ok;
+		});
+
 		keepPollingDevice = false;
 		device->wakeupEventLoop();
 		devicePollingThread.join();

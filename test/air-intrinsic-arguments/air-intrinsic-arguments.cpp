@@ -32,6 +32,10 @@ const char* const kIntrinsics[] = {
 	"air.read_texture_2d_ms.v4f32",
 	"air.read_texture_2d_ms_array.v4f32",
 	"air.read_depth_2d_ms.f32",
+	"air.atomic.global.add.f32",
+	"air.atomic.global.max.u.i64",
+	"air.atomic.global.cmpxchg.weak.i32",
+	"air.atomic.fence",
 };
 
 // translates a vertex function that calls `intrinsic` with `count` zero integers; returns the error message, or "" when it translated
