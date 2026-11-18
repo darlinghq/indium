@@ -14,6 +14,8 @@
 #include <indium/command-encoder.private.hpp>
 #include <indium/visibility-results.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/pipeline-timing.private.hpp>
+#include <indium/counter.private.hpp>
 #include <vulkan/vulkan_core.h>
 
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
@@ -275,6 +277,12 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassBeginInfo.renderArea.extent.height = firstTexture->height();
 	renderPassBeginInfo.clearValueCount = clearValues.size();
 	renderPassBeginInfo.pClearValues = clearValues.data();
+	// Vulkan cannot tell the vertex and fragment stages apart at the edges of a pass, so both start samples are taken
+	// when the pass begins and both end samples when it ends.
+	for (const auto& [index, attachment]: descriptor.sampleBufferAttachments) {
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfVertexSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfFragmentSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	}
 	DynamicVK::vkCmdBeginRenderPass(vkCmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
 
 	if (auto visibilityBuffer = std::dynamic_pointer_cast<PrivateBuffer>(descriptor.visibilityResultBuffer); visibilityBuffer && VisibilityResults::supported(_privateDevice)) {
@@ -331,6 +339,14 @@ void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shar
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
 	if (_privatePSO) {
 		_privatePSO->recreatePipeline(_renderPass, false);
+		if (_privateDevice->pipelineTimingEnabled()) {
+			// the draws up to the next pipeline change or the end of the pass are timed as this pipeline's
+			if (!_timer) {
+				_timer = std::make_shared<PipelineTimer>(_privateDevice);
+				buf->addPipelineTimer(_timer);
+			}
+			_timer->begin(buf->commandBuffer(), _privatePSO->timingName());
+		}
 	}
 };
 
@@ -639,7 +655,14 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	if (_visibilityResults) {
 		_visibilityResults->end(buf->commandBuffer());
 	}
+	if (_timer) {
+		_timer->end(buf->commandBuffer());
+	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
+	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfVertexSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfFragmentSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+	}
 	// What the pass reads has to be ordered after what came before, and a pass cannot take barriers once begun, so
 	// they are known only now and recorded in front of it.
 	HazardTracker::Barriers barriers;
@@ -999,4 +1022,9 @@ void Indium::PrivateRenderCommandEncoder::useHeaps(const std::vector<std::shared
 	for (const auto& heap: heaps) {
 		useHeap(heap, stages);
 	}
+};
+
+void Indium::PrivateRenderCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	// Draw boundary sampling is not offered (Device::supportsCounterSampling()): a query cannot be reset inside a
+	// render pass, so there is nothing to record here.
 };

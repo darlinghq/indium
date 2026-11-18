@@ -14,6 +14,7 @@
 #include <indium/library.hpp>
 #include <indium/event.hpp>
 #include <indium/heap.hpp>
+#include <indium/counter.hpp>
 
 namespace Indium {
 	class CommandQueue;
@@ -44,6 +45,45 @@ namespace Indium {
 		uint64_t size;
 		/** Whether the heap is memory local to the device (e.g. video memory). */
 		bool deviceLocal;
+	};
+
+	/**
+	 * Counts of what a device has allocated and made since it was created. Always kept (they are plain
+	 * counters); only reporting them is opt-in.
+	 */
+	struct DeviceStatistics {
+		/** The bytes of live buffers, textures and heaps (see Device::currentAllocatedSize()). */
+		uint64_t allocatedBytes;
+		/** The largest value `allocatedBytes` has had. */
+		uint64_t peakAllocatedBytes;
+		/** Live device memory allocations made for buffers, textures and heaps. */
+		uint64_t liveAllocations;
+		/** Device memory allocations made, live or not. */
+		uint64_t totalAllocations;
+		/** Bytes of all allocations made, live or not. */
+		uint64_t totalAllocatedBytes;
+		/** Live Vulkan memory objects (pooled blocks and dedicated allocations). */
+		uint64_t liveMemoryObjects;
+		/** Vulkan memory objects made, live or not. */
+		uint64_t totalMemoryObjects;
+		/** Live heaps and the bytes they hold. */
+		uint64_t liveHeaps;
+		uint64_t liveHeapBytes;
+		/** Heaps made, live or not. */
+		uint64_t totalHeaps;
+	};
+
+	/** The GPU time spent in the draws or dispatches of one pipeline, while pipeline timing was enabled. */
+	struct PipelineTiming {
+		/**
+		 * "compute <kernel>" for a compute pipeline, "render <vertex function> <fragment function>" for a render
+		 * pipeline (the fragment function is empty when there is none).
+		 */
+		std::string name;
+		/** The summed GPU time, in nanoseconds. */
+		uint64_t gpuNanoseconds;
+		/** The number of timed spans: dispatches for compute, runs of draws between pipeline changes for render. */
+		uint64_t spans;
 	};
 
 	class Device {
@@ -120,6 +160,32 @@ namespace Indium {
 		 * Whether color and depth render targets with `sampleCount` samples per pixel can be created.
 		 */
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const = 0;
+
+		/**
+		 * The bytes of device memory currently allocated for this device's buffers, textures and heaps. A resource
+		 * made from a heap adds nothing (the heap's memory is counted whole), a texture view adds nothing, and the
+		 * value goes down when a resource or heap is released. Memory that the caller supplied (a no-copy buffer)
+		 * and memory the library keeps for itself is not counted. Safe to call from any thread.
+		 */
+		virtual uint64_t currentAllocatedSize() const = 0;
+
+		virtual DeviceStatistics statistics() const = 0;
+
+		/**
+		 * Whether pipeline timing is possible: the device has hostQueryReset and timestamps on the graphics queue.
+		 */
+		virtual bool supportsPipelineTiming() const = 0;
+
+		/**
+		 * Turns GPU timing of the pipelines on or off (off by default). Command buffers encoded while it is on write
+		 * Vulkan timestamps around the dispatches and the runs of draws of each pipeline, and add the elapsed
+		 * time to `pipelineTimings()` when they have completed. Does nothing where `supportsPipelineTiming()` is false.
+		 */
+		virtual void setPipelineTimingEnabled(bool enabled) = 0;
+		virtual bool pipelineTimingEnabled() const = 0;
+
+		/** The time accumulated so far for each pipeline, ordered by name. */
+		virtual std::vector<PipelineTiming> pipelineTimings() const = 0;
 
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() = 0;
 		virtual std::shared_ptr<RenderPipelineState> newRenderPipelineState(const RenderPipelineDescriptor& descriptor) = 0;
@@ -253,6 +319,33 @@ namespace Indium {
 		 */
 		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) = 0;
 		virtual std::shared_ptr<Fence> newFence() = 0;
+
+		// --- counters ---
+
+		/**
+		 * The counter sets this device can sample. Currently only the timestamp set, when the
+		 * device can write timestamps from its graphics queue and reset a query pool from the host.
+		 */
+		virtual std::vector<CounterSet> counterSets() const = 0;
+
+		/**
+		 * Whether a sample can be taken at `point`. Stage boundaries (the start and end of a pass),
+		 * dispatch boundaries (between compute commands) and blit boundaries (between blit commands)
+		 * are supported when timestamps are; draw and tile dispatch boundaries are not.
+		 */
+		virtual bool supportsCounterSampling(CounterSamplingPoint point) const = 0;
+
+		/**
+		 * @return the new buffer, or null with `failure` describing why (if `failure` is non-null).
+		 */
+		virtual std::shared_ptr<CounterSampleBuffer> newCounterSampleBuffer(const CounterSampleBufferDescriptor& descriptor, CounterSampleBufferFailure* failure = nullptr) = 0;
+
+		/**
+		 * Samples the host's monotonic clock and the device's timestamp clock as close together as
+		 * the driver allows, both in nanoseconds. Where the driver cannot correlate the clocks, the
+		 * device value is taken from the host clock.
+		 */
+		virtual void sampleTimestamps(uint64_t* cpuTimestamp, uint64_t* gpuTimestamp) = 0;
 
 		// --- support api ---
 

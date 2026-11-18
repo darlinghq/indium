@@ -18,8 +18,8 @@ namespace Indium {
 
 	struct ComputePassSampleBufferAttachmentDescriptor {
 		std::shared_ptr<CounterSampleBuffer> sampleBuffer;
-		size_t startOfEncoderSampleIndex;
-		size_t endOfEncoderSampleIndex;
+		size_t startOfEncoderSampleIndex = counterDontSample;
+		size_t endOfEncoderSampleIndex = counterDontSample;
 	};
 
 	struct ComputePassDescriptor {
@@ -47,6 +47,12 @@ namespace Indium {
 		virtual void setTextures(const std::vector<std::shared_ptr<Texture>>& textures, Range<size_t> range) = 0;
 
 		virtual void setThreadgroupMemoryLength(size_t length, size_t index) = 0;
+
+		/**
+		 * Samples the counters of `sampleBuffer` into `sampleIndex` at this point in the encoder.
+		 * Does nothing for a buffer that is not from this device or an index outside the buffer.
+		 */
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) = 0;
 
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) = 0;
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) = 0;

@@ -226,11 +226,13 @@ namespace Indium {
 		return true;
 	}
 
-	static constexpr std::array<VkDescriptorPoolSize, 4> poolSizes {
+	static constexpr std::array<VkDescriptorPoolSize, 6> poolSizes {
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 512 },
 	};
 
 	/**
@@ -300,6 +302,7 @@ namespace Indium {
 			std::vector<VkWriteDescriptorSet> writeDescSet;
 			std::forward_list<VkDescriptorBufferInfo> bufInfos;
 			std::forward_list<VkDescriptorImageInfo> imageInfos;
+			std::forward_list<VkBufferView> bufferViews;
 
 			const FunctionResources& functionResources = funcResources[i];
 			const FunctionInfo& funcInfo = functionInfos[i];
@@ -362,20 +365,39 @@ namespace Indium {
 						continue;
 					}
 
-					auto& info = imageInfos.emplace_front();
-					// a storage image may not be swizzled, so it never gets the view a sampler reads through
+					// a texture_buffer is bound through the buffer view of its texture and any other texture through
+					// its image view (a storage image may not be swizzled, so it never gets the view a sampler reads
+					// through). A texture of the other kind has no such view, which is left unwritten like an unbound one.
 					bool sampled = bindingInfo.textureAccessType == TextureAccessType::Sample;
-					info.imageView = privateTexture ? (sampled ? privateTexture->sampledImageView() : privateTexture->imageView()) : VK_NULL_HANDLE;
-					info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
+					VkImageView imageView = VK_NULL_HANDLE;
+					VkBufferView bufferView = VK_NULL_HANDLE;
+					if (privateTexture) {
+						if (bindingInfo.texelBuffer) {
+							bufferView = privateTexture->bufferView();
+						} else {
+							imageView = sampled ? privateTexture->sampledImageView() : privateTexture->imageView();
+						}
+						if (bufferView == VK_NULL_HANDLE && imageView == VK_NULL_HANDLE && !privateDevice->nullDescriptorEnabled()) {
+							continue;
+						}
+					}
 
 					auto& descSet = writeDescSet.emplace_back();
 					descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 					descSet.dstSet = descriptorSets[i];
 					descSet.dstBinding = bindingInfo.internalIndex;
 					descSet.dstArrayElement = 0;
-					descSet.descriptorType = (bindingInfo.textureAccessType == TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+					descSet.descriptorType = textureDescriptorType(bindingInfo);
 					descSet.descriptorCount = 1;
-					descSet.pImageInfo = &info;
+
+					if (bindingInfo.texelBuffer) {
+						descSet.pTexelBufferView = &bufferViews.emplace_front(bufferView);
+					} else {
+						auto& info = imageInfos.emplace_front();
+						info.imageView = imageView;
+						info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
+						descSet.pImageInfo = &info;
+					}
 				} else if (bindingInfo.type == BindingType::Sampler) {
 					bool embeddedSampler = false;
 

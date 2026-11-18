@@ -1,7 +1,9 @@
 #include <indium/compute-command-encoder.private.hpp>
 #include <indium/device.private.hpp>
+#include <indium/counter.private.hpp>
 #include <indium/event.private.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/pipeline-timing.private.hpp>
 
 Indium::ComputeCommandEncoder::~ComputeCommandEncoder() {};
 
@@ -11,6 +13,9 @@ Indium::PrivateComputeCommandEncoder::PrivateComputeCommandEncoder(std::shared_p
 	_descriptor(descriptor),
 	_descriptorPools(_privateDevice->device())
 {
+	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.startOfEncoderSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	}
 	_tracked = commandBuffer->hazardsTracked();
 	if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
 		// the dispatches may run together: only what came before the encoder is waited for
@@ -26,6 +31,9 @@ Indium::PrivateComputeCommandEncoder::~PrivateComputeCommandEncoder() {
 
 void Indium::PrivateComputeCommandEncoder::endEncoding() {
 	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
+			PrivateCounterSampleBuffer::record(attachment.sampleBuffer, commandBuffer->commandBuffer(), attachment.endOfEncoderSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		}
 		if (_tracked) {
 			// nothing is recorded: the next command that uses what this encoder wrote waits for it
 			commandBuffer->hazards().endUnorderedGroup();
@@ -49,6 +57,23 @@ void Indium::PrivateComputeCommandEncoder::waitForFence(const std::shared_ptr<Fe
 		if (_tracked && _descriptor.dispatchType == DispatchType::Concurrent) {
 			commandBuffer->hazards().beginUnorderedGroup();
 		}
+	}
+};
+
+void Indium::PrivateComputeCommandEncoder::beginTimedDispatch(VkCommandBuffer commandBuffer) {
+	if (!_privateDevice->pipelineTimingEnabled()) {
+		return;
+	}
+	if (!_timer) {
+		_timer = std::make_shared<PipelineTimer>(_privateDevice);
+		_privateCommandBuffer.lock()->addPipelineTimer(_timer);
+	}
+	_timer->begin(commandBuffer, _pso->timingName());
+};
+
+void Indium::PrivateComputeCommandEncoder::endTimedDispatch(VkCommandBuffer commandBuffer) {
+	if (_timer) {
+		_timer->end(commandBuffer);
 	}
 };
 
@@ -128,7 +153,9 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 
 	orderDispatch(nullptr, 0);
 
+	beginTimedDispatch(buf->commandBuffer());
 	DynamicVK::vkCmdDispatch(buf->commandBuffer(), threadgroupsPerGrid.width, threadgroupsPerGrid.height, threadgroupsPerGrid.depth);
+	endTimedDispatch(buf->commandBuffer());
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);
@@ -157,7 +184,9 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 	// the buffer has to stay alive until the command buffer has completed
 	_keepAliveBuffers.push_back(indirectBuffer);
 
+	beginTimedDispatch(buf->commandBuffer());
 	DynamicVK::vkCmdDispatchIndirect(buf->commandBuffer(), std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->buffer(), indirectBufferOffset + std::dynamic_pointer_cast<PrivateBuffer>(indirectBuffer)->bufferOffset());
+	endTimedDispatch(buf->commandBuffer());
 
 	// see PrivateRenderCommandEncoder::drawPrimitives() for why we do this
 	_savedFunctionResources.push_back(_functionResources);
@@ -311,4 +340,11 @@ void Indium::PrivateComputeCommandEncoder::memoryBarrier(BarrierScope scope) {
 void Indium::PrivateComputeCommandEncoder::memoryBarrier(const std::vector<std::shared_ptr<Resource>>& resources) {
 	// ordering the given resources only is not cheaper than ordering all of them
 	memoryBarrier(BarrierScope::Buffers | BarrierScope::Textures);
+};
+
+void Indium::PrivateComputeCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	if (auto commandBuffer = _privateCommandBuffer.lock()) {
+		// the sample is taken once the commands before it have finished, whether or not a barrier was asked for
+		PrivateCounterSampleBuffer::record(sampleBuffer, commandBuffer->commandBuffer(), sampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+	}
 };

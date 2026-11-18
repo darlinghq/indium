@@ -134,6 +134,7 @@ Indium::PrivateHeap::PrivateHeap(std::shared_ptr<PrivateDevice> device, const He
 
 	// buffers need the device address flag, so the memory is allocated as buffer memory
 	_allocation = _device->memoryPool().allocateDedicated(_device->device(), _memoryTypeIndex, _size, MemoryPool::Kind::Buffer);
+	_device->noteHeapCreated(_size);
 
 	if (_type == HeapType::Automatic) {
 		_ranges = RangeAllocator(_size);
@@ -141,6 +142,9 @@ Indium::PrivateHeap::PrivateHeap(std::shared_ptr<PrivateDevice> device, const He
 };
 
 Indium::PrivateHeap::~PrivateHeap() {
+	if (_allocation.memory != VK_NULL_HANDLE) {
+		_device->noteHeapDestroyed(_size);
+	}
 	_device->memoryPool().free(_device->device(), _allocation);
 };
 

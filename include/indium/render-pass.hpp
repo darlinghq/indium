@@ -3,9 +3,11 @@
 #include <memory>
 #include <vector>
 #include <optional>
+#include <unordered_map>
 
 #include <indium/buffer.hpp>
 #include <indium/base.hpp>
+#include <indium/counter.hpp>
 #include <indium/rasterization-rate.hpp>
 #include <indium/types.hpp>
 #include <indium/texture.hpp>
@@ -55,7 +57,11 @@ namespace Indium {
 	};
 
 	struct RenderPassSampleBufferAttachmentDescriptor {
-		// TODO
+		std::shared_ptr<CounterSampleBuffer> sampleBuffer;
+		size_t startOfVertexSampleIndex = counterDontSample;
+		size_t endOfVertexSampleIndex = counterDontSample;
+		size_t startOfFragmentSampleIndex = counterDontSample;
+		size_t endOfFragmentSampleIndex = counterDontSample;
 	};
 
 	struct RenderPassDescriptor {
@@ -72,7 +78,7 @@ namespace Indium {
 		size_t renderTargetWidth;
 		size_t renderTargetHeight;
 		std::shared_ptr<RasterizationRateMap> rasterizationRateMap;
-		std::shared_ptr<RenderPassSampleBufferAttachmentDescriptor> sampleBufferAttachments;
+		std::unordered_map<size_t, RenderPassSampleBufferAttachmentDescriptor> sampleBufferAttachments;
 		std::vector<SamplePosition> samplePositions;
 	};
 };

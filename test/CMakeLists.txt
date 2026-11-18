@@ -1,6 +1,7 @@
 project(indium-test)
 
 add_subdirectory(triangle)
+add_subdirectory(swapchain-surface)
 add_subdirectory(sampler)
 add_subdirectory(cube)
 add_subdirectory(lighting)
@@ -44,8 +45,13 @@ add_subdirectory(texture-write)
 add_subdirectory(threadgroup)
 add_subdirectory(atomics)
 add_subdirectory(bit-ops)
+add_subdirectory(texture-gather)
+add_subdirectory(texture-size)
+add_subdirectory(texture-multisample)
+add_subdirectory(simdgroup)
 add_subdirectory(pipeline-bench)
 add_subdirectory(pipeline-cache)
+add_subdirectory(diagnostics)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
 # <glm/gtx/type_aligned.hpp>, and GLM 1.0.3 hard-errors in every gtx header
@@ -84,6 +90,12 @@ add_iridium_check(indium-test-interface-locations interface-locations/interface-
 add_test(NAME interface-locations COMMAND indium-test-interface-locations)
 add_iridium_check(indium-test-function-constants function-constants/function-constants.cpp)
 add_test(NAME function-constants COMMAND indium-test-function-constants "${CMAKE_CURRENT_SOURCE_DIR}/function-constants/function-constants.metallib")
+add_iridium_check(indium-test-air-intrinsic-arguments air-intrinsic-arguments/air-intrinsic-arguments.cpp)
+add_test(NAME air-intrinsic-arguments COMMAND indium-test-air-intrinsic-arguments)
+add_iridium_check(indium-test-air-malformed-parameters air-malformed-parameters/air-malformed-parameters.cpp)
+add_test(NAME air-malformed-parameters COMMAND indium-test-air-malformed-parameters)
+add_iridium_check(indium-test-air-calls air-calls/air-calls.cpp)
+add_test(NAME air-calls COMMAND indium-test-air-calls)
 add_iridium_check(indium-test-vertex-input-reflection vertex-input-reflection/vertex-input-reflection.cpp)
 add_test(NAME vertex-input-reflection COMMAND indium-test-vertex-input-reflection)
 
@@ -119,3 +131,4 @@ set_target_properties(indium-test-device-order PROPERTIES CXX_STANDARD 17 CXX_ST
 add_test(NAME device-order COMMAND indium-test-device-order)
 add_subdirectory(texture-usage)
 add_subdirectory(viewport-origin)
+add_subdirectory(counters)

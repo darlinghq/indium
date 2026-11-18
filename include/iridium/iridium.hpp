@@ -37,6 +37,8 @@ namespace Iridium {
 		size_t internalIndex;
 		TextureAccessType textureAccessType;
 		size_t embeddedSamplerIndex;
+		// a texture_buffer: bound as a texel buffer instead of an image (Sample means uniform, otherwise storage)
+		bool texelBuffer = false;
 	};
 
 	struct EmbeddedSampler {

@@ -78,3 +78,33 @@ kernel void claim_from_seven(device atomic_uint* flag [[buffer(0)]], device uint
 		out[gid] = 1000u + expected;
 	}
 }
+
+// the 64-bit atomic functions: minimum and maximum of values that do not fit in 32 bits
+kernel void min_max_64(device atomic_ulong* counters [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
+	atomic_max_explicit(&counters[0], (ulong(gid) << 32) | 5ul, memory_order_relaxed);
+	atomic_min_explicit(&counters[1], 0x100000000ul + 100ul - ulong(gid), memory_order_relaxed);
+}
+
+// fences between plain stores
+kernel void fences(device uint* out [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
+	out[gid * 3] = 1u;
+	atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+	out[gid * 3 + 1] = 2u;
+	atomic_thread_fence(mem_flags::mem_threadgroup, memory_order_seq_cst, thread_scope_threadgroup);
+	out[gid * 3 + 2] = 3u;
+}
+
+// 32-bit float atomics: add, subtract, exchange, store and load
+kernel void float_add(device atomic_float* sums [[buffer(0)]]) {
+	atomic_fetch_add_explicit(&sums[0], 1.0f, memory_order_relaxed);
+	atomic_fetch_sub_explicit(&sums[1], 0.5f, memory_order_relaxed);
+}
+
+kernel void float_exchange(device atomic_float* slot [[buffer(0)]], device float* seen [[buffer(1)]], uint gid [[thread_position_in_grid]]) {
+	seen[gid] = atomic_exchange_explicit(&slot[0], float(gid + 1), memory_order_relaxed);
+}
+
+kernel void float_load_store(device atomic_float* slots [[buffer(0)]], device float* out [[buffer(1)]], uint gid [[thread_position_in_grid]]) {
+	atomic_store_explicit(&slots[gid], float(gid) * 2.5f + 1.0f, memory_order_relaxed);
+	out[gid] = atomic_load_explicit(&slots[gid], memory_order_relaxed);
+}

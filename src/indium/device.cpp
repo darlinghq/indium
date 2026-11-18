@@ -1,4 +1,6 @@
 #include <indium/device.private.hpp>
+#include <indium/counter.private.hpp>
+#include <ctime>
 #include <indium/memory-type.private.hpp>
 #include <indium/device-order.private.hpp>
 
@@ -96,6 +98,7 @@ namespace {
 				descriptor.internalIndex = binding.internalIndex;
 				descriptor.textureAccessType = static_cast<Indium::TextureAccessType>(binding.textureAccessType);
 				descriptor.embeddedSamplerIndex = binding.embeddedSamplerIndex;
+				descriptor.texelBuffer = binding.texelBuffer;
 
 				functionInfo.bindings.push_back(descriptor);
 			}
@@ -307,6 +310,7 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	//       to make it to create CommandBuffers that can do either one.
 
 	if (_graphicsQueueFamilyIndex) {
+		_timestampValidBits = queueFamilies[*_graphicsQueueFamilyIndex].timestampValidBits;
 		_queueFamilyIndices.insert(*_graphicsQueueFamilyIndex);
 	}
 
@@ -395,6 +399,58 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		}
 	}
 
+	// Lets the device's timestamps be correlated with the host clock (sampleTimestamps()).
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0;
+	})) {
+		_enabledExtensions.push_back(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
+		_calibratedTimestamps = true;
+	}
+
+	// 32-bit float atomics (atomic_float in Metal): load, store, exchange and add on buffers and shared memory. The
+	// features are enabled when the device is created (see createLogicalDevice()).
+	if (std::any_of(extProps.begin(), extProps.end(), [](const VkExtensionProperties& prop) {
+		return strcmp(prop.extensionName, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME) == 0;
+	})) {
+		VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloat {};
+		atomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &atomicFloat;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		if (atomicFloat.shaderBufferFloat32Atomics || atomicFloat.shaderBufferFloat32AtomicAdd || atomicFloat.shaderSharedFloat32Atomics || atomicFloat.shaderSharedFloat32AtomicAdd) {
+			_enabledExtensions.push_back(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
+			indiumFeatures = indiumFeatures | Feature::ShaderAtomicFloat;
+		}
+	}
+
+	// Knowing when a presented image reached the display: VK_KHR_present_id numbers presents and
+	// VK_KHR_present_wait waits for one. Both features are enabled when the device is created.
+	{
+		auto hasExtension = [&](const char* name) {
+			return std::any_of(extProps.begin(), extProps.end(), [&](const VkExtensionProperties& prop) {
+				return strcmp(prop.extensionName, name) == 0;
+			});
+		};
+
+		if (hasExtension(VK_KHR_PRESENT_ID_EXTENSION_NAME) && hasExtension(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) && !!(indiumFeatures & Feature::Swapchain)) {
+			VkPhysicalDevicePresentIdFeaturesKHR presentId {};
+			presentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+			VkPhysicalDevicePresentWaitFeaturesKHR presentWait {};
+			presentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+			presentWait.pNext = &presentId;
+			VkPhysicalDeviceFeatures2 query {};
+			query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			query.pNext = &presentWait;
+			DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+			if (presentId.presentId && presentWait.presentWait) {
+				_enabledExtensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+				_enabledExtensions.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+				indiumFeatures = indiumFeatures | Feature::PresentWait;
+			}
+		}
+	}
+
 	_features = indiumFeatures;
 
 	// VK_FORMAT_A8_UNORM_KHR comes with VK_KHR_maintenance5 (core in Vulkan 1.4). It is only useful for A8Unorm
@@ -459,6 +515,37 @@ void Indium::PrivateDevice::createLogicalDevice() {
 		maintenance5.maintenance5 = VK_TRUE;
 		maintenance5.pNext = features13.pNext;
 		features13.pNext = &maintenance5;
+	}
+
+	// enable the float atomics the device has, and nothing else the extension offers
+	VkPhysicalDeviceShaderAtomicFloatFeaturesEXT atomicFloat {};
+	if (!!(_features & Feature::ShaderAtomicFloat)) {
+		atomicFloat.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		VkPhysicalDeviceFeatures2 query {};
+		query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+		query.pNext = &atomicFloat;
+		DynamicVK::vkGetPhysicalDeviceFeatures2(_physicalDevice, &query);
+		VkPhysicalDeviceShaderAtomicFloatFeaturesEXT enabled {};
+		enabled.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT;
+		enabled.shaderBufferFloat32Atomics = atomicFloat.shaderBufferFloat32Atomics;
+		enabled.shaderBufferFloat32AtomicAdd = atomicFloat.shaderBufferFloat32AtomicAdd;
+		enabled.shaderSharedFloat32Atomics = atomicFloat.shaderSharedFloat32Atomics;
+		enabled.shaderSharedFloat32AtomicAdd = atomicFloat.shaderSharedFloat32AtomicAdd;
+		atomicFloat = enabled;
+		atomicFloat.pNext = features13.pNext;
+		features13.pNext = &atomicFloat;
+	}
+
+	VkPhysicalDevicePresentIdFeaturesKHR presentId {};
+	VkPhysicalDevicePresentWaitFeaturesKHR presentWait {};
+	if (!!(_features & Feature::PresentWait)) {
+		presentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+		presentId.presentId = VK_TRUE;
+		presentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+		presentWait.presentWait = VK_TRUE;
+		presentWait.pNext = &presentId;
+		presentId.pNext = features13.pNext;
+		features13.pNext = &presentWait;
 	}
 
 	VkDeviceCreateInfo deviceCreateInfo {};
@@ -673,6 +760,45 @@ Indium::DeviceType Indium::PrivateDevice::deviceType() const {
 		case VK_PHYSICAL_DEVICE_TYPE_CPU:            return DeviceType::CPU;
 		default:                                     return DeviceType::Other;
 	}
+};
+
+uint64_t Indium::PrivateDevice::currentAllocatedSize() const {
+	return _memoryPool.counters().liveBytes;
+};
+
+Indium::DeviceStatistics Indium::PrivateDevice::statistics() const {
+	auto counters = _memoryPool.counters();
+	DeviceStatistics result {};
+	result.allocatedBytes = counters.liveBytes;
+	result.peakAllocatedBytes = counters.peakBytes;
+	result.liveAllocations = counters.liveAllocations;
+	result.totalAllocations = counters.totalAllocations;
+	result.totalAllocatedBytes = counters.totalBytes;
+	result.liveMemoryObjects = counters.liveMemoryObjects;
+	result.totalMemoryObjects = counters.totalMemoryObjects;
+	result.liveHeaps = _liveHeaps.load();
+	result.liveHeapBytes = _liveHeapBytes.load();
+	result.totalHeaps = _totalHeaps.load();
+	return result;
+};
+
+bool Indium::PrivateDevice::supportsPipelineTiming() const {
+	return _hostQueryReset && _timestampValidBits != 0 && _properties.limits.timestampComputeAndGraphics;
+};
+
+void Indium::PrivateDevice::setPipelineTimingEnabled(bool enabled) {
+	_pipelineTiming.store(enabled && supportsPipelineTiming(), std::memory_order_relaxed);
+};
+
+void Indium::PrivateDevice::noteHeapCreated(uint64_t size) {
+	++_liveHeaps;
+	++_totalHeaps;
+	_liveHeapBytes += size;
+};
+
+void Indium::PrivateDevice::noteHeapDestroyed(uint64_t size) {
+	--_liveHeaps;
+	_liveHeapBytes -= size;
 };
 
 std::vector<Indium::MemoryHeap> Indium::PrivateDevice::memoryHeaps() const {
@@ -1221,6 +1347,114 @@ std::shared_ptr<Indium::SharedEvent> Indium::PrivateDevice::newSharedEvent(const
 std::shared_ptr<Indium::Fence> Indium::PrivateDevice::newFence() {
 	ensureLogicalDevice();
 	return std::make_shared<PrivateFence>(shared_from_this());
+};
+
+// Timestamp counters need what pipeline timing needs: timestamps from the graphics queue and a host-reset query pool.
+std::vector<Indium::CounterSet> Indium::PrivateDevice::counterSets() const {
+	if (!supportsPipelineTiming()) {
+		return {};
+	}
+	return { CounterSet { counterSetTimestamp, { Counter { counterTimestamp } } } };
+};
+
+bool Indium::PrivateDevice::supportsCounterSampling(CounterSamplingPoint point) const {
+	if (!supportsPipelineTiming()) {
+		return false;
+	}
+	switch (point) {
+		case CounterSamplingPoint::AtStageBoundary:
+		case CounterSamplingPoint::AtDispatchBoundary:
+		case CounterSamplingPoint::AtBlitBoundary:
+			return true;
+		// a draw is inside a render pass, where a query cannot be reset
+		case CounterSamplingPoint::AtDrawBoundary:
+		case CounterSamplingPoint::AtTileDispatchBoundary:
+			return false;
+	}
+	return false;
+};
+
+std::shared_ptr<Indium::CounterSampleBuffer> Indium::PrivateDevice::newCounterSampleBuffer(const CounterSampleBufferDescriptor& descriptor, CounterSampleBufferFailure* failure) {
+	auto fail = [&](CounterSampleBufferError error, std::string message) -> std::shared_ptr<CounterSampleBuffer> {
+		if (failure) {
+			failure->error = error;
+			failure->message = std::move(message);
+		}
+		return nullptr;
+	};
+
+	// QUIRK: the sample count is limited to 4096 timestamps (32768 bytes), and a request outside 1...4096 or
+	// without a counter set is an Invalid error. Not documented; the limit and the messages are what
+	// the Apple GPU of a macOS 27.0.1 arm64 Mac reported (tier 2, black box); other GPUs may differ.
+	// Test: counter_sample_buffer_errors
+	static constexpr size_t maxSampleCount = 4096;
+
+	if (descriptor.counterSetName != counterSetTimestamp) {
+		return fail(CounterSampleBufferError::Invalid, "Invalid counter set size. Expecting 1 counter");
+	}
+	if (!supportsPipelineTiming()) {
+		return fail(CounterSampleBufferError::Internal, "The device cannot sample timestamps");
+	}
+	if (descriptor.sampleCount == 0 || descriptor.sampleCount > maxSampleCount) {
+		return fail(CounterSampleBufferError::Invalid, "Invalid sample buffer length: " + std::to_string(descriptor.sampleCount * sizeof(uint64_t)) + " B. Expected range: 8 -> " + std::to_string(maxSampleCount * sizeof(uint64_t)));
+	}
+
+	VkQueryPoolCreateInfo info {};
+	info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+	info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+	info.queryCount = static_cast<uint32_t>(descriptor.sampleCount);
+
+	VkQueryPool pool = VK_NULL_HANDLE;
+	auto result = DynamicVK::vkCreateQueryPool(device(), &info, nullptr, &pool);
+	if (result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+		return fail(CounterSampleBufferError::OutOfMemory, "Not enough memory for the counter sample buffer");
+	}
+	if (result != VK_SUCCESS) {
+		return fail(CounterSampleBufferError::Internal, "Cannot create the counter sample buffer");
+	}
+
+	// the samples read as zero until they are written
+	DynamicVK::vkResetQueryPool(device(), pool, 0, info.queryCount);
+
+	return std::make_shared<PrivateCounterSampleBuffer>(shared_from_this(), pool, descriptor.sampleCount);
+};
+
+void Indium::PrivateDevice::sampleTimestamps(uint64_t* cpuTimestamp, uint64_t* gpuTimestamp) {
+	auto hostNanoseconds = []() {
+		timespec ts {};
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+	};
+
+	uint64_t cpu = 0;
+	uint64_t gpu = 0;
+
+	if (_calibratedTimestamps && _timestampValidBits != 0 && DynamicVK::vkGetCalibratedTimestampsEXT.isAvailable()) {
+		VkCalibratedTimestampInfoEXT infos[2] {};
+		infos[0].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+		infos[0].timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+		infos[1].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+		infos[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
+		uint64_t values[2] = {};
+		uint64_t deviation = 0;
+		if (DynamicVK::vkGetCalibratedTimestampsEXT(device(), 2, infos, values, &deviation) == VK_SUCCESS) {
+			const uint64_t mask = _timestampValidBits >= 64 ? ~0ull : ((1ull << _timestampValidBits) - 1);
+			gpu = static_cast<uint64_t>(static_cast<double>(values[0] & mask) * _properties.limits.timestampPeriod);
+			cpu = values[1];
+		}
+	}
+
+	if (cpu == 0) {
+		// the clocks cannot be correlated, so the device's is the host's
+		cpu = gpu = hostNanoseconds();
+	}
+
+	if (cpuTimestamp) {
+		*cpuTimestamp = cpu;
+	}
+	if (gpuTimestamp) {
+		*gpuTimestamp = gpu;
+	}
 };
 
 std::shared_ptr<Indium::Device> Indium::createSystemDefaultDevice() {

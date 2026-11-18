@@ -2,6 +2,7 @@
 
 #include <indium/command-encoder.hpp>
 #include <indium/event.hpp>
+#include <indium/counter.hpp>
 #include <indium/base.hpp>
 #include <indium/render-pipeline.hpp>
 
@@ -20,6 +21,13 @@ namespace Indium {
 	class RenderCommandEncoder: public CommandEncoder {
 	public:
 		virtual ~RenderCommandEncoder() = 0;
+
+		/**
+		 * Samples at a draw boundary. This device does not offer draw boundary sampling
+		 * (Device::supportsCounterSampling()), so this records nothing; the pass's own start and end
+		 * samples come from the render pass descriptor.
+		 */
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) = 0;
 
 		virtual void setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) = 0;
 		virtual void setFrontFacingWinding(Winding frontFaceWinding) = 0;

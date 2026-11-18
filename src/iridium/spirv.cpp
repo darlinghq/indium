@@ -143,6 +143,10 @@ Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::declareType(const Type& type) 
 		_requiredCapabilities.insert(typeCopy.imageIsSampledIndication == 2 ? Capability::Image1D : Capability::Sampled1D);
 	}
 
+	if (typeCopy.backingType == Type::BackingType::Image && typeCopy.imageDimensionality == Dim::eBuffer) {
+		_requiredCapabilities.insert(typeCopy.imageIsSampledIndication == 2 ? Capability::ImageBuffer : Capability::SampledBuffer);
+	}
+
 	if (typeCopy.backingType == Type::BackingType::Matrix) {
 		_requiredCapabilities.insert(Capability::Matrix);
 	} else if (typeCopy.backingType == Type::BackingType::FloatingPoint) {
@@ -210,6 +214,10 @@ void Iridium::SPIRV::Builder::setGeneratorID(uint16_t id, uint16_t version) {
 
 void Iridium::SPIRV::Builder::requireCapability(Capability capability) {
 	_requiredCapabilities.insert(capability);
+};
+
+void Iridium::SPIRV::Builder::requireExtension(const std::string& name) {
+	_extensions.insert(name);
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::reserveResultID() {

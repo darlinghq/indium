@@ -16,6 +16,108 @@ namespace DynamicLLVM = Iridium::DynamicLLVM;
 
 // we use LLVM's C API because it's much more stable than the C++ API and it's good enough for our needs
 
+// Calls to helper functions are resolved by inlining the callee into the kernel before translation, so that
+// every pointer keeps the type the kernel's argument description gives it and the translator only ever sees
+// one function. Metal Shading Language has no recursion and no function pointers, so a module that has either
+// (or a call that has no body to inline) is not valid AIR and is refused here. The module comes from outside,
+// so the walk is bounded in depth and in the size of the expanded function.
+namespace {
+
+constexpr unsigned maxCallDepth = 128;
+constexpr uint64_t maxInlinedInstructions = 1u << 20;
+
+struct CallGraphWalk {
+	LLVMContextRef context;
+	// functions on the current path (true) and finished ones (false)
+	std::unordered_map<LLVMValueRef, bool> onPath;
+	// the instruction count of a finished function with everything it calls expanded
+	std::unordered_map<LLVMValueRef, uint64_t> expandedSize;
+	std::vector<std::pair<LLVMValueRef, LLVMValueRef>> inlinedCalls; // call, callee
+
+	static std::string nameOf(LLVMValueRef function) {
+		size_t length = 0;
+		auto name = DynamicLLVM::LLVMGetValueName2(function, &length);
+		return name ? std::string(name, length) : std::string();
+	}
+
+	uint64_t visit(LLVMValueRef function, unsigned depth) {
+		if (depth > maxCallDepth) {
+			throw std::runtime_error("Calls are nested too deeply (function " + nameOf(function) + ")");
+		}
+		onPath[function] = true;
+		uint64_t size = 0;
+		for (auto block = DynamicLLVM::LLVMGetFirstBasicBlock(function); block; block = DynamicLLVM::LLVMGetNextBasicBlock(block)) {
+			for (auto inst = DynamicLLVM::LLVMGetFirstInstruction(block); inst; inst = DynamicLLVM::LLVMGetNextInstruction(inst)) {
+				++size;
+				auto opcode = DynamicLLVM::LLVMGetInstructionOpcode(inst);
+				if (opcode == LLVMInvoke || opcode == LLVMCallBr) {
+					throw std::runtime_error("Unsupported call instruction in function " + nameOf(function));
+				}
+				if (opcode != LLVMCall) {
+					continue;
+				}
+				auto callee = DynamicLLVM::LLVMGetCalledValue(inst);
+				if (!callee || DynamicLLVM::LLVMGetValueKind(callee) != LLVMFunctionValueKind) {
+					throw std::runtime_error("Indirect calls are not supported (in function " + nameOf(function) + ")");
+				}
+				auto calleeName = nameOf(callee);
+				if (DynamicLLVM::LLVMIsDeclaration(callee)) {
+					// intrinsics are translated one by one later; anything else has nothing to inline
+					if (calleeName.compare(0, 4, "air.") != 0 && calleeName.compare(0, 5, "llvm.") != 0) {
+						throw std::runtime_error("Call to function " + calleeName + ", which has no body");
+					}
+					continue;
+				}
+				auto calleeType = DynamicLLVM::LLVMGlobalGetValueType(callee);
+				if (DynamicLLVM::LLVMGetCalledFunctionType(inst) != calleeType || DynamicLLVM::LLVMIsFunctionVarArg(calleeType)) {
+					throw std::runtime_error("Call to function " + calleeName + " does not match its definition");
+				}
+				auto state = onPath.find(callee);
+				if (state != onPath.end() && state->second) {
+					throw std::runtime_error("Recursive call of function " + calleeName);
+				}
+				uint64_t calleeSize;
+				if (state == onPath.end()) {
+					calleeSize = visit(callee, depth + 1);
+				} else {
+					calleeSize = expandedSize.at(callee);
+				}
+				size += calleeSize;
+				if (size > maxInlinedInstructions) {
+					throw std::runtime_error("The function is too large once its calls are inlined");
+				}
+				inlinedCalls.emplace_back(inst, callee);
+			}
+		}
+		onPath[function] = false;
+		expandedSize[function] = size;
+		return size;
+	}
+};
+
+// Checks the calls reachable from the kernel and marks the called functions so that the always-inline pass
+// expands them (including the ones the compiler marked noinline).
+void prepareCallsForInlining(LLVMModuleRef module, LLVMValueRef kernel) {
+	CallGraphWalk walk;
+	walk.context = DynamicLLVM::LLVMGetModuleContext(module);
+	walk.visit(kernel, 0);
+
+	if (walk.inlinedCalls.empty()) {
+		return;
+	}
+
+	auto noinline = DynamicLLVM::LLVMGetEnumAttributeKindForName("noinline", 8);
+	auto alwaysinline = DynamicLLVM::LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+	auto always = DynamicLLVM::LLVMCreateEnumAttribute(walk.context, alwaysinline, 0);
+	for (auto& [call, callee]: walk.inlinedCalls) {
+		DynamicLLVM::LLVMRemoveEnumAttributeAtIndex(callee, LLVMAttributeFunctionIndex, noinline);
+		DynamicLLVM::LLVMAddAttributeAtIndex(callee, LLVMAttributeFunctionIndex, always);
+		DynamicLLVM::LLVMRemoveCallSiteEnumAttribute(call, LLVMAttributeFunctionIndex, noinline);
+	}
+}
+
+}
+
 Iridium::AIR::Function::Function(Type type, const std::string& name, const void* bitcode, size_t bitcodeSize):
 	_name(name),
 	_type(type)
@@ -43,6 +145,14 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 
 	_module = LLVMSupport::Module(moduleRef, DynamicLLVM::LLVMDisposeModule);
 
+	// Helper functions called by the kernel are expanded into it first (see prepareCallsForInlining).
+	{
+		auto kernel = DynamicLLVM::LLVMGetNamedFunction(moduleRef, _name.c_str());
+		if (kernel) {
+			prepareCallsForInlining(moduleRef, kernel);
+		}
+	}
+
 	// SPIR-V requires structured control flow, while AIR may contain any reducible CFG and keeps local
 	// aggregates in memory. Promote locals to SSA values and give every selection and loop its own merge
 	// block before translating. LLVM has no AIR target, so present the module as the SPIR-V it is being
@@ -50,7 +160,7 @@ Iridium::AIR::Function::Function(Type type, const std::string& name, const void*
 	std::string triple = DynamicLLVM::LLVMGetTarget(moduleRef);
 	DynamicLLVM::LLVMSetTarget(moduleRef, "spirv64-unknown-unknown");
 	auto passOptions = DynamicLLVM::LLVMCreatePassBuilderOptions();
-	auto passError = DynamicLLVM::LLVMRunPasses(moduleRef, "function(sroa,mem2reg,loop-unroll,sroa,mem2reg,simplifycfg,structurizecfg)", nullptr, passOptions);
+	auto passError = DynamicLLVM::LLVMRunPasses(moduleRef, "always-inline,function(sroa,mem2reg,loop-unroll,sroa,mem2reg,simplifycfg,structurizecfg)", nullptr, passOptions);
 	DynamicLLVM::LLVMDisposePassBuilderOptions(passOptions);
 	DynamicLLVM::LLVMSetTarget(moduleRef, triple.c_str());
 
@@ -250,6 +360,31 @@ static std::vector<LLVMValueRef> airParameterOperands(LLVMValueRef parameterOper
 		info.erase(info.begin() + 1, info.begin() + 3);
 	}
 	return info;
+}
+
+// The kind of a parameter (air.buffer, air.texture, ...): the second operand of its description, which a malformed
+// module may not have.
+static std::string_view airParameterKind(const std::vector<LLVMValueRef>& parameterInfo) {
+	if (parameterInfo.size() < 2 || !parameterInfo[1] || !DynamicLLVM::LLVMIsAMDString(parameterInfo[1])) {
+		throw ImpossibleResultID("a parameter description has no kind");
+	}
+	return llvmMDStringToStringView(parameterInfo[1]);
+}
+
+// The integer operand at `index` of a parameter description, which a malformed module may not have.
+static int64_t airParameterInteger(const std::vector<LLVMValueRef>& parameterInfo, size_t index) {
+	if (index >= parameterInfo.size() || !parameterInfo[index] || !DynamicLLVM::LLVMIsAConstantInt(parameterInfo[index])) {
+		throw ImpossibleResultID("a parameter description has a missing or non-integer operand");
+	}
+	return DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[index]);
+}
+
+// The string operand at `index` of a parameter description, which a malformed module may not have.
+static std::string_view airParameterString(const std::vector<LLVMValueRef>& parameterInfo, size_t index) {
+	if (index >= parameterInfo.size() || !parameterInfo[index] || !DynamicLLVM::LLVMIsAMDString(parameterInfo[index])) {
+		throw ImpossibleResultID("a parameter description has a missing or non-string operand");
+	}
+	return llvmMDStringToStringView(parameterInfo[index]);
 }
 
 // Returns the operand that follows the given MDString key in an AIR argument
@@ -865,9 +1000,10 @@ static Iridium::SPIRV::ResultID descendToFirstElement(Iridium::SPIRV::Builder& b
 	return access;
 }
 
-// Translates the AIR atomic functions of 32-bit integers, air.atomic.<global|local>.<operation>[.<s|u>].i32, whose
-// arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
-// false when `name` is not one of them. The order is relaxed unless the module asks for more.
+// Translates the AIR atomic functions of 32-bit and 64-bit integers and of 32-bit floats,
+// air.atomic.<global|local>.<operation>[.<s|u>].<i32|i64|f32>, whose arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
+// false when `name` is not one of them. The order is relaxed unless the module asks for more. The functions that update
+// memory return the value that was there before, except the 64-bit minimum and maximum, which return nothing.
 static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.atomic.";
@@ -882,8 +1018,14 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		parts.push_back(rest.substr(0, dot));
 		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
 	}
-	if (parts.size() < 3 || parts.size() > 4 || parts.back() != "i32" || (parts[0] != "global" && parts[0] != "local")) {
+	if (parts.size() < 3 || parts.size() > 4 || (parts.back() != "i32" && parts.back() != "i64" && parts.back() != "f32") || (parts[0] != "global" && parts[0] != "local")) {
 		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
+	}
+	unsigned width = parts.back() == "i64" ? 64 : 32;
+	bool isFloat = parts.back() == "f32";
+	if (width == 64) {
+		builder.requireCapability(Capability::Int64);
+		builder.requireCapability(Capability::Int64Atomics);
 	}
 	auto operation = parts[1];
 	bool isSigned = parts.size() == 4 && parts[2] == "s";
@@ -918,7 +1060,7 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		throw ImpossibleResultID("atomic function on something that is not a pointer");
 	}
 	auto storageClass = pointerInfo->pointerStorageClass;
-	auto integerType = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+	auto integerType = isFloat ? builder.declareType(Type(Type::FloatTag {}, 32)) : builder.declareType(Type(Type::IntegerTag {}, width, true));
 	if (isLogicalStorageClass(storageClass)) {
 		pointer = descendToFirstElement(builder, pointer, ResultIDInvalid);
 	} else if (pointerInfo->targetType != integerType) {
@@ -931,8 +1073,8 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	// a threadgroup variable keeps the type it was declared with; values are cast to it
 	auto memoryType = builder.reverseLookupType(builder.lookupResultType(pointer))->targetType;
 	auto memoryInfo = *builder.reverseLookupType(memoryType);
-	if (memoryInfo.backingType != Type::BackingType::Integer || memoryInfo.scalarWidth != 32) {
-		throw ImpossibleResultID("atomic function on memory that is not a 32-bit integer");
+	if (memoryInfo.backingType != (isFloat ? Type::BackingType::FloatingPoint : Type::BackingType::Integer) || memoryInfo.scalarWidth != width) {
+		throw ImpossibleResultID("atomic function on memory that is not a " + std::to_string(width) + (isFloat ? "-bit float" : "-bit integer"));
 	}
 	auto asMemoryType = [&](ResultID value) {
 		return builder.lookupResultType(value) == memoryType ? value : builder.encodeBitcast(memoryType, value);
@@ -948,6 +1090,9 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	}
 
 	if (compareExchange) {
+		if (isFloat) {
+			throw ImpossibleResultID("compare-and-exchange of floats is unsupported");
+		}
 		// (pointer, pointer to the expected value, desired value, success order, failure order, ...): the value found in
 		// memory is also written to the expected value (on a success it equals it already)
 		auto expectedPointer = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1));
@@ -974,8 +1119,19 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	}
 
 	Opcode opcode;
+	if (isFloat && operation != "xchg" && operation != "add" && operation != "sub") {
+		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
+	}
 	if (operation == "xchg") {
 		opcode = Opcode::AtomicExchange;
+	} else if (isFloat) {
+		// there is no float subtraction: add the negated value
+		builder.requireExtension("SPV_EXT_shader_atomic_float_add");
+		builder.requireCapability(Capability::AtomicFloat32AddEXT);
+		if (operation == "sub") {
+			value = builder.encodeOp(Opcode::FNegate, memoryType, { value });
+		}
+		opcode = Opcode::AtomicFAddEXT;
 	} else if (operation == "add") {
 		opcode = Opcode::AtomicIAdd;
 	} else if (operation == "sub") {
@@ -994,8 +1150,159 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 		throw ImpossibleResultID("unsupported atomic function " + std::string(name));
 	}
 	auto old = builder.encodeOp(opcode, memoryType, { pointer, scopeID, semanticsID, value });
-	resID = builder.lookupResultType(old) == resultType ? old : builder.encodeBitcast(resultType, old);
+	// a call that returns nothing has no use for the old value
+	if (DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMTypeOf(inst)) != LLVMVoidTypeKind) {
+		resID = builder.lookupResultType(old) == resultType ? old : builder.encodeBitcast(resultType, old);
+	}
 	return true;
+}
+
+static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned);
+
+// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<i32|f32>, which work on the threads of a
+// subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
+// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Only 32-bit
+// integers and floats are supported.
+static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	constexpr std::string_view prefix = "air.simd_";
+	if (name.substr(0, prefix.size()) != prefix) {
+		return false;
+	}
+
+	// <operation>[.<s|u>].<type>
+	std::vector<std::string_view> parts;
+	for (auto rest = name.substr(prefix.size()); !rest.empty();) {
+		auto dot = rest.find('.');
+		parts.push_back(rest.substr(0, dot));
+		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
+	}
+	if (parts.empty() || parts.size() > 3) {
+		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+	auto operation = parts[0];
+	bool isSigned = parts.size() == 3 && parts[1] == "s";
+	auto typeName = parts.size() > 1 ? parts.back() : std::string_view();
+	bool isFloat = typeName == "f32";
+
+	// the last operand of a call is the callee
+	unsigned arguments = DynamicLLVM::LLVMGetNumOperands(inst) - 1;
+	auto argument = [&](unsigned i) {
+		if (i >= arguments) {
+			throw ImpossibleResultID("simdgroup function " + std::string(name) + " has too few arguments");
+		}
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, i));
+	};
+	auto scopeID = builder.declareConstantScalar<uint32_t>(3);
+	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+	// the value operand in the type the call returns (integers have no sign in LLVM, and SPIR-V wants both the same)
+	auto typed = [&](unsigned i) {
+		auto id = argument(i);
+		return builder.lookupResultType(id) == resultType ? id : builder.encodeBitcast(resultType, id);
+	};
+	// the lane operand is a 16-bit integer
+	auto lane = [&](unsigned i) {
+		auto id = argument(i);
+		auto type = builder.reverseLookupType(builder.lookupResultType(id));
+		return type && type->backingType == Type::BackingType::Integer && type->scalarWidth == 32 ? id : builder.encodeUConvert(u32Type, id);
+	};
+
+	if (operation == "all" || operation == "any") {
+		builder.requireCapability(Capability::GroupNonUniformVote);
+		resID = builder.encodeOp(operation == "all" ? Opcode::GroupNonUniformAll : Opcode::GroupNonUniformAny, resultType, { scopeID, argument(0) });
+		return true;
+	}
+
+	if (operation == "ballot" || operation == "active_threads_mask") {
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		auto predicate = operation == "ballot" ? argument(0) : builder.declareConstantScalar<bool>(true);
+		auto words = builder.declareType(Type(Type::VectorTag {}, 4, u32Type));
+		auto ballot = builder.encodeOp(Opcode::GroupNonUniformBallot, words, { scopeID, predicate });
+		// the first two words are the 64 lanes the mask holds
+		auto low = builder.encodeUConvert(resultType, builder.encodeCompositeExtract(u32Type, ballot, { 0 }));
+		auto high = builder.encodeUConvert(resultType, builder.encodeCompositeExtract(u32Type, ballot, { 1 }));
+		high = builder.encodeArithBinop(Opcode::ShiftLeftLogical, resultType, high, builder.declareConstantScalar<uint32_t>(32));
+		resID = builder.encodeArithBinop(Opcode::BitwiseOr, resultType, low, high);
+		return true;
+	}
+
+	if (typeName != "i32" && typeName != "f32") {
+		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+
+	// reductions and scans: the operation, and the group operation (reduce 0, inclusive scan 1, exclusive scan 2)
+	uint32_t groupOperation = 0;
+	std::string_view arithmetic = operation;
+	if (operation.substr(0, 17) == "prefix_inclusive_") {
+		groupOperation = 1;
+		arithmetic = operation.substr(17);
+	} else if (operation.substr(0, 17) == "prefix_exclusive_") {
+		groupOperation = 2;
+		arithmetic = operation.substr(17);
+	}
+	Opcode opcode;
+	bool known = true;
+	if (arithmetic == "sum") {
+		opcode = isFloat ? Opcode::GroupNonUniformFAdd : Opcode::GroupNonUniformIAdd;
+	} else if (arithmetic == "product") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMul : Opcode::GroupNonUniformIMul;
+	} else if (arithmetic == "min") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMin : (isSigned ? Opcode::GroupNonUniformSMin : Opcode::GroupNonUniformUMin);
+	} else if (arithmetic == "max") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMax : (isSigned ? Opcode::GroupNonUniformSMax : Opcode::GroupNonUniformUMax);
+	} else if (!isFloat && arithmetic == "and") {
+		opcode = Opcode::GroupNonUniformBitwiseAnd;
+	} else if (!isFloat && arithmetic == "or") {
+		opcode = Opcode::GroupNonUniformBitwiseOr;
+	} else if (!isFloat && arithmetic == "xor") {
+		opcode = Opcode::GroupNonUniformBitwiseXor;
+	} else {
+		known = false;
+		opcode = Opcode::GroupNonUniformIAdd;
+	}
+	if (known && (groupOperation == 0 || arithmetic == "sum" || arithmetic == "product")) {
+		builder.requireCapability(Capability::GroupNonUniformArithmetic);
+		// the unsigned minimum and maximum work on unsigned integers
+		if (opcode == Opcode::GroupNonUniformUMin || opcode == Opcode::GroupNonUniformUMax) {
+			auto unsignedType = integerTypeWithSign(builder, resultType, false);
+			auto value = builder.encodeBitcast(unsignedType, typed(0));
+			resID = builder.encodeBitcast(resultType, builder.encodeOp(opcode, unsignedType, { scopeID, groupOperation, value }));
+			return true;
+		}
+		resID = builder.encodeOp(opcode, resultType, { scopeID, groupOperation, typed(0) });
+		return true;
+	}
+
+	// broadcasts and shuffles of the first operand
+	if (operation == "broadcast_first") {
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		resID = builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, resultType, { scopeID, typed(0) });
+		return true;
+	}
+	if (operation == "broadcast") {
+		auto value = typed(0);
+		auto laneValue = DynamicLLVM::LLVMGetOperand(inst, 1);
+		if (arguments > 1 && DynamicLLVM::LLVMIsAConstantInt(laneValue)) {
+			builder.requireCapability(Capability::GroupNonUniformBallot);
+			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, resultType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
+		} else {
+			builder.requireCapability(Capability::GroupNonUniformShuffle);
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, resultType, { scopeID, value, lane(1) });
+		}
+		return true;
+	}
+	bool shuffle = operation == "shuffle";
+	bool xorShuffle = operation == "shuffle_xor";
+	bool down = operation == "shuffle_down";
+	bool up = operation == "shuffle_up";
+	if (shuffle || xorShuffle || down || up) {
+		builder.requireCapability(down || up ? Capability::GroupNonUniformShuffleRelative : Capability::GroupNonUniformShuffle);
+		auto opcodeForShuffle = shuffle ? Opcode::GroupNonUniformShuffle : (xorShuffle ? Opcode::GroupNonUniformShuffleXor : (down ? Opcode::GroupNonUniformShuffleDown : Opcode::GroupNonUniformShuffleUp));
+		resID = builder.encodeOp(opcodeForShuffle, resultType, { scopeID, typed(0), lane(1) });
+		return true;
+	}
+
+	throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
 }
 
 // The same integer type, scalar or vector, with the given signedness. LLVM integers have no sign, while
@@ -1302,7 +1609,7 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
 }
 
-// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), reads, writes and size
+// Translates the AIR texture intrinsics: sampling (with or without a depth comparison), gathers, reads, writes and size
 // queries. Returns false when `name` is not one of them. `samplerFor` resolves a sampler operand (a constant sampler has no value of its own).
 template<typename SamplerFor, typename IsReadSampler>
 static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::FunctionType stage, SamplerFor&& samplerFor, IsReadSampler&& isReadSampler, Iridium::SPIRV::ResultID& resID) {
@@ -1310,11 +1617,27 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 
 	bool compare = name.substr(0, 25) == "air.sample_compare_depth_";
 	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
-	bool read = name.substr(0, 17) == "air.read_texture_";
+	// the multisample depth texture is read like a color one, with a constant in front of the coordinates
+	bool readDepthMultisample = name.substr(0, 21) == "air.read_depth_2d_ms.";
+	bool read = name.substr(0, 17) == "air.read_texture_" || name.substr(0, 20) == "air.read_depth_2d_ms";
 	bool write = name.substr(0, 18) == "air.write_texture_";
-	bool width = name == "air.get_width_texture_2d";
-	bool height = name == "air.get_height_texture_2d";
-	if (!sample && !read && !write && !width && !height) {
+	// the size, sample count and level count of a texture of any class that has them
+	auto queryName = [&](std::string_view prefix) {
+		return name.substr(0, prefix.size()) == prefix && (name.substr(prefix.size(), 8) == "texture_" || name.substr(prefix.size(), 6) == "depth_");
+	};
+	bool width = queryName("air.get_width_");
+	bool height = queryName("air.get_height_");
+	bool depthQuery = queryName("air.get_depth_");
+	bool arraySize = queryName("air.get_array_size_");
+	bool numSamples = queryName("air.get_num_samples_");
+	bool numLevels = queryName("air.get_num_mip_levels_");
+	bool query = width || height || depthQuery || arraySize || numSamples || numLevels;
+	// gather() of a color texture, gather() of a depth texture and gather_compare()
+	bool gatherColor = name.substr(0, 19) == "air.gather_texture_";
+	bool gatherDepth = name.substr(0, 17) == "air.gather_depth_";
+	bool gatherCompare = name.substr(0, 25) == "air.gather_compare_depth_";
+	bool gather = gatherColor || gatherDepth || gatherCompare;
+	if (!sample && !read && !write && !query && !gather) {
 		return false;
 	}
 
@@ -1339,19 +1662,40 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	auto imageTypeID = pointerType->targetType;
 	auto imageType = *builder.reverseLookupType(imageTypeID);
 	auto image = builder.encodeLoad(imageTypeID, texturePointer);
-	unsigned dims = imageType.imageDimensionality == Dim::e1D ? 1 : (imageType.imageDimensionality == Dim::e2D ? 2 : 3);
+	bool texelBuffer = imageType.imageDimensionality == Dim::eBuffer;
+	unsigned dims = (imageType.imageDimensionality == Dim::e1D || texelBuffer) ? 1 : (imageType.imageDimensionality == Dim::e2D ? 2 : 3);
 	bool arrayed = imageType.imageIsArrayed;
 	bool storage = imageType.imageIsSampledIndication == 2;
 	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
 
-	if (width || height) {
+	if (query) {
 		builder.requireCapability(Capability::ImageQuery);
-		auto sizeType = builder.declareType(Type(Type::VectorTag {}, dims + (arrayed ? 1 : 0), int32Type));
-		// a storage image has no levels to choose from
-		auto sizes = storage
+		bool cube = imageType.imageDimensionality == Dim::eCube;
+		bool multisampled = imageType.imageIsMultisampled;
+		// the size has a component per dimension (two for a cube) and one more for the layers
+		unsigned sizeDims = cube ? 2 : dims;
+		if (numSamples) {
+			// a texture that is not multisampled has one sample
+			resID = multisampled ? builder.encodeOp(Opcode::ImageQuerySamples, resultType, { image }) : builder.declareConstantScalar<int32_t>(1);
+			return true;
+		}
+		if (numLevels) {
+			// a storage image view covers one level
+			resID = (storage || multisampled || texelBuffer) ? builder.declareConstantScalar<int32_t>(1) : builder.encodeOp(Opcode::ImageQueryLevels, resultType, { image });
+			return true;
+		}
+		unsigned component = width ? 0 : (height ? 1 : (depthQuery ? 2 : sizeDims));
+		if ((height && sizeDims < 2) || (depthQuery && imageType.imageDimensionality != Dim::e3D) || (arraySize && !arrayed) || (!arraySize && component >= sizeDims)) {
+			throw ImpossibleResultID("size query of a dimension the texture does not have");
+		}
+		// a one-dimensional texture without layers has a scalar size
+		auto scalarSize = sizeDims + (arrayed ? 1 : 0) == 1;
+		auto sizeType = scalarSize ? int32Type : builder.declareType(Type(Type::VectorTag {}, sizeDims + (arrayed ? 1 : 0), int32Type));
+		// a storage image, a multisample image or a texel buffer has no levels to choose from
+		auto sizes = (storage || multisampled || texelBuffer)
 			? builder.encodeOp(Opcode::ImageQuerySize, sizeType, { image })
-			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, operand(1) });
-		resID = builder.encodeCompositeExtract(resultType, sizes, { height ? 1u : 0u });
+			: builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, arraySize ? builder.declareConstantScalar<int32_t>(0) : operand(1) });
+		resID = scalarSize ? sizes : builder.encodeCompositeExtract(resultType, sizes, { component });
 		return true;
 	}
 
@@ -1367,12 +1711,20 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	if (compare && arrayed) {
 		throw ImpossibleResultID("depth comparison on an array texture is unsupported");
 	}
+	if (texelBuffer && (sample || gather)) {
+		throw ImpossibleResultID("a texture buffer can only be read and written, not sampled or gathered");
+	}
+	bool cubeImage = imageType.imageDimensionality == Dim::eCube;
+	if (gather && (dims == 1 || (dims == 3 && !cubeImage) || (cubeImage && arrayed))) {
+		throw ImpossibleResultID("gather on a texture class that has no gather is unsupported");
+	}
 
 	// A read of a texture that is only read names a sampler (the result of air.get_read_sampler, which has no
 	// value of its own) before the coordinates and, after them (and after the layer), an offset (not for one-dimensional textures). A texture that is also written
 	// (and a write) has neither.
 	bool readsWithSampler = read && argumentCount > 1 && isReadSampler(DynamicLLVM::LLVMGetOperand(inst, 1));
-	unsigned coordinatesIndex = compare ? 3 : ((sample || readsWithSampler) ? 2 : 1);
+	// (a gather of a depth texture has a constant before the coordinates, as the comparing sample does)
+	unsigned coordinatesIndex = (compare || gatherDepth || gatherCompare || readDepthMultisample) ? 3 : ((sample || gather || readsWithSampler) ? 2 : 1);
 
 	// an array texture takes the layer as another coordinate (a float one when sampling)
 	auto coordinates = operand(coordinatesIndex);
@@ -1384,7 +1736,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			components.push_back(dims == 1 ? coordinates : builder.encodeCompositeExtract(componentType, coordinates, { i }));
 		}
 		auto layer = operand(coordinatesIndex + 1);
-		if (sample) {
+		if (sample || gather) {
 			layer = builder.encodeOp(Opcode::ConvertSToF, componentType, { layer });
 		}
 		components.push_back(layer);
@@ -1403,8 +1755,9 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			throw ImpossibleResultID("write to a texture that is not declared writable");
 		}
 		// the level follows the color; a storage image view covers one level, so only level 0 is written
+		// (a texture buffer has no levels: its last operand is a flag)
 		auto level = argument(3 + layerOperands);
-		if (!DynamicLLVM::LLVMIsAConstantInt(level) || DynamicLLVM::LLVMConstIntGetZExtValue(level) != 0) {
+		if (!texelBuffer && (!DynamicLLVM::LLVMIsAConstantInt(level) || DynamicLLVM::LLVMConstIntGetZExtValue(level) != 0)) {
 			throw ImpossibleResultID("texture write to a level other than 0 is unsupported");
 		}
 		auto color = operand(2 + layerOperands);
@@ -1413,7 +1766,61 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		return true;
 	}
 
-	if (sample && isReadSampler(argument(1))) {
+	if (gather) {
+		// The operands after the coordinates (and the layer): gather() of a color texture has a flag, the offset
+		// (2D textures only) and the component (0 to 3 for x to w); gather() of a depth texture the flag and the
+		// offset, and gather_compare() the reference value in front of them. A trailing zero follows in each case.
+		// The flag is true in every compiled kernel observed and does not change what the call does.
+		unsigned next = coordinatesIndex + 1 + layerOperands;
+		ResultID reference = 0;
+		if (gatherCompare) {
+			reference = operand(next++);
+		}
+		std::optional<unsigned> offsetIndex;
+		if (!cubeImage) {
+			offsetIndex = next + 1;
+		}
+		ResultID component = 0;
+		if (gatherColor) {
+			auto componentValue = argument(cubeImage ? next : next + 2);
+			if (!DynamicLLVM::LLVMIsAConstantInt(componentValue) || DynamicLLVM::LLVMConstIntGetZExtValue(componentValue) > 3) {
+				throw ImpossibleResultID("texture gather with a component that is not a constant between 0 and 3");
+			}
+			component = builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(componentValue)));
+		}
+		auto samplerPointer = samplerFor(argument(1));
+		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
+		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
+		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
+		auto sampled = builder.encodeSampledImage(sampledType, image, sampler);
+
+		std::vector<uint32_t> arguments { sampled, coordinates };
+		if (gatherCompare) {
+			arguments.push_back(reference);
+		} else if (gatherColor) {
+			arguments.push_back(component);
+		} else {
+			// the components of a depth texture are all the depth value
+			arguments.push_back(builder.declareConstantScalar<uint32_t>(0));
+		}
+		if (offsetIndex) {
+			auto offset = argument(*offsetIndex);
+			if (!DynamicLLVM::LLVMIsNull(offset)) {
+				if (!DynamicLLVM::LLVMIsConstant(offset)) {
+					throw ImpossibleResultID("texture gather with a non-constant offset");
+				}
+				// image operands: ConstOffset = 0x8
+				arguments.push_back(0x8);
+				arguments.push_back(llvmValueToResultID(builder, offset));
+			}
+		}
+
+		if (gatherCompare) {
+			finish(builder.encodeOp(Opcode::ImageDrefGather, valueTypeID, arguments));
+			return true;
+		}
+		value = builder.encodeOp(Opcode::ImageGather, texelType, arguments);
+	} else if (sample && isReadSampler(argument(1))) {
 		} else if (sample) {
 		auto samplerPointer = samplerFor(argument(1));
 		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
@@ -1459,9 +1866,19 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			return true;
 		}
 		value = builder.encodeOp(explicitLod ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
+	} else if (imageType.imageIsMultisampled) {
+		// read(coordinates, [layer,] sample): a fetch of one sample, which has no level
+		if (!read || storage) {
+			throw ImpossibleResultID("multisample textures can only be read, with a sample index");
+		}
+		if (arrayed) {
+			builder.requireCapability(Capability::ImageMSArray);
+		}
+		// image operands: Sample = 0x40
+		value = builder.encodeOp(Opcode::ImageFetch, texelType, { image, coordinates, 0x40, operand(coordinatesIndex + 1 + layerOperands) });
 	} else {
 		std::vector<uint32_t> arguments { image, coordinates };
-		if (!storage) {
+		if (!storage && !texelBuffer) {
 			// a sampled image is read with OpImageFetch, which takes the level
 			// (a one-dimensional texture has no offset)
 			bool hasOffsetOperand = readsWithSampler && dims > 1;
@@ -1484,6 +1901,11 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		value = builder.encodeOp(storage ? Opcode::ImageRead : Opcode::ImageFetch, texelType, arguments);
 	}
 
+	// a depth texture yields a single value, the first component of the fetched texel
+	if (readDepthMultisample) {
+		value = builder.encodeCompositeExtract(imageType.targetType, value, { 0 });
+		texelType = imageType.targetType;
+	}
 	finish(convertTexel(builder, value, texelType, valueTypeID));
 	return true;
 }
@@ -1512,6 +1934,25 @@ static std::vector<Iridium::StructMemberInfo> airStructMembers(LLVMValueRef node
 		i += 5;
 	}
 	return members;
+}
+
+// The packed state of a constant sampler, from the initializer of its global variable. The state is one 64-bit
+// integer, or the first of the integers of an array (the compiler also emits a second word, which holds no
+// sampler state this translation uses).
+static uint64_t airSamplerStateWord(LLVMValueRef initializer) {
+	if (initializer && DynamicLLVM::LLVMIsAConstantInt(initializer)) {
+		return DynamicLLVM::LLVMConstIntGetZExtValue(initializer);
+	}
+	if (initializer && DynamicLLVM::LLVMGetValueKind(initializer) == LLVMConstantAggregateZeroValueKind) {
+		return 0;
+	}
+	if (initializer && DynamicLLVM::LLVMGetValueKind(initializer) == LLVMConstantDataArrayValueKind) {
+		auto word = DynamicLLVM::LLVMGetElementAsConstant(initializer, 0);
+		if (word && DynamicLLVM::LLVMIsAConstantInt(word)) {
+			return DynamicLLVM::LLVMConstIntGetZExtValue(word);
+		}
+	}
+	throw ImpossibleResultID("constant sampler state is not an integer or an array of integers");
 }
 
 // The reflection information for a buffer, texture, sampler or vertex input parameter; other parameters
@@ -1639,7 +2080,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			std::vector<LLVMValueRef> info(fields);
 			DynamicLLVM::LLVMGetMDNodeOperands(entry, info.data());
 			if (info[0] != _function) continue;
-			if (fields < 3 || selectedStage != SIZE_MAX) {
+			if (fields < 3 || selectedStage != SIZE_MAX || !info[1] || !info[2]) {
 				throw ImpossibleResultID("entry function has malformed or duplicate stage metadata");
 			}
 			selectedStage = stage;
@@ -1931,7 +2372,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.buffer") {
 			++bufferCount;
@@ -1951,7 +2392,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// everything after that depends on the kind
 			auto parameterInfo = airParameterOperands(parameterOperand);
 
-			auto kind = llvmMDStringToStringView(parameterInfo[1]);
+			auto kind = airParameterKind(parameterInfo);
 
 			if (kind == "air.buffer") {
 				auto typeNameNode = findAIMDValue(parameterOperand, "air.arg_type_name");
@@ -2012,7 +2453,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 		auto llparam = DynamicLLVM::LLVMGetParam(_function, i);
 		auto llparamVal = reinterpret_cast<uintptr_t>(llparam);
 
@@ -2034,7 +2475,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2048,8 +2489,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Buffer, bindingIndex, 0 });
 
@@ -2123,7 +2563,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2137,8 +2577,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				throw ImpossibleResultID("air.vertex_input descriptor has no air.location_index");
 			}
 
-			uint32_t locationIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t locationIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::VertexInput, locationIndex, /* ignored: */ 0, /* ignored: */ TextureAccessType::Read, /* ignored: */ 0 });
 
@@ -2148,6 +2587,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			_parameterIDs.push_back(load);
 
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, type);
+		} else if (kind == "air.thread_index_in_simdgroup" || kind == "air.threads_per_simdgroup" || kind == "air.simdgroup_index_in_threadgroup"
+				|| kind == "air.simdgroups_per_threadgroup") {
+			// the subgroup of the invocation, as the number the parameter's integer type holds
+			builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+			auto builtin = kind == "air.thread_index_in_simdgroup" ? SPIRV::BuiltinID::SubgroupLocalInvocationId
+				: (kind == "air.threads_per_simdgroup" ? SPIRV::BuiltinID::SubgroupSize
+				: (kind == "air.simdgroup_index_in_threadgroup" ? SPIRV::BuiltinID::SubgroupId : SPIRV::BuiltinID::NumSubgroups));
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto load = computeInput(builtin, u32Type);
+			if (type != u32Type) {
+				// a 32-bit integer of the other signedness, or a narrower or wider one
+				auto parameterType = *builder.reverseLookupType(type);
+				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			}
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
@@ -2206,7 +2661,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.texture") {
 			// find the location index info, determine the access type, and find the arg type info
@@ -2214,7 +2669,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			TextureAccessType accessType = TextureAccessType::Sample;
 			size_t argTypeIdx = SIZE_MAX;
 			for (size_t idx = 0; idx < parameterInfo.size(); ++idx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[idx])) {
+				if (parameterInfo[idx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[idx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[idx]);
 
 					if (str == "air.location_index") {
@@ -2229,20 +2684,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			if (infoIdx >= parameterInfo.size()) {
 				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				throw ImpossibleResultID("a texture or sampler description has no air.location_index");
 			}
 
 			if (argTypeIdx >= parameterInfo.size()) {
-				std::runtime_error("Failed to find arg type info for buffer");
+				throw ImpossibleResultID("a texture description has no air.arg_type_name");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
-			auto argType = llvmMDStringToStringView(parameterInfo[argTypeIdx + 1]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
+			auto argType = airParameterString(parameterInfo, argTypeIdx + 1);
 			auto firstAngle = argType.find('<');
 			auto lastAngle = argType.find('>');
 			auto comma = argType.find(',');
-			auto notWhitespace = argType.find_first_not_of(" ", comma + 1);
+			auto notWhitespace = comma == argType.npos ? argType.npos : argType.find_first_not_of(" ", comma + 1);
+			// the type name has the form class<sample type, access>
+			if (firstAngle == argType.npos || comma == argType.npos || lastAngle == argType.npos || notWhitespace == argType.npos
+				|| !(firstAngle < comma && comma < notWhitespace && notWhitespace < lastAngle)) {
+				throw ImpossibleResultID("malformed texture type name " + std::string(argType));
+			}
 
 			std::string_view textureClassName(argType.data(), firstAngle);
 			std::string_view sampleTypeName(argType.data() + (firstAngle + 1), comma - (firstAngle + 1));
@@ -2256,7 +2715,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				accessType = TextureAccessType::ReadWrite;
 			}
 
-			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType });
+			// a texture_buffer is a range of a buffer bound as a texel buffer, not an image
+			bool texelBuffer = textureClassName == "texture_buffer";
+			funcInfo.bindings.push_back(BindingInfo { BindingType::Texture, bindingIndex, internalBindingIndex, accessType, 0, texelBuffer });
 
 			SPIRV::ResultID fakeSampleType = SPIRV::ResultIDInvalid;
 			SPIRV::ResultID realSampleType = SPIRV::ResultIDInvalid;
@@ -2287,8 +2748,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			// TODO: same here (find a better way...)
 			bool isArrayed = false;
+			bool isMultisampled = false;
 			if (colorClassName == "texture2d") {
 				dimensionality = SPIRV::Dim::e2D;
+			} else if (colorClassName == "texture2d_ms") {
+				dimensionality = SPIRV::Dim::e2D;
+				isMultisampled = true;
+			} else if (colorClassName == "texture2d_ms_array") {
+				dimensionality = SPIRV::Dim::e2D;
+				isArrayed = true;
+				isMultisampled = true;
 			} else if (colorClassName == "texture2d_array") {
 				dimensionality = SPIRV::Dim::e2D;
 				isArrayed = true;
@@ -2304,13 +2773,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				isArrayed = true;
 			} else if (colorClassName == "texture3d") {
 				dimensionality = SPIRV::Dim::e3D;
+			} else if (texelBuffer) {
+				dimensionality = SPIRV::Dim::eBuffer;
 			} else {
-				// Any other texture class (the buffer variants, etc.)
-				throw std::runtime_error(std::string("TODO: support the texture class ") +
-					std::string(textureClassName));
+				// any other class
+				throw std::runtime_error(std::string("unsupported texture class ") + std::string(textureClassName));
 			}
 
-			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, isDepth ? 1 : 2, isArrayed, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
+			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, isDepth ? 1 : 2, isArrayed, isMultisampled, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
 			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
 			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
@@ -2336,13 +2806,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		// everything after that depends on the kind
 		auto parameterInfo = airParameterOperands(parameterOperand);
 
-		auto kind = llvmMDStringToStringView(parameterInfo[1]);
+		auto kind = airParameterKind(parameterInfo);
 
 		if (kind == "air.sampler") {
 			// find the location index info
 			size_t infoIdx = 0;
 			for (; infoIdx < parameterInfo.size(); ++infoIdx) {
-				if (DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
+				if (parameterInfo[infoIdx] && DynamicLLVM::LLVMIsAMDString(parameterInfo[infoIdx])) {
 					auto str = llvmMDStringToStringView(parameterInfo[infoIdx]);
 
 					if (str == "air.location_index") {
@@ -2353,11 +2823,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			if (infoIdx >= parameterInfo.size()) {
 				// weird, location index info not found
-				std::runtime_error("Failed to find location index info for buffer");
+				throw ImpossibleResultID("a texture or sampler description has no air.location_index");
 			}
 
-			uint32_t bindingIndex = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 1]);
-			auto somethingElseTODO = DynamicLLVM::LLVMConstIntGetSExtValue(parameterInfo[infoIdx + 2]);
+			uint32_t bindingIndex = airParameterInteger(parameterInfo, infoIdx + 1);
 
 			funcInfo.bindings.push_back(BindingInfo { BindingType::Sampler, bindingIndex, internalBindingIndex, /* ignored: */ TextureAccessType::Read, /* ignored: */ SIZE_MAX });
 
@@ -2477,8 +2946,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			std::vector<LLVMValueRef> suboperands(DynamicLLVM::LLVMGetMDNodeNumOperands(operand));
 			DynamicLLVM::LLVMGetMDNodeOperands(operand, suboperands.data());
 
-			auto init = DynamicLLVM::LLVMGetInitializer(suboperands[1]);
-			auto val = DynamicLLVM::LLVMConstIntGetZExtValue(init);
+			auto val = airSamplerStateWord(DynamicLLVM::LLVMGetInitializer(suboperands[1]));
 
 			declareEmbeddedSampler(val, reinterpret_cast<uintptr_t>(suboperands[1]));
 		}
@@ -3092,6 +3560,55 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							builder.declareConstantScalar<uint32_t>((memFlags & 1) ? 1 : 2),
 							builder.declareConstantScalar<uint32_t>(semantics),
 						});
+					} else if (name == "air.atomic.fence") {
+						// atomic_thread_fence(flags, order, scope): memory the flags name is ordered for the threads of the scope
+						if (DynamicLLVM::LLVMGetNumOperands(inst) < 4) {
+							throw ImpossibleResultID("atomic fence has too few arguments");
+						}
+						auto flags = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto order = DynamicLLVM::LLVMGetOperand(inst, 1);
+						auto scope = DynamicLLVM::LLVMGetOperand(inst, 2);
+						if (!DynamicLLVM::LLVMIsAConstantInt(flags) || !DynamicLLVM::LLVMIsAConstantInt(order) || !DynamicLLVM::LLVMIsAConstantInt(scope)) {
+							throw ImpossibleResultID("atomic fence with a flags, order or scope that is not constant");
+						}
+						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						auto airScope = DynamicLLVM::LLVMConstIntGetZExtValue(scope);
+						if (airScope != 1 && airScope != 2) {
+							throw ImpossibleResultID("atomic fence with a scope other than threadgroup or device");
+						}
+						// the same memory classes as a threadgroup barrier (see air.wg.barrier); a relaxed fence orders nothing
+						uint32_t semantics = DynamicLLVM::LLVMConstIntGetZExtValue(order) == 0 ? 0 : 0x8;
+						if (semantics) {
+							semantics |= (memFlags & 1) ? 0x40 : 0;
+							semantics |= (memFlags & 2) ? 0x100 : 0;
+							semantics |= (memFlags & 4) ? 0x800 : 0;
+						}
+						// SPIR-V scopes: Device 1, Workgroup 2
+						builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
+							builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
+							builder.declareConstantScalar<uint32_t>(semantics),
+						});
+					} else if (name == "air.simdgroup.barrier") {
+						// simdgroup_barrier(flags, ...): the threads of the subgroup arrive before any continues; the memory
+						// the flags name is made visible to them
+						auto flags = DynamicLLVM::LLVMGetNumOperands(inst) < 2 ? nullptr : DynamicLLVM::LLVMGetOperand(inst, 0);
+						if (!flags || !DynamicLLVM::LLVMIsAConstantInt(flags)) {
+							throw ImpossibleResultID("simdgroup barrier without constant memory flags");
+						}
+						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// the memory classes of a threadgroup barrier (see air.wg.barrier); no flags order no memory
+						uint32_t semantics = memFlags ? 0x8 : 0;
+						semantics |= (memFlags & 1) ? 0x40 : 0;
+						semantics |= (memFlags & 2) ? 0x100 : 0;
+						semantics |= (memFlags & 4) ? 0x800 : 0;
+						// scope: Subgroup 3
+						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
+							builder.declareConstantScalar<uint32_t>(3),
+							builder.declareConstantScalar<uint32_t>(3),
+							builder.declareConstantScalar<uint32_t>(semantics),
+						});
+					} else if (translateAirSimd(builder, inst, name, type, resID)) {
+						// handled
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {
 						// handled
 					} else if (name == "air.discard_fragment") {
@@ -3138,7 +3655,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					} else if (translateAirIntrinsic(builder, inst, name, type, resID)) {
 						// handled
 					} else {
-						 throw std::runtime_error(std::string("TODO: support actual function calls (name = ") + std::string(name) + ")");
+						 throw std::runtime_error(std::string("Unsupported function call (name = ") + std::string(name) + ")");
 					}
 
 					if (resID != SPIRV::ResultIDInvalid) {

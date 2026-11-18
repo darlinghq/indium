@@ -9,6 +9,8 @@
 #include <unordered_map>
 
 namespace Indium {
+	class PipelineTimer;
+
 	class PrivateComputeCommandEncoder: public ComputeCommandEncoder {
 	private:
 		// the command buffer always outlives us
@@ -17,6 +19,10 @@ namespace Indium {
 		ComputePassDescriptor _descriptor;
 		FunctionResources _functionResources;
 		std::shared_ptr<PrivateComputePipelineState> _pso;
+		// made when the first dispatch is encoded with pipeline timing on (Device::setPipelineTimingEnabled())
+		std::shared_ptr<PipelineTimer> _timer;
+		void beginTimedDispatch(VkCommandBuffer commandBuffer);
+		void endTimedDispatch(VkCommandBuffer commandBuffer);
 		DescriptorPoolChain _descriptorPools;
 
 		// XXX: not sure if we actually need to store pipelines until the command buffer finishes executing,
@@ -64,6 +70,7 @@ namespace Indium {
 
 		virtual void setThreadgroupMemoryLength(size_t length, size_t index) override;
 
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) override;
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) override;
 		void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize);
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) override;

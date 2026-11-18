@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <indium/texture-upload.private.hpp>
 #include <indium/pipeline-cache.private.hpp>
+#include <indium/pipeline-timing.private.hpp>
 
 namespace Indium {
 	class PrivateDevice;
@@ -88,6 +89,13 @@ namespace Indium {
 		bool _depthClamp = false;
 		bool _occlusionQueryPrecise = false;
 		bool _hostQueryReset = false;
+		uint32_t _timestampValidBits = 0;
+		bool _calibratedTimestamps = false;
+		std::atomic<bool> _pipelineTiming { false };
+		PipelineTimingTable _pipelineTimingTable;
+		std::atomic<uint64_t> _liveHeaps { 0 };
+		std::atomic<uint64_t> _liveHeapBytes { 0 };
+		std::atomic<uint64_t> _totalHeaps { 0 };
 		std::mutex _visibilityResolveMutex;
 		std::shared_ptr<ComputePipelineState> _visibilityResolvePipeline;
 		std::atomic<bool> _bufferShadowTextures { false };
@@ -107,6 +115,8 @@ namespace Indium {
 			ImageDRMFormatModifier = 1 << 6,
 			Maintenance5        = 1 << 7,
 			ExternalMemoryHost  = 1 << 8,
+			ShaderAtomicFloat   = 1 << 9,
+			PresentWait         = 1 << 10,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
@@ -128,6 +138,21 @@ namespace Indium {
 		virtual uint32_t deviceID() const override;
 		virtual DeviceType deviceType() const override;
 		virtual std::vector<MemoryHeap> memoryHeaps() const override;
+		virtual uint64_t currentAllocatedSize() const override;
+		virtual DeviceStatistics statistics() const override;
+		virtual bool supportsPipelineTiming() const override;
+		virtual void setPipelineTimingEnabled(bool enabled) override;
+		virtual bool pipelineTimingEnabled() const override { return _pipelineTiming.load(std::memory_order_relaxed); }
+		virtual std::vector<PipelineTiming> pipelineTimings() const override { return _pipelineTimingTable.snapshot(); }
+
+		PipelineTimingTable& pipelineTimingTable() { return _pipelineTimingTable; }
+		/** Nanoseconds per timestamp tick, and the bits of a timestamp the graphics queue keeps. */
+		double timestampPeriod() const { return _properties.limits.timestampPeriod; }
+		uint32_t timestampValidBits() const { return _timestampValidBits; }
+
+		/** Heaps are counted here (see DeviceStatistics); called by PrivateHeap. */
+		void noteHeapCreated(uint64_t size);
+		void noteHeapDestroyed(uint64_t size);
 		virtual std::array<uint8_t, 16> deviceUUID() const override;
 		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
@@ -165,6 +190,10 @@ namespace Indium {
 		virtual std::shared_ptr<SharedEvent> newSharedEvent() override;
 		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) override;
 		virtual std::shared_ptr<Fence> newFence() override;
+		virtual std::vector<CounterSet> counterSets() const override;
+		virtual bool supportsCounterSampling(CounterSamplingPoint point) const override;
+		virtual std::shared_ptr<CounterSampleBuffer> newCounterSampleBuffer(const CounterSampleBufferDescriptor& descriptor, CounterSampleBufferFailure* failure) override;
+		virtual void sampleTimestamps(uint64_t* cpuTimestamp, uint64_t* gpuTimestamp) override;
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;

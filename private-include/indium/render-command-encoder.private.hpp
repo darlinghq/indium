@@ -18,6 +18,7 @@ namespace Indium {
 	class PrivateDevice;
 	class SamplerState;
 	class VisibilityResults;
+	class PipelineTimer;
 
 	class PrivateRenderCommandEncoder: public RenderCommandEncoder {
 	private:
@@ -27,6 +28,8 @@ namespace Indium {
 		std::weak_ptr<PrivateCommandBuffer> _privateCommandBuffer;
 		std::shared_ptr<PrivateDevice> _privateDevice;
 		std::shared_ptr<PrivateRenderPipelineState> _privatePSO;
+		// made when a pipeline is first set with pipeline timing on (Device::setPipelineTimingEnabled())
+		std::shared_ptr<PipelineTimer> _timer;
 		VkFramebuffer _framebuffer = VK_NULL_HANDLE;
 		VkRenderPass _renderPass = VK_NULL_HANDLE;
 		// whether _renderPass is shared through the device's render pass cache
@@ -93,6 +96,7 @@ namespace Indium {
 		 */
 		void resetState();
 
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) override;
 		virtual void setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) override;
 		virtual void setFrontFacingWinding(Winding frontFaceWinding) override;
 		virtual void setCullMode(CullMode cullMode) override;
