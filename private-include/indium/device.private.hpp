@@ -90,6 +90,7 @@ namespace Indium {
 		bool _occlusionQueryPrecise = false;
 		bool _hostQueryReset = false;
 		uint32_t _timestampValidBits = 0;
+		bool _calibratedTimestamps = false;
 		std::atomic<bool> _pipelineTiming { false };
 		PipelineTimingTable _pipelineTimingTable;
 		std::atomic<uint64_t> _liveHeaps { 0 };
@@ -189,6 +190,10 @@ namespace Indium {
 		virtual std::shared_ptr<SharedEvent> newSharedEvent() override;
 		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) override;
 		virtual std::shared_ptr<Fence> newFence() override;
+		virtual std::vector<CounterSet> counterSets() const override;
+		virtual bool supportsCounterSampling(CounterSamplingPoint point) const override;
+		virtual std::shared_ptr<CounterSampleBuffer> newCounterSampleBuffer(const CounterSampleBufferDescriptor& descriptor, CounterSampleBufferFailure* failure) override;
+		virtual void sampleTimestamps(uint64_t* cpuTimestamp, uint64_t* gpuTimestamp) override;
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;

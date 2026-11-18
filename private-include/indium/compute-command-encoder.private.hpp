@@ -70,6 +70,7 @@ namespace Indium {
 
 		virtual void setThreadgroupMemoryLength(size_t length, size_t index) override;
 
+		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) override;
 		virtual void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup) override;
 		void dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize);
 		virtual void dispatchThreads(Size threadsPerGrid, Size threadsPerThreadgroup) override;

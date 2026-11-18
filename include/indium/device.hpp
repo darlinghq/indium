@@ -14,6 +14,7 @@
 #include <indium/library.hpp>
 #include <indium/event.hpp>
 #include <indium/heap.hpp>
+#include <indium/counter.hpp>
 
 namespace Indium {
 	class CommandQueue;
@@ -318,6 +319,33 @@ namespace Indium {
 		 */
 		virtual std::shared_ptr<SharedEvent> newSharedEvent(const std::shared_ptr<SharedEventHandle>& handle) = 0;
 		virtual std::shared_ptr<Fence> newFence() = 0;
+
+		// --- counters ---
+
+		/**
+		 * The counter sets this device can sample. Currently only the timestamp set, when the
+		 * device can write timestamps from its graphics queue and reset a query pool from the host.
+		 */
+		virtual std::vector<CounterSet> counterSets() const = 0;
+
+		/**
+		 * Whether a sample can be taken at `point`. Stage boundaries (the start and end of a pass),
+		 * dispatch boundaries (between compute commands) and blit boundaries (between blit commands)
+		 * are supported when timestamps are; draw and tile dispatch boundaries are not.
+		 */
+		virtual bool supportsCounterSampling(CounterSamplingPoint point) const = 0;
+
+		/**
+		 * @return the new buffer, or null with `failure` describing why (if `failure` is non-null).
+		 */
+		virtual std::shared_ptr<CounterSampleBuffer> newCounterSampleBuffer(const CounterSampleBufferDescriptor& descriptor, CounterSampleBufferFailure* failure = nullptr) = 0;
+
+		/**
+		 * Samples the host's monotonic clock and the device's timestamp clock as close together as
+		 * the driver allows, both in nanoseconds. Where the driver cannot correlate the clocks, the
+		 * device value is taken from the host clock.
+		 */
+		virtual void sampleTimestamps(uint64_t* cpuTimestamp, uint64_t* gpuTimestamp) = 0;
 
 		// --- support api ---
 
