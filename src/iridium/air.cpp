@@ -1047,6 +1047,154 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 	return true;
 }
 
+static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned);
+
+// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<i32|f32>, which work on the threads of a
+// subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
+// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Only 32-bit
+// integers and floats are supported.
+static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	constexpr std::string_view prefix = "air.simd_";
+	if (name.substr(0, prefix.size()) != prefix) {
+		return false;
+	}
+
+	// <operation>[.<s|u>].<type>
+	std::vector<std::string_view> parts;
+	for (auto rest = name.substr(prefix.size()); !rest.empty();) {
+		auto dot = rest.find('.');
+		parts.push_back(rest.substr(0, dot));
+		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
+	}
+	if (parts.empty() || parts.size() > 3) {
+		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+	auto operation = parts[0];
+	bool isSigned = parts.size() == 3 && parts[1] == "s";
+	auto typeName = parts.size() > 1 ? parts.back() : std::string_view();
+	bool isFloat = typeName == "f32";
+
+	// the last operand of a call is the callee
+	unsigned arguments = DynamicLLVM::LLVMGetNumOperands(inst) - 1;
+	auto argument = [&](unsigned i) {
+		if (i >= arguments) {
+			throw ImpossibleResultID("simdgroup function " + std::string(name) + " has too few arguments");
+		}
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, i));
+	};
+	auto scopeID = builder.declareConstantScalar<uint32_t>(3);
+	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+	// the value operand in the type the call returns (integers have no sign in LLVM, and SPIR-V wants both the same)
+	auto typed = [&](unsigned i) {
+		auto id = argument(i);
+		return builder.lookupResultType(id) == resultType ? id : builder.encodeBitcast(resultType, id);
+	};
+	// the lane operand is a 16-bit integer
+	auto lane = [&](unsigned i) {
+		auto id = argument(i);
+		auto type = builder.reverseLookupType(builder.lookupResultType(id));
+		return type && type->backingType == Type::BackingType::Integer && type->scalarWidth == 32 ? id : builder.encodeUConvert(u32Type, id);
+	};
+
+	if (operation == "all" || operation == "any") {
+		builder.requireCapability(Capability::GroupNonUniformVote);
+		resID = builder.encodeOp(operation == "all" ? Opcode::GroupNonUniformAll : Opcode::GroupNonUniformAny, resultType, { scopeID, argument(0) });
+		return true;
+	}
+
+	if (operation == "ballot" || operation == "active_threads_mask") {
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		auto predicate = operation == "ballot" ? argument(0) : builder.declareConstantScalar<bool>(true);
+		auto words = builder.declareType(Type(Type::VectorTag {}, 4, u32Type));
+		auto ballot = builder.encodeOp(Opcode::GroupNonUniformBallot, words, { scopeID, predicate });
+		// the first two words are the 64 lanes the mask holds
+		auto low = builder.encodeUConvert(resultType, builder.encodeCompositeExtract(u32Type, ballot, { 0 }));
+		auto high = builder.encodeUConvert(resultType, builder.encodeCompositeExtract(u32Type, ballot, { 1 }));
+		high = builder.encodeArithBinop(Opcode::ShiftLeftLogical, resultType, high, builder.declareConstantScalar<uint32_t>(32));
+		resID = builder.encodeArithBinop(Opcode::BitwiseOr, resultType, low, high);
+		return true;
+	}
+
+	if (typeName != "i32" && typeName != "f32") {
+		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+
+	// reductions and scans: the operation, and the group operation (reduce 0, inclusive scan 1, exclusive scan 2)
+	uint32_t groupOperation = 0;
+	std::string_view arithmetic = operation;
+	if (operation.substr(0, 17) == "prefix_inclusive_") {
+		groupOperation = 1;
+		arithmetic = operation.substr(17);
+	} else if (operation.substr(0, 17) == "prefix_exclusive_") {
+		groupOperation = 2;
+		arithmetic = operation.substr(17);
+	}
+	Opcode opcode;
+	bool known = true;
+	if (arithmetic == "sum") {
+		opcode = isFloat ? Opcode::GroupNonUniformFAdd : Opcode::GroupNonUniformIAdd;
+	} else if (arithmetic == "product") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMul : Opcode::GroupNonUniformIMul;
+	} else if (arithmetic == "min") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMin : (isSigned ? Opcode::GroupNonUniformSMin : Opcode::GroupNonUniformUMin);
+	} else if (arithmetic == "max") {
+		opcode = isFloat ? Opcode::GroupNonUniformFMax : (isSigned ? Opcode::GroupNonUniformSMax : Opcode::GroupNonUniformUMax);
+	} else if (!isFloat && arithmetic == "and") {
+		opcode = Opcode::GroupNonUniformBitwiseAnd;
+	} else if (!isFloat && arithmetic == "or") {
+		opcode = Opcode::GroupNonUniformBitwiseOr;
+	} else if (!isFloat && arithmetic == "xor") {
+		opcode = Opcode::GroupNonUniformBitwiseXor;
+	} else {
+		known = false;
+		opcode = Opcode::GroupNonUniformIAdd;
+	}
+	if (known && (groupOperation == 0 || arithmetic == "sum" || arithmetic == "product")) {
+		builder.requireCapability(Capability::GroupNonUniformArithmetic);
+		// the unsigned minimum and maximum work on unsigned integers
+		if (opcode == Opcode::GroupNonUniformUMin || opcode == Opcode::GroupNonUniformUMax) {
+			auto unsignedType = integerTypeWithSign(builder, resultType, false);
+			auto value = builder.encodeBitcast(unsignedType, typed(0));
+			resID = builder.encodeBitcast(resultType, builder.encodeOp(opcode, unsignedType, { scopeID, groupOperation, value }));
+			return true;
+		}
+		resID = builder.encodeOp(opcode, resultType, { scopeID, groupOperation, typed(0) });
+		return true;
+	}
+
+	// broadcasts and shuffles of the first operand
+	if (operation == "broadcast_first") {
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		resID = builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, resultType, { scopeID, typed(0) });
+		return true;
+	}
+	if (operation == "broadcast") {
+		auto value = typed(0);
+		auto laneValue = DynamicLLVM::LLVMGetOperand(inst, 1);
+		if (arguments > 1 && DynamicLLVM::LLVMIsAConstantInt(laneValue)) {
+			builder.requireCapability(Capability::GroupNonUniformBallot);
+			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, resultType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
+		} else {
+			builder.requireCapability(Capability::GroupNonUniformShuffle);
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, resultType, { scopeID, value, lane(1) });
+		}
+		return true;
+	}
+	bool shuffle = operation == "shuffle";
+	bool xorShuffle = operation == "shuffle_xor";
+	bool down = operation == "shuffle_down";
+	bool up = operation == "shuffle_up";
+	if (shuffle || xorShuffle || down || up) {
+		builder.requireCapability(down || up ? Capability::GroupNonUniformShuffleRelative : Capability::GroupNonUniformShuffle);
+		auto opcodeForShuffle = shuffle ? Opcode::GroupNonUniformShuffle : (xorShuffle ? Opcode::GroupNonUniformShuffleXor : (down ? Opcode::GroupNonUniformShuffleDown : Opcode::GroupNonUniformShuffleUp));
+		resID = builder.encodeOp(opcodeForShuffle, resultType, { scopeID, typed(0), lane(1) });
+		return true;
+	}
+
+	throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+}
+
 // The same integer type, scalar or vector, with the given signedness. LLVM integers have no sign, while
 // some SPIR-V instructions require their operands or result to be unsigned.
 static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned) {
@@ -2326,6 +2474,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
+		} else if (kind == "air.thread_index_in_simdgroup" || kind == "air.threads_per_simdgroup" || kind == "air.simdgroup_index_in_threadgroup"
+				|| kind == "air.simdgroups_per_threadgroup") {
+			// the subgroup of the invocation, as the number the parameter's integer type holds
+			builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+			auto builtin = kind == "air.thread_index_in_simdgroup" ? SPIRV::BuiltinID::SubgroupLocalInvocationId
+				: (kind == "air.threads_per_simdgroup" ? SPIRV::BuiltinID::SubgroupSize
+				: (kind == "air.simdgroup_index_in_threadgroup" ? SPIRV::BuiltinID::SubgroupId : SPIRV::BuiltinID::NumSubgroups));
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			auto load = computeInput(builtin, u32Type);
+			if (type != u32Type) {
+				// a 32-bit integer of the other signedness, or a narrower or wider one
+				auto parameterType = *builder.reverseLookupType(type);
+				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			}
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
 			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
 			builder.associateExistingResultID(load, llparamVal);
@@ -3305,6 +3469,27 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
 							builder.declareConstantScalar<uint32_t>(semantics),
 						});
+					} else if (name == "air.simdgroup.barrier") {
+						// simdgroup_barrier(flags, ...): the threads of the subgroup arrive before any continues; the memory
+						// the flags name is made visible to them
+						auto flags = DynamicLLVM::LLVMGetNumOperands(inst) < 2 ? nullptr : DynamicLLVM::LLVMGetOperand(inst, 0);
+						if (!flags || !DynamicLLVM::LLVMIsAConstantInt(flags)) {
+							throw ImpossibleResultID("simdgroup barrier without constant memory flags");
+						}
+						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// the memory classes of a threadgroup barrier (see air.wg.barrier); no flags order no memory
+						uint32_t semantics = memFlags ? 0x8 : 0;
+						semantics |= (memFlags & 1) ? 0x40 : 0;
+						semantics |= (memFlags & 2) ? 0x100 : 0;
+						semantics |= (memFlags & 4) ? 0x800 : 0;
+						// scope: Subgroup 3
+						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
+							builder.declareConstantScalar<uint32_t>(3),
+							builder.declareConstantScalar<uint32_t>(3),
+							builder.declareConstantScalar<uint32_t>(semantics),
+						});
+					} else if (translateAirSimd(builder, inst, name, type, resID)) {
+						// handled
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {
 						// handled
 					} else if (name == "air.discard_fragment") {

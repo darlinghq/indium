@@ -47,6 +47,7 @@ add_subdirectory(bit-ops)
 add_subdirectory(texture-gather)
 add_subdirectory(texture-size)
 add_subdirectory(texture-multisample)
+add_subdirectory(simdgroup)
 add_subdirectory(pipeline-bench)
 add_subdirectory(pipeline-cache)
 
