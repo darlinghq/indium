@@ -5,6 +5,7 @@
 #include <iridium/iridium.hpp>
 
 #include <unordered_set>
+#include <vector>
 
 #include <cstring>
 #include <string_view>
@@ -66,6 +67,26 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 
 	if (enableValidation) {
 		extensionSet.insert(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	}
+
+	// Window system surfaces, for presenting to a native window (see IndiumKit::createXlibSurface
+	// and createWaylandSurface). They are optional: a loader without them only loses direct presentation.
+	{
+		uint32_t count = 0;
+		std::vector<VkExtensionProperties> available;
+		DynamicVK::vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
+		available.resize(count);
+		DynamicVK::vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
+		available.resize(count);
+
+		for (const char* name: { "VK_KHR_xlib_surface", "VK_KHR_wayland_surface" }) {
+			for (const auto& prop: available) {
+				if (strcmp(prop.extensionName, name) == 0) {
+					extensionSet.insert(name);
+					break;
+				}
+			}
+		}
 	}
 
 	for (size_t i = 0; i < additionalExtensionCount; ++i) {
