@@ -370,7 +370,8 @@ void Indium::PrivateRenderCommandEncoder::setViewports(const Viewport* viewports
 		//       so we use a Vulkan 1.1 feature here and just flip the Y-axis of the viewport
 		//       (with a corresponding change in the origin).
 		vkViewport.x = viewport.originX;
-		vkViewport.y = viewport.height - viewport.originY;
+		// A negative height places Vulkan's origin at the viewport's lower edge.
+		vkViewport.y = viewport.originY + viewport.height;
 		vkViewport.width = viewport.width;
 		vkViewport.height = -viewport.height;
 		// the documentation for setViewport and setViewports states that znear and zfar must be between

@@ -118,3 +118,4 @@ target_include_directories(indium-test-device-order PRIVATE "${INDIUM_ROOT}/incl
 set_target_properties(indium-test-device-order PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME device-order COMMAND indium-test-device-order)
 add_subdirectory(texture-usage)
+add_subdirectory(viewport-origin)
