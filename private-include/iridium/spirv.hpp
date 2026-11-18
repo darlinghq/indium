@@ -89,6 +89,7 @@ namespace Iridium {
 			Sampled1D = 43,
 			Image1D = 44,
 			ImageQuery = 50,
+			ImageMSArray = 48,
 			StorageImageReadWithoutFormat = 55,
 			StorageImageWriteWithoutFormat = 56,
 			PhysicalStorageBufferAddresses = 5347,

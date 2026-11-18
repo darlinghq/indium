@@ -1310,7 +1310,9 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 
 	bool compare = name.substr(0, 25) == "air.sample_compare_depth_";
 	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
-	bool read = name.substr(0, 17) == "air.read_texture_";
+	// the multisample depth texture is read like a color one, with a constant in front of the coordinates
+	bool readDepthMultisample = name.substr(0, 21) == "air.read_depth_2d_ms.";
+	bool read = name.substr(0, 17) == "air.read_texture_" || name.substr(0, 20) == "air.read_depth_2d_ms";
 	bool write = name.substr(0, 18) == "air.write_texture_";
 	// the size, sample count and level count of a texture of any class that has them
 	auto queryName = [&](std::string_view prefix) {
@@ -1411,7 +1413,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	// (and a write) has neither.
 	bool readsWithSampler = read && argumentCount > 1 && isReadSampler(DynamicLLVM::LLVMGetOperand(inst, 1));
 	// (a gather of a depth texture has a constant before the coordinates, as the comparing sample does)
-	unsigned coordinatesIndex = (compare || gatherDepth || gatherCompare) ? 3 : ((sample || gather || readsWithSampler) ? 2 : 1);
+	unsigned coordinatesIndex = (compare || gatherDepth || gatherCompare || readDepthMultisample) ? 3 : ((sample || gather || readsWithSampler) ? 2 : 1);
 
 	// an array texture takes the layer as another coordinate (a float one when sampling)
 	auto coordinates = operand(coordinatesIndex);
@@ -1552,6 +1554,16 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			return true;
 		}
 		value = builder.encodeOp(explicitLod ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
+	} else if (imageType.imageIsMultisampled) {
+		// read(coordinates, [layer,] sample): a fetch of one sample, which has no level
+		if (!read || storage) {
+			throw ImpossibleResultID("multisample textures can only be read, with a sample index");
+		}
+		if (arrayed) {
+			builder.requireCapability(Capability::ImageMSArray);
+		}
+		// image operands: Sample = 0x40
+		value = builder.encodeOp(Opcode::ImageFetch, texelType, { image, coordinates, 0x40, operand(coordinatesIndex + 1 + layerOperands) });
 	} else {
 		std::vector<uint32_t> arguments { image, coordinates };
 		if (!storage) {
@@ -1577,6 +1589,11 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		value = builder.encodeOp(storage ? Opcode::ImageRead : Opcode::ImageFetch, texelType, arguments);
 	}
 
+	// a depth texture yields a single value, the first component of the fetched texel
+	if (readDepthMultisample) {
+		value = builder.encodeCompositeExtract(imageType.targetType, value, { 0 });
+		texelType = imageType.targetType;
+	}
 	finish(convertTexel(builder, value, texelType, valueTypeID));
 	return true;
 }
@@ -2399,8 +2416,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 			// TODO: same here (find a better way...)
 			bool isArrayed = false;
+			bool isMultisampled = false;
 			if (colorClassName == "texture2d") {
 				dimensionality = SPIRV::Dim::e2D;
+			} else if (colorClassName == "texture2d_ms") {
+				dimensionality = SPIRV::Dim::e2D;
+				isMultisampled = true;
+			} else if (colorClassName == "texture2d_ms_array") {
+				dimensionality = SPIRV::Dim::e2D;
+				isArrayed = true;
+				isMultisampled = true;
 			} else if (colorClassName == "texture2d_array") {
 				dimensionality = SPIRV::Dim::e2D;
 				isArrayed = true;
@@ -2417,12 +2442,11 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			} else if (colorClassName == "texture3d") {
 				dimensionality = SPIRV::Dim::e3D;
 			} else {
-				// Any other texture class (the buffer variants, etc.)
-				throw std::runtime_error(std::string("TODO: support the texture class ") +
-					std::string(textureClassName));
+				// texture buffers and any other class
+				throw std::runtime_error(std::string("unsupported texture class ") + std::string(textureClassName));
 			}
 
-			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, isDepth ? 1 : 2, isArrayed, false, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
+			auto imageType = builder.declareType(SPIRV::Type(SPIRV::Type::ImageTag {}, fakeSampleType, realSampleType, dimensionality, isDepth ? 1 : 2, isArrayed, isMultisampled, accessType == TextureAccessType::Sample ? 1 : 2, SPIRV::ImageFormat::Unknown));
 			auto imagePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::UniformConstant, imageType, 8));
 			auto var = builder.addGlobalVariable(imagePtrType, SPIRV::StorageClass::UniformConstant);
 			builder.addDecoration(var, SPIRV::Decoration { SPIRV::DecorationType::DescriptorSet, { funcInfo.type == FunctionType::Fragment ? 1u : 0u } });
