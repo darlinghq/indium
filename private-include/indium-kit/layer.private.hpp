@@ -6,26 +6,40 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace IndiumKit {
 	class PrivateLayer;
 
+	// One generation of a layer's swapchain. Drawables keep the generation they were acquired from alive,
+	// so a swapchain replaced by a resize is destroyed only once its last drawable is gone.
+	struct SwapchainState {
+		std::shared_ptr<Indium::PrivateDevice> device;
+		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+		std::vector<VkImage> images;
+		std::vector<VkImageView> imageViews;
+		size_t width = 0;
+		size_t height = 0;
+		Indium::PixelFormat pixelFormat = Indium::PixelFormat::BGRA8Unorm;
+		bool framebufferOnly = true;
+
+		~SwapchainState();
+	};
+
 	class PrivateDrawable: public Drawable, public Indium::PrivateTexture {
 	private:
 		std::shared_ptr<PrivateLayer> _layer;
-		VkSwapchainKHR _swapchain = VK_NULL_HANDLE;
+		std::shared_ptr<SwapchainState> _state;
 		uint32_t _swapchainImageIndex;
-		VkImageView _imageView = VK_NULL_HANDLE;
-		VkImage _image = VK_NULL_HANDLE;
-		size_t _width;
-		size_t _height;
-		Indium::PixelFormat _pixelFormat;
+		std::function<void(bool)> _presentCallback;
+		bool _presented = false;
 
 	public:
-		PrivateDrawable(std::shared_ptr<PrivateLayer> layer, VkSwapchainKHR swapchain, uint32_t swapchainImageIndex, VkImageView imageView, VkImage image, std::shared_ptr<Indium::BinarySemaphore> extraWaitSemaphore, size_t width, size_t height, Indium::PixelFormat pixelFormat);
+		PrivateDrawable(std::shared_ptr<PrivateLayer> layer, std::shared_ptr<SwapchainState> state, uint32_t swapchainImageIndex, std::shared_ptr<Indium::BinarySemaphore> extraWaitSemaphore);
 		~PrivateDrawable();
 
 		virtual std::shared_ptr<Indium::Texture> texture() override;
+		virtual void setPresentCallback(std::function<void(bool)> callback) override;
 
 		virtual VkImageView imageView() override;
 		virtual VkImage image() override;
@@ -55,11 +69,16 @@ namespace IndiumKit {
 		std::shared_ptr<Indium::Device> _device;
 		Indium::PixelFormat _pixelFormat = Indium::PixelFormat::BGRA8Unorm;
 		VkSurfaceKHR _surface = VK_NULL_HANDLE;
-		VkSwapchainKHR _swapchain = VK_NULL_HANDLE;
-		std::vector<VkImage> _images;
-		std::vector<VkImageView> _imageViews;
 		size_t _width;
 		size_t _height;
+		uint32_t _imageCount = 3;
+		bool _framebufferOnly = true;
+		bool _displaySync = true;
+
+		// guards the swapchain generation and the settings above
+		std::mutex _stateMutex;
+		std::shared_ptr<SwapchainState> _state;
+		bool _outdated = false;
 
 		// An image that has been acquired from the swapchain but is not usable yet (the presentation engine still
 		// holds it), which the next nextDrawable() call goes on waiting for; see nextDrawable().
@@ -68,15 +87,32 @@ namespace IndiumKit {
 		bool _acquirePending = false;
 		uint32_t _acquiredIndex = 0;
 		std::shared_ptr<Indium::BinarySemaphore> _acquiredSemaphore;
+		std::shared_ptr<SwapchainState> _acquiredState;
+
+		// Builds a swapchain for the current settings, or returns null when the surface cannot present them.
+		std::shared_ptr<SwapchainState> createSwapchain(VkSwapchainKHR oldSwapchain);
 
 	public:
 		PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight);
 		~PrivateLayer();
 
 		virtual std::shared_ptr<Drawable> nextDrawable() override;
+		virtual std::shared_ptr<Drawable> nextDrawable(uint64_t timeoutNanoseconds) override;
 		virtual Indium::PixelFormat pixelFormat() override;
-		virtual void setPixelFormat(Indium::PixelFormat pixelFormat) override;
+		virtual bool setPixelFormat(Indium::PixelFormat pixelFormat) override;
+		virtual void setFramebufferSize(size_t width, size_t height) override;
+		virtual size_t framebufferWidth() override;
+		virtual size_t framebufferHeight() override;
+		virtual void setImageCount(uint32_t count) override;
+		virtual void setFramebufferOnly(bool framebufferOnly) override;
+		virtual void setDisplaySyncEnabled(bool enabled) override;
 
 		std::shared_ptr<Indium::Device> device();
+
+		// Whether `state` is the layer's current swapchain, not one that a resize or a setting replaced.
+		bool isCurrent(const std::shared_ptr<SwapchainState>& state);
+
+		// Called when presentation reported the swapchain as out of date or suboptimal.
+		void markOutdated(const std::shared_ptr<SwapchainState>& state);
 	};
 };
