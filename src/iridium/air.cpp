@@ -2116,8 +2116,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			{},
 		});
 
-		// declare the GLSL PerVertex structure
-		auto perVertexStructType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, {
+		// declare the GLSL PerVertex structure. An output interface block carries no explicit layout.
+		SPIRV::Type perVertexStructInst(SPIRV::Type::StructureTag {}, {
 			SPIRV::Type::Member {
 				vec4Type,
 				0,
@@ -2126,7 +2126,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				}
 			},
 			// TODO: declare the rest of the structure
-		}, floatTypeInst.size * 4, floatTypeInst.alignment));
+		}, floatTypeInst.size * 4, floatTypeInst.alignment);
+		perVertexStructInst.layoutFree = true;
+		auto perVertexStructType = builder.declareType(perVertexStructInst);
 		auto perVertexStructPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, perVertexStructType, 8));
 		perVertexVar = builder.addGlobalVariable(perVertexStructPtrType, SPIRV::StorageClass::Output);
 
