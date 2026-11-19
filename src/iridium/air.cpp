@@ -650,7 +650,11 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			LayoutFreeScope layoutFree(true);
 			auto valueType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGlobalGetValueType(llvmValue));
 			auto pointerType = builder.declareType(Type(Type::PointerTag {}, StorageClass::Private, valueType, 8));
-			auto initialValue = llvmValueToResultID(builder, initializer);
+			// an undefined initial value leaves the variable uninitialized: OpUndef is not a constant instruction,
+			// so it cannot be a variable's initializer
+			auto initializerKind = DynamicLLVM::LLVMGetValueKind(initializer);
+			bool undefinedInitializer = initializerKind == LLVMUndefValueValueKind || initializerKind == LLVMPoisonValueValueKind;
+			auto initialValue = undefinedInitializer ? ResultIDInvalid : llvmValueToResultID(builder, initializer);
 			auto result = builder.addGlobalVariable(pointerType, StorageClass::Private, initialValue);
 			builder.setResultType(result, pointerType);
 			builder.associateExistingResultID(result, reinterpret_cast<uintptr_t>(llvmValue));
