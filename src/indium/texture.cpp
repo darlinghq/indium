@@ -811,7 +811,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 
 	if (!direct && !heapBacking) {
-		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+		_device->memoryPool().bindImage(_device->device(), _image, _allocation);
 		_hazardRange = HazardRange::memory(_memory, memoryOffset, memoryOffset + reqs.size);
 	}
 
