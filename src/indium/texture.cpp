@@ -149,14 +149,13 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	auto levelStart = std::min(parentLevelStart + _levels.start, parentLevelEnd);
 	auto levelEnd = std::min(levelStart + _levels.length - 1, parentLevelEnd);
 
-	auto parentLayerEnd = parentLayerStart + _original->arrayLength() - 1;
+	// the layers of a view are slices: the faces of a cube texture count one each
+	auto parentLayerEnd = parentLayerStart + _original->vulkanArrayLength() - 1;
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
 
 	_rootLevel = levelStart;
 	_rootLayer = layerStart;
-
-	bool isCube = _textureType == TextureType::eCube || _textureType == TextureType::eCubeArray;
 
 	VkImageViewCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -172,7 +171,7 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.subresourceRange.baseMipLevel = levelStart;
 	info.subresourceRange.levelCount = levelEnd - levelStart + 1;
 	info.subresourceRange.baseArrayLayer = layerStart;
-	info.subresourceRange.layerCount = (layerEnd - layerStart + 1) * (isCube ? 6 : 1);
+	info.subresourceRange.layerCount = layerEnd - layerStart + 1;
 
 	if (DynamicVK::vkCreateImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), &info, nullptr, &_imageView) != VK_SUCCESS) {
 		// TODO
@@ -494,6 +493,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.samples = sampleCountToVk(_descriptor.sampleCount);
 
 	if (_descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray) {
+		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	} else if (_descriptor.textureType == TextureType::e2DArray && _descriptor.width == _descriptor.height && _descriptor.arrayLength >= 6 && _descriptor.sampleCount == 1) {
+		// the slices of a square array texture can be viewed as the faces of cube textures
 		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 	}
 
