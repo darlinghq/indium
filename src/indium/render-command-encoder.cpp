@@ -198,6 +198,19 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		resolveAttachments.push_back(ref);
 	}
 
+	// The layout transition of an attachment at the start of the pass (from UNDEFINED when the attachment is
+	// cleared) and its load happen in the pass, so they have to be ordered after what earlier passes wrote to
+	// the attachments; the implicit external dependency has no source access and orders nothing.
+	{
+		auto& external = dependencies.emplace_back();
+		external.srcSubpass = VK_SUBPASS_EXTERNAL;
+		external.dstSubpass = 0;
+		external.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+		external.dstStageMask = external.srcStageMask;
+		external.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		external.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	}
+
 	// memoryBarrier() records pipeline barriers inside the pass, which Vulkan only allows when they
 	// match a self-dependency of the subpass: one between fragment work (framebuffer-local) and one
 	// from vertex work to anything after it. The render-target barrier scope covers the depth attachment too (see

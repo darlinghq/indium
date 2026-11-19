@@ -151,6 +151,12 @@ std::shared_ptr<Indium::ComputePipelineState> Indium::PrivateDevice::visibilityR
 
 void Indium::PrivateDevice::releaseCachedObjects() {
 	_textureUploader.releaseAll();
+	{
+		// the zero-filled buffer and the default sampler reference the device, as the resolve pipeline does
+		std::scoped_lock lock(_fallbackMutex);
+		_fallbackBuffer.reset();
+		_fallbackSampler.reset();
+	}
 	std::scoped_lock lock(_visibilityResolveMutex);
 	_visibilityResolvePipeline.reset();
 };

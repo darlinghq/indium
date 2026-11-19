@@ -444,9 +444,13 @@ void testPlacementHeap(Device& device, CommandQueue& queue) {
 		}
 
 		// the GPU through an aliasing pair of private buffers: fill through one, read through the other
+		// (a heap's resources are not hazard tracked unless it asks for it, and the fill and the copy need an order)
 		{
-			auto first = heap->newBuffer(4096, options, 4096 * 4);
-			auto second = heap->newBuffer(4096, options, 4096 * 4);
+			auto trackedDescriptor = heapDescriptor(1 << 20, storageMode, HeapType::Placement);
+			trackedDescriptor.hazardTrackingMode = HazardTrackingMode::HazardTrackingModeTracked;
+			auto trackedHeap = device.newHeap(trackedDescriptor);
+			auto first = trackedHeap ? trackedHeap->newBuffer(4096, options, 4096 * 4) : nullptr;
+			auto second = trackedHeap ? trackedHeap->newBuffer(4096, options, 4096 * 4) : nullptr;
 			auto readback = device.newBuffer(4096, sharedOptions);
 			if (first && second) {
 				auto commandBuffer = queue.commandBuffer();

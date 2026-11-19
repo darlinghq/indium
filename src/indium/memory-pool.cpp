@@ -165,6 +165,16 @@ void* Indium::MemoryPool::map(VkDevice device, const Allocation& allocation) {
 	return static_cast<char*>(block->mapped) + allocation.offset;
 };
 
+VkResult Indium::MemoryPool::bindBuffer(VkDevice device, VkBuffer buffer, const Allocation& allocation) {
+	std::scoped_lock lock(_mutex);
+	return DynamicVK::vkBindBufferMemory(device, buffer, allocation.memory, allocation.offset);
+};
+
+VkResult Indium::MemoryPool::bindImage(VkDevice device, VkImage image, const Allocation& allocation) {
+	std::scoped_lock lock(_mutex);
+	return DynamicVK::vkBindImageMemory(device, image, allocation.memory, allocation.offset);
+};
+
 void Indium::MemoryPool::releaseAll(VkDevice device) {
 	std::scoped_lock lock(_mutex);
 	for (auto& [key, list]: _blocks) {

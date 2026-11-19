@@ -70,7 +70,7 @@ Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size
 	}
 	_memory = _allocation.memory;
 
-	DynamicVK::vkBindBufferMemory(_privateDevice->device(), _buffer, _memory, _allocation.offset);
+	_privateDevice->memoryPool().bindBuffer(_privateDevice->device(), _buffer, _allocation);
 };
 
 Indium::PrivateBuffer::PrivateBuffer(std::shared_ptr<PrivateDevice> device, size_t length, ResourceOptions options, const HeapPlacement& placement):

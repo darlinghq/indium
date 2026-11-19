@@ -273,6 +273,8 @@ namespace Iridium {
 			bool imageIsMultisampled = false;
 			uint8_t imageIsSampledIndication = 0;
 			ImageFormat imageFormat = ImageFormat::Unknown;
+			// informational only; not part of the type's identity, since images that differ only in it
+			// have the same SPIR-V encoding and must share one OpTypeImage
 			ResultID imageRealSampleTypeID = ResultIDInvalid;
 
 			// Structures and arrays in Private or Function memory must not carry the explicit layout (Offset and
@@ -414,7 +416,6 @@ struct std::hash<Iridium::SPIRV::Type> {
 		result = ((result << 1) ^ std::hash<bool>()(type.imageIsMultisampled)) >> 1;
 		result = ((result << 1) ^ std::hash<uint8_t>()(type.imageIsSampledIndication)) >> 1;
 		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ImageFormat>()(type.imageFormat)) >> 1;
-		result = ((result << 1) ^ std::hash<Iridium::SPIRV::ResultID>()(type.imageRealSampleTypeID)) >> 1;
 		return result;
 	};
 };

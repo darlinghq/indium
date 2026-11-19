@@ -149,14 +149,13 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	auto levelStart = std::min(parentLevelStart + _levels.start, parentLevelEnd);
 	auto levelEnd = std::min(levelStart + _levels.length - 1, parentLevelEnd);
 
-	auto parentLayerEnd = parentLayerStart + _original->arrayLength() - 1;
+	// the layers of a view are slices: the faces of a cube texture count one each
+	auto parentLayerEnd = parentLayerStart + _original->vulkanArrayLength() - 1;
 	auto layerStart = std::min(parentLayerStart + _layers.start, parentLayerEnd);
 	auto layerEnd = std::min(layerStart + _layers.length - 1, parentLayerEnd);
 
 	_rootLevel = levelStart;
 	_rootLayer = layerStart;
-
-	bool isCube = _textureType == TextureType::eCube || _textureType == TextureType::eCubeArray;
 
 	VkImageViewCreateInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -168,11 +167,21 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.components.g = textureSwizzleToVkComponentSwizzle(_swizzle.green);
 	info.components.b = textureSwizzleToVkComponentSwizzle(_swizzle.blue);
 	info.components.a = textureSwizzleToVkComponentSwizzle(_swizzle.alpha);
+	if (info.format == VK_FORMAT_A8_UNORM_KHR && _original->imageFormat() != VK_FORMAT_A8_UNORM_KHR) {
+		// VK_FORMAT_A8_UNORM_KHR is not in the format compatibility class of R8, so an image that was not made
+		// as A8 is viewed in its own format and read through the swizzle that gives the alpha-only layout.
+		info.format = _original->imageFormat();
+		auto composed = Indium::composeTextureSwizzle(Indium::pixelFormatImplicitSwizzle(_pixelFormat), _swizzle);
+		info.components.r = textureSwizzleToVkComponentSwizzle(composed.red);
+		info.components.g = textureSwizzleToVkComponentSwizzle(composed.green);
+		info.components.b = textureSwizzleToVkComponentSwizzle(composed.blue);
+		info.components.a = textureSwizzleToVkComponentSwizzle(composed.alpha);
+	}
 	info.subresourceRange.aspectMask = _imageAspect;
 	info.subresourceRange.baseMipLevel = levelStart;
 	info.subresourceRange.levelCount = levelEnd - levelStart + 1;
 	info.subresourceRange.baseArrayLayer = layerStart;
-	info.subresourceRange.layerCount = (layerEnd - layerStart + 1) * (isCube ? 6 : 1);
+	info.subresourceRange.layerCount = layerEnd - layerStart + 1;
 
 	if (DynamicVK::vkCreateImageView(std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device(), &info, nullptr, &_imageView) != VK_SUCCESS) {
 		// TODO
@@ -495,6 +504,9 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 
 	if (_descriptor.textureType == TextureType::eCube || _descriptor.textureType == TextureType::eCubeArray) {
 		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+	} else if (_descriptor.textureType == TextureType::e2DArray && _descriptor.width == _descriptor.height && _descriptor.arrayLength >= 6 && _descriptor.sampleCount == 1) {
+		// the slices of a square array texture can be viewed as the faces of cube textures
+		info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 	}
 
 	auto imageAspect = pixelFormatToVkImageAspectFlags(_descriptor.pixelFormat);
@@ -811,7 +823,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 
 	if (!direct && !heapBacking) {
-		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, memoryOffset);
+		_device->memoryPool().bindImage(_device->device(), _image, _allocation);
 		_hazardRange = HazardRange::memory(_memory, memoryOffset, memoryOffset + reqs.size);
 	}
 

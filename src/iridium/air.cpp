@@ -650,7 +650,11 @@ static Iridium::SPIRV::ResultID llvmValueToResultID(Iridium::SPIRV::Builder& bui
 			LayoutFreeScope layoutFree(true);
 			auto valueType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGlobalGetValueType(llvmValue));
 			auto pointerType = builder.declareType(Type(Type::PointerTag {}, StorageClass::Private, valueType, 8));
-			auto initialValue = llvmValueToResultID(builder, initializer);
+			// an undefined initial value leaves the variable uninitialized: OpUndef is not a constant instruction,
+			// so it cannot be a variable's initializer
+			auto initializerKind = DynamicLLVM::LLVMGetValueKind(initializer);
+			bool undefinedInitializer = initializerKind == LLVMUndefValueValueKind || initializerKind == LLVMPoisonValueValueKind;
+			auto initialValue = undefinedInitializer ? ResultIDInvalid : llvmValueToResultID(builder, initializer);
 			auto result = builder.addGlobalVariable(pointerType, StorageClass::Private, initialValue);
 			builder.setResultType(result, pointerType);
 			builder.associateExistingResultID(result, reinterpret_cast<uintptr_t>(llvmValue));
@@ -1327,11 +1331,13 @@ static Iridium::SPIRV::ResultID integerConstantOfType(Iridium::SPIRV::Builder& b
 		std::vector<ResultID> lanes(type.entryCount, integerConstantOfType(builder, type.targetType, value));
 		return builder.declareConstantComposite(typeID, lanes);
 	}
+	// the constant has the signedness of the type: an OpSelect or OpPhi needs operands of its result type
+	bool isSigned = type.integerIsSigned;
 	switch (type.scalarWidth) {
-		case 8: return builder.declareConstantScalar<int8_t>(value);
-		case 16: return builder.declareConstantScalar<int16_t>(value);
-		case 32: return builder.declareConstantScalar<int32_t>(value);
-		case 64: return builder.declareConstantScalar<int64_t>(value);
+		case 8: return isSigned ? builder.declareConstantScalar<int8_t>(value) : builder.declareConstantScalar<uint8_t>(value);
+		case 16: return isSigned ? builder.declareConstantScalar<int16_t>(value) : builder.declareConstantScalar<uint16_t>(value);
+		case 32: return isSigned ? builder.declareConstantScalar<int32_t>(value) : builder.declareConstantScalar<uint32_t>(value);
+		case 64: return isSigned ? builder.declareConstantScalar<int64_t>(value) : builder.declareConstantScalar<uint64_t>(value);
 		default: throw ImpossibleResultID("unsupported integer width " + std::to_string(type.scalarWidth));
 	}
 }
@@ -1537,11 +1543,18 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "mul_hi") {
 			// the high half of the double-width product: the second member of OpUMulExtended's pair
+			// OpUMulExtended works on unsigned integers, and LLVM's integer types carry no sign
 			auto info = *builder.reverseLookupType(type);
+			auto operandType = isSigned ? type : integerTypeWithSign(builder, type, false);
+			auto operandInfo = *builder.reverseLookupType(operandType);
+			auto typedOperand = [&](size_t index) { return operandType == type ? operand(index) : builder.encodeBitcast(operandType, operand(index)); };
 			LayoutFreeScope layoutFree(true);
-			auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { type, 0, {} }, Type::Member { type, info.size, {} } }, info.size * 2, info.alignment));
-			auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { operand(0), operand(1) });
-			resID = builder.encodeCompositeExtract(type, product, { 1 });
+			auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { operandType, 0, {} }, Type::Member { operandType, operandInfo.size, {} } }, info.size * 2, info.alignment));
+			auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { typedOperand(0), typedOperand(1) });
+			resID = builder.encodeCompositeExtract(operandType, product, { 1 });
+			if (operandType != type) {
+				resID = builder.encodeBitcast(type, resID);
+			}
 			return true;
 		}
 		if (fn == "abs") {
@@ -2164,8 +2177,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			{},
 		});
 
-		// declare the GLSL PerVertex structure
-		auto perVertexStructType = builder.declareType(SPIRV::Type(SPIRV::Type::StructureTag {}, {
+		// declare the GLSL PerVertex structure. An output interface block carries no explicit layout.
+		SPIRV::Type perVertexStructInst(SPIRV::Type::StructureTag {}, {
 			SPIRV::Type::Member {
 				vec4Type,
 				0,
@@ -2174,7 +2187,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				}
 			},
 			// TODO: declare the rest of the structure
-		}, floatTypeInst.size * 4, floatTypeInst.alignment));
+		}, floatTypeInst.size * 4, floatTypeInst.alignment);
+		perVertexStructInst.layoutFree = true;
+		auto perVertexStructType = builder.declareType(perVertexStructInst);
 		auto perVertexStructPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::Output, perVertexStructType, 8));
 		perVertexVar = builder.addGlobalVariable(perVertexStructPtrType, SPIRV::StorageClass::Output);
 
@@ -2668,8 +2683,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
 			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			if (type != u32Type) {
+				auto parameterType = *builder.reverseLookupType(type);
+				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			}
 			builder.associateExistingResultID(load, llparamVal);
-			builder.setResultType(load, u32Type);
+			builder.setResultType(load, type);
 		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
 				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
@@ -2691,7 +2711,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 			auto typeInst = *builder.reverseLookupType(type);
 			auto target = load;
-			auto resultType = type;
+			auto resultType = uvec3Type;
 
 			// it's not clear what should happen with less than 3-component vectors (at least i can't find any documentation on it);
 			// they could either be restricted to fewer dimensions (i.e. only X or only X and Y)
@@ -2706,6 +2726,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				auto uvec2Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 2, u32Type));
 				target = builder.encodeVectorShuffle(uvec2Type, load, load, { 0, 1 });
 				resultType = uvec2Type;
+			}
+
+			// the parameter's LLVM type has no signedness and maps to a signed integer, while the builtins are unsigned
+			if (resultType != type) {
+				auto elementOf = [&](const SPIRV::Type& inst) { return inst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(inst.targetType) : inst; };
+				bool sameWidth = elementOf(*builder.reverseLookupType(resultType)).scalarWidth == elementOf(typeInst).scalarWidth;
+				target = sameWidth ? builder.encodeBitcast(type, target) : builder.encodeUConvert(type, target);
+				resultType = type;
 			}
 
 			builder.associateExistingResultID(target, llparamVal);

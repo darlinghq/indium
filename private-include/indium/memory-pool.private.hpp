@@ -85,6 +85,13 @@ namespace Indium {
 		void* map(VkDevice device, const Allocation& allocation);
 
 		/**
+		 * Bind a buffer or image to its allocation. Mapping a block takes its memory object as an externally
+		 * synchronized parameter, so binding another resource to the block's memory must not overlap with a map.
+		 */
+		VkResult bindBuffer(VkDevice device, VkBuffer buffer, const Allocation& allocation);
+		VkResult bindImage(VkDevice device, VkImage image, const Allocation& allocation);
+
+		/**
 		 * Frees every block. Called before the device is destroyed, when no resource is left.
 		 */
 		void releaseAll(VkDevice device);

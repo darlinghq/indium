@@ -114,6 +114,9 @@ int main() {
 		if (!supported || !makeBuffer(buffer)) {
 			std::printf("SKIP %s\n", supported ? "no /dev/udmabuf" : "no DMA-BUF import");
 			report(device->newTextureWithDMABuf(descriptor(), -1, offset, bytesPerRow) == nullptr, "an invalid descriptor returns nullptr");
+			// the devices must be gone before finit() destroys the Vulkan instance
+			privateDevice.reset();
+			device.reset();
 			Indium::finit();
 			return failures ? 1 : 0;
 		}
