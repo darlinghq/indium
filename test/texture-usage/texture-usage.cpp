@@ -9,7 +9,7 @@ static unsigned creations;
 static VkResult create(VkDevice device,const VkImageCreateInfo *info,const VkAllocationCallbacks *allocation,VkImage *image) {
  ++creations;observed=info->usage;return original(device,info,allocation,image);
 }
-int main() {
+static int run() {
  Indium::init(nullptr,0,false);auto device=Indium::createSystemDefaultDevice();if(!device)return 2;
  std::printf("device %s\n",device->name().c_str());
  if(!Indium::DynamicVK::vkCreateImage.resolve())return 3;
@@ -33,4 +33,10 @@ int main() {
   std::printf("%s invalid depth usage rejected before allocation\n",rejected?"PASS":"FAIL");failures+=!rejected;
  }
  Indium::DynamicVK::vkCreateImage.pointer=reinterpret_cast<void*>(original);return failures?1:0;
+}
+// every texture and device is released when run() returns, before the Vulkan instance goes
+int main() {
+ int result=run();
+ Indium::finit();
+ return result;
 }

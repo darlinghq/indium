@@ -24,7 +24,7 @@ double millisecondsSince(Clock::time_point start) {
 
 }
 
-int main() {
+static int run() {
 	Indium::init(nullptr, 0, false);
 	auto device = Indium::createSystemDefaultDevice();
 	if (!device) {
@@ -113,4 +113,11 @@ int main() {
 	device->wakeupEventLoop();
 	poller.join();
 	return 0;
+}
+
+// every texture and device is released when run() returns, before the Vulkan instance goes
+int main() {
+	int result = run();
+	Indium::finit();
+	return result;
 }
