@@ -2622,8 +2622,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
 			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			if (type != u32Type) {
+				auto parameterType = *builder.reverseLookupType(type);
+				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			}
 			builder.associateExistingResultID(load, llparamVal);
-			builder.setResultType(load, u32Type);
+			builder.setResultType(load, type);
 		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
 				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
@@ -2645,7 +2650,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			}
 			auto typeInst = *builder.reverseLookupType(type);
 			auto target = load;
-			auto resultType = type;
+			auto resultType = uvec3Type;
 
 			// it's not clear what should happen with less than 3-component vectors (at least i can't find any documentation on it);
 			// they could either be restricted to fewer dimensions (i.e. only X or only X and Y)
@@ -2660,6 +2665,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				auto uvec2Type = builder.declareType(SPIRV::Type(SPIRV::Type::VectorTag {}, 2, u32Type));
 				target = builder.encodeVectorShuffle(uvec2Type, load, load, { 0, 1 });
 				resultType = uvec2Type;
+			}
+
+			// the parameter's LLVM type has no signedness and maps to a signed integer, while the builtins are unsigned
+			if (resultType != type) {
+				auto elementOf = [&](const SPIRV::Type& inst) { return inst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(inst.targetType) : inst; };
+				bool sameWidth = elementOf(*builder.reverseLookupType(resultType)).scalarWidth == elementOf(typeInst).scalarWidth;
+				target = sameWidth ? builder.encodeBitcast(type, target) : builder.encodeUConvert(type, target);
+				resultType = type;
 			}
 
 			builder.associateExistingResultID(target, llparamVal);
