@@ -797,6 +797,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
 			throw std::runtime_error("The DMA-BUF could not be imported");
 		}
+		DynamicVK::vkBindImageMemory(_device->device(), _image, _memory, 0);
+		_hazardRange = HazardRange::memory(_memory, 0, reqs.size);
 	} else {
 		size_t targetIndex = _device->findMemoryType(reqs.memoryTypeBits, _storageMode);
 
@@ -822,7 +824,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		memoryOffset = _allocation.offset;
 	}
 
-	if (!direct && !heapBacking) {
+	if (!direct && !heapBacking && !import) {
 		_device->memoryPool().bindImage(_device->device(), _image, _allocation);
 		_hazardRange = HazardRange::memory(_memory, memoryOffset, memoryOffset + reqs.size);
 	}
