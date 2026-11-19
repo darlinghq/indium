@@ -1331,11 +1331,13 @@ static Iridium::SPIRV::ResultID integerConstantOfType(Iridium::SPIRV::Builder& b
 		std::vector<ResultID> lanes(type.entryCount, integerConstantOfType(builder, type.targetType, value));
 		return builder.declareConstantComposite(typeID, lanes);
 	}
+	// the constant has the signedness of the type: an OpSelect or OpPhi needs operands of its result type
+	bool isSigned = type.integerIsSigned;
 	switch (type.scalarWidth) {
-		case 8: return builder.declareConstantScalar<int8_t>(value);
-		case 16: return builder.declareConstantScalar<int16_t>(value);
-		case 32: return builder.declareConstantScalar<int32_t>(value);
-		case 64: return builder.declareConstantScalar<int64_t>(value);
+		case 8: return isSigned ? builder.declareConstantScalar<int8_t>(value) : builder.declareConstantScalar<uint8_t>(value);
+		case 16: return isSigned ? builder.declareConstantScalar<int16_t>(value) : builder.declareConstantScalar<uint16_t>(value);
+		case 32: return isSigned ? builder.declareConstantScalar<int32_t>(value) : builder.declareConstantScalar<uint32_t>(value);
+		case 64: return isSigned ? builder.declareConstantScalar<int64_t>(value) : builder.declareConstantScalar<uint64_t>(value);
 		default: throw ImpossibleResultID("unsupported integer width " + std::to_string(type.scalarWidth));
 	}
 }
