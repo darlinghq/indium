@@ -41,8 +41,7 @@ bool Iridium::SPIRV::Type::operator==(const Type& other) const {
 		imageIsArrayed != other.imageIsArrayed ||
 		imageIsMultisampled != other.imageIsMultisampled ||
 		imageIsSampledIndication != other.imageIsSampledIndication ||
-		imageFormat != other.imageFormat ||
-		imageRealSampleTypeID != other.imageRealSampleTypeID
+		imageFormat != other.imageFormat
 	) {
 		return false;
 	}
