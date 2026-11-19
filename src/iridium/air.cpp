@@ -1543,11 +1543,18 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "mul_hi") {
 			// the high half of the double-width product: the second member of OpUMulExtended's pair
+			// OpUMulExtended works on unsigned integers, and LLVM's integer types carry no sign
 			auto info = *builder.reverseLookupType(type);
+			auto operandType = isSigned ? type : integerTypeWithSign(builder, type, false);
+			auto operandInfo = *builder.reverseLookupType(operandType);
+			auto typedOperand = [&](size_t index) { return operandType == type ? operand(index) : builder.encodeBitcast(operandType, operand(index)); };
 			LayoutFreeScope layoutFree(true);
-			auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { type, 0, {} }, Type::Member { type, info.size, {} } }, info.size * 2, info.alignment));
-			auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { operand(0), operand(1) });
-			resID = builder.encodeCompositeExtract(type, product, { 1 });
+			auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { operandType, 0, {} }, Type::Member { operandType, operandInfo.size, {} } }, info.size * 2, info.alignment));
+			auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { typedOperand(0), typedOperand(1) });
+			resID = builder.encodeCompositeExtract(operandType, product, { 1 });
+			if (operandType != type) {
+				resID = builder.encodeBitcast(type, resID);
+			}
 			return true;
 		}
 		if (fn == "abs") {
