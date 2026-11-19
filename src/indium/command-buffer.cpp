@@ -641,11 +641,19 @@ void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::share
 void Indium::PrivateCommandBuffer::markCompleted() {
 	// the caller's memory gets what the GPU wrote before anything learns that the command buffer is done
 	_privateDevice->syncShadowBuffers(false);
+	bool handlersFinished;
 	{
 		std::unique_lock lock(_mutex);
 		_completed = true;
+		// No handler-thread work is needed to satisfy the completion wait when
+		// there are no completed handlers. In particular, a handler can submit
+		// such a buffer and wait for its GPU work without blocking retirement.
+		_completedHandlersFinished = _completedHandlers.empty();
+		handlersFinished = _completedHandlersFinished;
 	}
-	_completedCondvar.notify_all();
+	if (handlersFinished) {
+		_completedCondvar.notify_all();
+	}
 };
 
 void Indium::PrivateCommandBuffer::runScheduledHandlers() {
@@ -679,6 +687,11 @@ void Indium::PrivateCommandBuffer::retire() {
 		completedHandlers.swap(_completedHandlers);
 	}
 	invokeHandlers(completedHandlers, self);
+	{
+		std::unique_lock lock(_mutex);
+		_completedHandlersFinished = true;
+	}
+	_completedCondvar.notify_all();
 
 	// The GPU is done with everything the command buffer recorded: release what it held for the GPU's sake, though
 	// the client may keep the command buffer itself for as long as it likes.
@@ -764,7 +777,7 @@ void Indium::PrivateCommandBuffer::addCompletedHandler(std::function<void(std::s
 void Indium::PrivateCommandBuffer::waitUntilCompleted() {
 	std::unique_lock lock(_mutex);
 
-	while (!_completed) {
+	while (!_completed || !_completedHandlersFinished) {
 		_completedCondvar.wait(lock);
 	}
 };
