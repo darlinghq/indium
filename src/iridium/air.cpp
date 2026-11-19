@@ -1683,6 +1683,182 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
 }
 
+// Reads the components of an integer scalar or vector whose value is fixed when the shader is translated: a
+// constant, or insertelement and shufflevector instructions over constants. The compiler builds a texel offset
+// that way when it is assembled one component at a time, e.g. from a loop counter that unrolling has replaced
+// with constants. Undefined components count as zero. Returns false for a value that is only known at run time.
+static bool airConstantIntegers(LLVMValueRef value, std::vector<int64_t>& components, unsigned depth = 0) {
+	// AIR comes from outside: give up on chains deeper than any offset needs instead of recursing without bound
+	if (depth > 16) {
+		return false;
+	}
+	auto type = DynamicLLVM::LLVMTypeOf(value);
+	bool vector = DynamicLLVM::LLVMGetTypeKind(type) == LLVMVectorTypeKind;
+	unsigned count = vector ? DynamicLLVM::LLVMGetVectorSize(type) : 1;
+	if (DynamicLLVM::LLVMGetTypeKind(vector ? DynamicLLVM::LLVMGetElementType(type) : type) != LLVMIntegerTypeKind) {
+		return false;
+	}
+
+	auto scalar = [](LLVMValueRef element, int64_t& result) {
+		auto kind = DynamicLLVM::LLVMGetValueKind(element);
+		if (kind == LLVMUndefValueValueKind || kind == LLVMPoisonValueValueKind) {
+			result = 0;
+			return true;
+		}
+		if (kind != LLVMConstantIntValueKind) {
+			return false;
+		}
+		result = DynamicLLVM::LLVMConstIntGetSExtValue(element);
+		return true;
+	};
+
+	switch (DynamicLLVM::LLVMGetValueKind(value)) {
+		case LLVMConstantIntValueKind:
+		case LLVMUndefValueValueKind:
+		case LLVMPoisonValueValueKind: {
+			// (a vector-typed ConstantInt is a splat)
+			int64_t element;
+			scalar(value, element);
+			components.assign(count, element);
+			return true;
+		}
+
+		case LLVMConstantAggregateZeroValueKind:
+			components.assign(count, 0);
+			return true;
+
+		case LLVMConstantDataVectorValueKind:
+		case LLVMConstantVectorValueKind: {
+			bool data = DynamicLLVM::LLVMGetValueKind(value) == LLVMConstantDataVectorValueKind;
+			components.resize(count);
+			for (unsigned i = 0; i < count; ++i) {
+				auto element = data ? DynamicLLVM::LLVMGetElementAsConstant(value, i) : DynamicLLVM::LLVMGetOperand(value, i);
+				if (!scalar(element, components[i])) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		case LLVMInstructionValueKind:
+			break;
+
+		default:
+			return false;
+	}
+
+	switch (DynamicLLVM::LLVMGetInstructionOpcode(value)) {
+		case LLVMInsertElement: {
+			auto index = DynamicLLVM::LLVMGetOperand(value, 2);
+			int64_t element;
+			if (!DynamicLLVM::LLVMIsAConstantInt(index) || !airConstantIntegers(DynamicLLVM::LLVMGetOperand(value, 0), components, depth + 1) || !scalar(DynamicLLVM::LLVMGetOperand(value, 1), element)) {
+				return false;
+			}
+			auto position = DynamicLLVM::LLVMConstIntGetZExtValue(index);
+			// an index past the end makes the whole result poison
+			if (position >= components.size()) {
+				components.assign(count, 0);
+			} else {
+				components[position] = element;
+			}
+			return true;
+		}
+
+		case LLVMShuffleVector: {
+			std::vector<int64_t> first, second;
+			if (!airConstantIntegers(DynamicLLVM::LLVMGetOperand(value, 0), first, depth + 1) || !airConstantIntegers(DynamicLLVM::LLVMGetOperand(value, 1), second, depth + 1)) {
+				return false;
+			}
+			unsigned maskCount = DynamicLLVM::LLVMGetNumMaskElements(value);
+			int undefinedElement = DynamicLLVM::LLVMGetUndefMaskElem();
+			components.assign(maskCount, 0);
+			for (unsigned i = 0; i < maskCount; ++i) {
+				int selector = DynamicLLVM::LLVMGetMaskValue(value, i);
+				if (selector == undefinedElement || selector < 0) {
+					continue;
+				}
+				if (static_cast<size_t>(selector) < first.size()) {
+					components[i] = first[selector];
+				} else if (static_cast<size_t>(selector) - first.size() < second.size()) {
+					components[i] = second[selector - first.size()];
+				}
+			}
+			return true;
+		}
+
+		default:
+			return false;
+	}
+}
+
+// A texel offset as an image operand: ConstOffset with a constant when its value is fixed at translation time
+// (see airConstantIntegers), otherwise nothing (`constant` is false) and the caller has to apply it itself, since
+// Vulkan accepts a run-time Offset operand only on gathers, and only with an optional feature.
+static Iridium::SPIRV::ResultID airTexelOffset(Iridium::SPIRV::Builder& builder, LLVMValueRef offset, bool& constant) {
+	using namespace Iridium::SPIRV;
+	std::vector<int64_t> components;
+	constant = airConstantIntegers(offset, components);
+	if (!constant) {
+		return ResultIDInvalid;
+	}
+	std::vector<ResultID> elements;
+	for (auto component: components) {
+		elements.push_back(builder.declareConstantScalar<int32_t>(static_cast<int32_t>(component)));
+	}
+	if (elements.size() == 1) {
+		return elements[0];
+	}
+	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+	return builder.declareConstantComposite(builder.declareType(Type(Type::VectorTag {}, static_cast<uint32_t>(elements.size()), int32Type)), elements);
+}
+
+// Applies a texel offset that is only known at run time to sampling coordinates, by moving the coordinates by
+// offset / size of `level` (an integer) in each dimension. The Metal Shading Language applies the offset to the
+// texel coordinates before the address mode, as Vulkan does with ConstOffset, so this addresses the same texels
+// for normalized coordinates. `coordinates` may end with an array layer, which is kept as it is.
+static Iridium::SPIRV::ResultID offsetSampleCoordinates(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID image, unsigned dims, bool arrayed, Iridium::SPIRV::ResultID coordinates, Iridium::SPIRV::ResultID componentType, LLVMValueRef offsetValue, Iridium::SPIRV::ResultID level) {
+	using namespace Iridium::SPIRV;
+	builder.requireCapability(Capability::ImageQuery);
+	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+	unsigned count = dims + (arrayed ? 1 : 0);
+	auto coordinatesType = count == 1 ? componentType : builder.declareType(Type(Type::VectorTag {}, count, componentType));
+
+	auto offset = llvmValueToResultID(builder, offsetValue);
+	auto offsetLLVMType = DynamicLLVM::LLVMTypeOf(offsetValue);
+	bool offsetIsVector = DynamicLLVM::LLVMGetTypeKind(offsetLLVMType) == LLVMVectorTypeKind;
+	auto offsetComponentType = llvmTypeToSPIRVType(builder, offsetIsVector ? DynamicLLVM::LLVMGetElementType(offsetLLVMType) : offsetLLVMType);
+
+	auto sizeType = count == 1 ? int32Type : builder.declareType(Type(Type::VectorTag {}, count, int32Type));
+	auto size = builder.encodeOp(Opcode::ImageQuerySizeLod, sizeType, { image, level });
+
+	std::vector<uint32_t> components;
+	for (unsigned i = 0; i < count; ++i) {
+		auto coordinate = count == 1 ? coordinates : builder.encodeCompositeExtract(componentType, coordinates, { i });
+		if (i < dims) {
+			auto texels = count == 1 ? size : builder.encodeCompositeExtract(int32Type, size, { i });
+			auto delta = offsetIsVector ? builder.encodeCompositeExtract(offsetComponentType, offset, { i }) : offset;
+			auto step = builder.encodeArithBinop(Opcode::FDiv, componentType,
+				builder.encodeOp(Opcode::ConvertSToF, componentType, { delta }),
+				builder.encodeOp(Opcode::ConvertSToF, componentType, { texels }));
+			coordinate = builder.encodeArithBinop(Opcode::FAdd, componentType, coordinate, step);
+		}
+		components.push_back(coordinate);
+	}
+	return count == 1 ? components[0] : builder.encodeOp(Opcode::CompositeConstruct, coordinatesType, components);
+}
+
+// The level whose size scales a run-time offset (see offsetSampleCoordinates): the given LOD rounded to the
+// nearest level and kept within the image's levels.
+static Iridium::SPIRV::ResultID offsetLevel(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID image, Iridium::SPIRV::ResultID lod, Iridium::SPIRV::ResultID lodType) {
+	using namespace Iridium::SPIRV;
+	builder.requireCapability(Capability::ImageQuery);
+	auto int32Type = builder.declareType(Type(Type::IntegerTag {}, 32, true));
+	auto rounded = builder.encodeOp(Opcode::ConvertFToS, int32Type, { builder.encodeGLSLOp(GLSLOpcode::Round, lodType, { lod }) });
+	auto levels = builder.encodeOp(Opcode::ImageQueryLevels, int32Type, { image });
+	auto last = builder.encodeArithBinop(Opcode::ISub, int32Type, levels, builder.declareConstantScalar<int32_t>(1));
+	return builder.encodeGLSLOp(GLSLOpcode::SClamp, int32Type, { rounded, builder.declareConstantScalar<int32_t>(0), last });
+}
+
 // Translates the AIR texture intrinsics: sampling (with or without a depth comparison), gathers, reads, writes and size
 // queries. Returns false when `name` is not one of them. `samplerFor` resolves a sampler operand (a constant sampler has no value of its own).
 template<typename SamplerFor, typename IsReadSampler>
@@ -1802,6 +1978,11 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 
 	// an array texture takes the layer as another coordinate (a float one when sampling)
 	auto coordinates = operand(coordinatesIndex);
+	// the coordinates without the layer, and the type of their components
+	auto unlayeredCoordinates = coordinates;
+	auto coordinatesLLVMType = DynamicLLVM::LLVMTypeOf(argument(coordinatesIndex));
+	bool vectorCoordinates = DynamicLLVM::LLVMGetTypeKind(coordinatesLLVMType) == LLVMVectorTypeKind;
+	auto coordinateComponentType = llvmTypeToSPIRVType(builder, vectorCoordinates ? DynamicLLVM::LLVMGetElementType(coordinatesLLVMType) : coordinatesLLVMType);
 	if (arrayed) {
 		auto coordinateType = *builder.reverseLookupType(builder.lookupResultType(coordinates));
 		auto componentType = coordinateType.backingType == Type::BackingType::Vector ? coordinateType.targetType : builder.lookupResultType(coordinates);
@@ -1880,12 +2061,16 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		if (offsetIndex) {
 			auto offset = argument(*offsetIndex);
 			if (!DynamicLLVM::LLVMIsNull(offset)) {
-				if (!DynamicLLVM::LLVMIsConstant(offset)) {
-					throw ImpossibleResultID("texture gather with a non-constant offset");
+				bool constantOffset;
+				auto offsetID = airTexelOffset(builder, offset, constantOffset);
+				if (constantOffset) {
+					// image operands: ConstOffset = 0x8
+					arguments.push_back(0x8);
+					arguments.push_back(offsetID);
+				} else {
+					// a gather reads the base level
+					arguments[1] = offsetSampleCoordinates(builder, image, dims, arrayed, coordinates, coordinateComponentType, offset, builder.declareConstantScalar<int32_t>(0));
 				}
-				// image operands: ConstOffset = 0x8
-				arguments.push_back(0x8);
-				arguments.push_back(llvmValueToResultID(builder, offset));
 			}
 		}
 
@@ -1912,34 +2097,64 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			throw ImpossibleResultID("texture sample with a non-constant LOD mode");
 		}
 		// implicit LODs exist only in fragment functions
-		bool explicitLod = DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0 || stage != Iridium::FunctionType::Fragment;
+		bool givenLod = DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0;
+		bool explicitLod = givenLod || stage != Iridium::FunctionType::Fragment;
 		bool hasOffset = offset && !DynamicLLVM::LLVMIsNull(offset);
-		if (hasOffset && !DynamicLLVM::LLVMIsConstant(offset)) {
-			throw ImpossibleResultID("texture sample with a non-constant offset");
+		bool constantOffset = true;
+		auto offsetID = hasOffset ? airTexelOffset(builder, offset, constantOffset) : ResultIDInvalid;
+		auto floatType = builder.declareType(Type(Type::FloatTag {}, 32));
+		auto lod = givenLod ? operand(lodFlagIndex + 1) : builder.declareConstantScalar<float>(0);
+
+		// Vulkan has no sampling with an offset that is only known at run time, so such an offset moves the coordinates
+		// instead (see offsetSampleCoordinates), by the size of the level the LOD selects.
+		bool gradients = false;
+		ResultID gradientX = ResultIDInvalid;
+		ResultID gradientY = ResultIDInvalid;
+		if (hasOffset && !constantOffset) {
+			ResultID level;
+			if (explicitLod) {
+				level = givenLod ? offsetLevel(builder, image, lod, floatType) : builder.declareConstantScalar<int32_t>(0);
+			} else {
+				builder.requireCapability(Capability::ImageQuery);
+				auto lodPair = builder.encodeOp(Opcode::ImageQueryLod, builder.declareType(Type(Type::VectorTag {}, 2, floatType)), { sampled, unlayeredCoordinates });
+				level = offsetLevel(builder, image, builder.encodeCompositeExtract(floatType, lodPair, { 0 }), floatType);
+				// The implicit LOD would follow the moved coordinates, which differ from the passed ones where the
+				// offset differs between neighbouring fragments; take it from the passed coordinates instead.
+				auto unlayeredType = llvmTypeToSPIRVType(builder, coordinatesLLVMType);
+				gradientX = builder.encodeOp(Opcode::DPdx, unlayeredType, { unlayeredCoordinates });
+				gradientY = builder.encodeOp(Opcode::DPdy, unlayeredType, { unlayeredCoordinates });
+				gradients = true;
+			}
+			coordinates = offsetSampleCoordinates(builder, image, dims, arrayed, coordinates, coordinateComponentType, offset, level);
 		}
+		bool constOffsetOperand = hasOffset && constantOffset;
 
 		std::vector<uint32_t> arguments { sampled, coordinates };
 		if (compare) {
 			arguments.push_back(operand(3 + layerOperands));
 		}
-		// image operands: Lod = 0x2, ConstOffset = 0x8
-		uint32_t imageOperands = (explicitLod ? 0x2 : 0) | (hasOffset ? 0x8 : 0);
+		// image operands: Lod = 0x2, Grad = 0x4, ConstOffset = 0x8
+		uint32_t imageOperands = (gradients ? 0x4 : (explicitLod ? 0x2 : 0)) | (constOffsetOperand ? 0x8 : 0);
 		if (imageOperands) {
 			arguments.push_back(imageOperands);
-			if (explicitLod) {
-				arguments.push_back(DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0 ? operand(lodFlagIndex + 1) : builder.declareConstantScalar<float>(0));
+			if (gradients) {
+				arguments.push_back(gradientX);
+				arguments.push_back(gradientY);
+			} else if (explicitLod) {
+				arguments.push_back(lod);
 			}
-			if (hasOffset) {
-				arguments.push_back(llvmValueToResultID(builder, offset));
+			if (constOffsetOperand) {
+				arguments.push_back(offsetID);
 			}
 		}
 
+		bool explicitSample = explicitLod || gradients;
 		if (compare) {
-			auto opcode = explicitLod ? Opcode::ImageSampleDrefExplicitLod : Opcode::ImageSampleDrefImplicitLod;
+			auto opcode = explicitSample ? Opcode::ImageSampleDrefExplicitLod : Opcode::ImageSampleDrefImplicitLod;
 			finish(builder.encodeOp(opcode, valueTypeID, arguments));
 			return true;
 		}
-		value = builder.encodeOp(explicitLod ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
+		value = builder.encodeOp(explicitSample ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
 	} else if (imageType.imageIsMultisampled) {
 		// read(coordinates, [layer,] sample): a fetch of one sample, which has no level
 		if (!read || storage) {
@@ -1959,14 +2174,17 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			unsigned levelIndex = coordinatesIndex + layerOperands + (hasOffsetOperand ? 2 : 1);
 			auto offset = hasOffsetOperand ? argument(levelIndex - 1) : nullptr;
 			bool hasOffset = offset && !DynamicLLVM::LLVMIsNull(offset);
-			if (hasOffset && !DynamicLLVM::LLVMIsConstant(offset)) {
+			bool constantOffset = true;
+			auto offsetID = hasOffset ? airTexelOffset(builder, offset, constantOffset) : ResultIDInvalid;
+			if (hasOffset && !constantOffset) {
 				throw ImpossibleResultID("texture read with a non-constant offset");
 			}
+			bool constOffsetOperand = hasOffset && constantOffset;
 			// image operands: Lod = 0x2, ConstOffset = 0x8
-			arguments.push_back(0x2 | (hasOffset ? 0x8 : 0));
+			arguments.push_back(0x2 | (constOffsetOperand ? 0x8 : 0));
 			arguments.push_back(operand(levelIndex));
-			if (hasOffset) {
-				arguments.push_back(llvmValueToResultID(builder, offset));
+			if (constOffsetOperand) {
+				arguments.push_back(offsetID);
 			}
 		}
 		if (storage) {
