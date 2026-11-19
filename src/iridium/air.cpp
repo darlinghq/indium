@@ -1593,6 +1593,67 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		return true;
 	}
 
+	// packed integer to float vector: air.unpack.<format>[.srgb].<destination type>, the MSL unpack_*_to_float
+	// and unpack_*_to_half functions. The formats are the ones GLSL.std.450 unpacks; the sRGB variant decodes
+	// the first three channels from sRGB to linear and leaves alpha alone.
+	if (fn == "unpack" && (parts.size() == 4 || parts.size() == 5)) {
+		bool srgb = parts.size() == 5;
+		if (srgb && parts[3] != "srgb") {
+			return false;
+		}
+		auto format = parts[2];
+		GLSLOpcode opcode;
+		size_t lanes;
+		if (format == "unorm4x8") {
+			opcode = GLSLOpcode::UnpackUnorm4x8;
+			lanes = 4;
+		} else if (format == "snorm4x8" && !srgb) {
+			opcode = GLSLOpcode::UnpackSnorm4x8;
+			lanes = 4;
+		} else if (format == "unorm2x16" && !srgb) {
+			opcode = GLSLOpcode::UnpackUnorm2x16;
+			lanes = 2;
+		} else if (format == "snorm2x16" && !srgb) {
+			opcode = GLSLOpcode::UnpackSnorm2x16;
+			lanes = 2;
+		} else {
+			return false;
+		}
+
+		auto u32 = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+		auto f32 = builder.declareType(Type(Type::FloatTag {}, 32));
+		auto vectorType = builder.declareType(Type(Type::VectorTag {}, lanes, f32));
+		auto packed = operand(0);
+		if (builder.lookupResultType(packed) != u32) {
+			packed = builder.encodeBitcast(u32, packed);
+		}
+		auto unpacked = builder.encodeGLSLOp(opcode, vectorType, { packed });
+
+		if (srgb) {
+			auto boolean = builder.declareType(Type(Type::BooleanTag {}));
+			auto threshold = builder.declareConstantScalar<float>(0.04045f);
+			auto linearDivisor = builder.declareConstantScalar<float>(12.92f);
+			auto offset = builder.declareConstantScalar<float>(0.055f);
+			auto scale = builder.declareConstantScalar<float>(1.055f);
+			auto exponent = builder.declareConstantScalar<float>(2.4f);
+			std::vector<uint32_t> channels;
+			for (uint32_t channel = 0; channel < 4; ++channel) {
+				auto value = builder.encodeCompositeExtract(f32, unpacked, { channel });
+				if (channel < 3) {
+					auto isLinearSegment = builder.encodeOp(Opcode::FOrdLessThan, boolean, { value, threshold });
+					auto linear = builder.encodeArithBinop(Opcode::FDiv, f32, value, linearDivisor);
+					auto shifted = builder.encodeArithBinop(Opcode::FDiv, f32, builder.encodeArithBinop(Opcode::FAdd, f32, value, offset), scale);
+					value = builder.encodeOp(Opcode::Select, f32, { isLinearSegment, linear, builder.encodePow(f32, shifted, exponent) });
+				}
+				channels.push_back(value);
+			}
+			unpacked = builder.encodeOp(Opcode::CompositeConstruct, vectorType, channels);
+		}
+
+		resID = type == vectorType ? unpacked : builder.encodeFConvert(type, unpacked);
+		return true;
+	}
+
 	return false;
 }
 
