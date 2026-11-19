@@ -167,6 +167,16 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	info.components.g = textureSwizzleToVkComponentSwizzle(_swizzle.green);
 	info.components.b = textureSwizzleToVkComponentSwizzle(_swizzle.blue);
 	info.components.a = textureSwizzleToVkComponentSwizzle(_swizzle.alpha);
+	if (info.format == VK_FORMAT_A8_UNORM_KHR && _original->imageFormat() != VK_FORMAT_A8_UNORM_KHR) {
+		// VK_FORMAT_A8_UNORM_KHR is not in the format compatibility class of R8, so an image that was not made
+		// as A8 is viewed in its own format and read through the swizzle that gives the alpha-only layout.
+		info.format = _original->imageFormat();
+		auto composed = Indium::composeTextureSwizzle(Indium::pixelFormatImplicitSwizzle(_pixelFormat), _swizzle);
+		info.components.r = textureSwizzleToVkComponentSwizzle(composed.red);
+		info.components.g = textureSwizzleToVkComponentSwizzle(composed.green);
+		info.components.b = textureSwizzleToVkComponentSwizzle(composed.blue);
+		info.components.a = textureSwizzleToVkComponentSwizzle(composed.alpha);
+	}
 	info.subresourceRange.aspectMask = _imageAspect;
 	info.subresourceRange.baseMipLevel = levelStart;
 	info.subresourceRange.levelCount = levelEnd - levelStart + 1;
