@@ -32,6 +32,7 @@ namespace Indium {
 		bool _committed = false;
 		std::condition_variable _completedCondvar;
 		bool _completed = false;
+		bool _completedHandlersFinished = false;
 
 	public:
 		PrivateCommandBuffer(std::shared_ptr<PrivateCommandQueue> commandQueue);
