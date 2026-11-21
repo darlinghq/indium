@@ -619,7 +619,16 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		(unknownUsage && (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT))) {
 		info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 	}
-	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown) {
+	// QUIRK: a block-compressed texture created with RenderTarget or ShaderWrite usage is made, without that
+	// usage, instead of being refused. Such a format can be neither rendered to nor written by a shader, so
+	// the bits can only be a blanket default of the application, which a texture that is only ever sampled
+	// never contradicts. Evidence (tier 5, inference): applications that ask for these bits on every
+	// texture, BC1, BC3 and BC7 ones included, run on macOS; the Metal documentation lists the compressed
+	// formats as unrenderable but does not say that creating one with the bits fails. Not observed on a
+	// Mac (no Metal device was available); accepted by the maintainer on that basis.
+	// Test: compressed_texture_usage in the guest tests of darling-metal
+	const bool compressedFormat = isColor && pixelFormatIsCompressed(_descriptor.pixelFormat);
+	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown && !compressedFormat) {
 		if (_descriptor.sampleCount > 1) {
 			throw std::runtime_error("Multisample shader-write textures are unsupported");
 		}
@@ -627,7 +636,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	} else if (unknownUsage && _descriptor.sampleCount == 1 && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled()) && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	}
-	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled())) {
+	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && !compressedFormat && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled())) {
 		if (isColor && (!unknownUsage || (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))) {
 			info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		} else if (isDepthStencil && (!unknownUsage || (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
