@@ -45,6 +45,12 @@ namespace Indium {
 		virtual void setTriangleFillMode(TriangleFillMode triangleFillMode) override;
 		virtual void setStencilReferenceValue(uint32_t value) override;
 		virtual void setStencilReferenceValue(uint32_t front, uint32_t back) override;
+		virtual void setColorStoreAction(StoreAction storeAction, size_t colorAttachmentIndex) override;
+		virtual void setColorStoreActionOptions(StoreActionOptions options, size_t colorAttachmentIndex) override;
+		virtual void setDepthStoreAction(StoreAction storeAction) override;
+		virtual void setDepthStoreActionOptions(StoreActionOptions options) override;
+		virtual void setStencilStoreAction(StoreAction storeAction) override;
+		virtual void setStencilStoreActionOptions(StoreActionOptions options) override;
 		virtual void setVisibilityResultMode(VisibilityResultMode mode, size_t offset) override;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) override;
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount) override;

@@ -57,6 +57,11 @@ namespace Indium {
 		// the pass waits for a fence: everything before it is ordered before the pass
 		bool _waitsForFence = false;
 
+		// color attachments whose multisample resolve is part of the pass itself; the others are resolved,
+		// if their store action says so by the time the pass ends, after it (see endEncoding())
+		std::vector<bool> _resolvedInPass;
+		void resolveLateColorAttachments(VkCommandBuffer commandBuffer);
+
 		/** Notes the resources the next draw reaches through the bindings of the pipeline. */
 		void noteBindings();
 		/** Notes a buffer the draw reads outside the bindings: indices, indirect arguments. */
@@ -113,6 +118,12 @@ namespace Indium {
 		virtual void setTriangleFillMode(TriangleFillMode triangleFillMode) override;
 		virtual void setStencilReferenceValue(uint32_t value) override;
 		virtual void setStencilReferenceValue(uint32_t front, uint32_t back) override;
+		virtual void setColorStoreAction(StoreAction storeAction, size_t colorAttachmentIndex) override;
+		virtual void setColorStoreActionOptions(StoreActionOptions options, size_t colorAttachmentIndex) override;
+		virtual void setDepthStoreAction(StoreAction storeAction) override;
+		virtual void setDepthStoreActionOptions(StoreActionOptions options) override;
+		virtual void setStencilStoreAction(StoreAction storeAction) override;
+		virtual void setStencilStoreActionOptions(StoreActionOptions options) override;
 		virtual void setVisibilityResultMode(VisibilityResultMode mode, size_t offset) override;
 
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) override;

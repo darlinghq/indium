@@ -128,6 +128,42 @@ void Indium::RecordingRenderCommandEncoder::setStencilReferenceValue(uint32_t fr
 	});
 };
 
+void Indium::RecordingRenderCommandEncoder::setColorStoreAction(StoreAction storeAction, size_t colorAttachmentIndex) {
+	record([storeAction = storeAction, colorAttachmentIndex = colorAttachmentIndex](RenderCommandEncoder& encoder) mutable {
+		encoder.setColorStoreAction(storeAction, colorAttachmentIndex);
+	});
+};
+
+void Indium::RecordingRenderCommandEncoder::setColorStoreActionOptions(StoreActionOptions options, size_t colorAttachmentIndex) {
+	record([options = options, colorAttachmentIndex = colorAttachmentIndex](RenderCommandEncoder& encoder) mutable {
+		encoder.setColorStoreActionOptions(options, colorAttachmentIndex);
+	});
+};
+
+void Indium::RecordingRenderCommandEncoder::setDepthStoreAction(StoreAction storeAction) {
+	record([storeAction = storeAction](RenderCommandEncoder& encoder) mutable {
+		encoder.setDepthStoreAction(storeAction);
+	});
+};
+
+void Indium::RecordingRenderCommandEncoder::setDepthStoreActionOptions(StoreActionOptions options) {
+	record([options = options](RenderCommandEncoder& encoder) mutable {
+		encoder.setDepthStoreActionOptions(options);
+	});
+};
+
+void Indium::RecordingRenderCommandEncoder::setStencilStoreAction(StoreAction storeAction) {
+	record([storeAction = storeAction](RenderCommandEncoder& encoder) mutable {
+		encoder.setStencilStoreAction(storeAction);
+	});
+};
+
+void Indium::RecordingRenderCommandEncoder::setStencilStoreActionOptions(StoreActionOptions options) {
+	record([options = options](RenderCommandEncoder& encoder) mutable {
+		encoder.setStencilStoreActionOptions(options);
+	});
+};
+
 void Indium::RecordingRenderCommandEncoder::setVisibilityResultMode(VisibilityResultMode mode, size_t offset) {
 	record([mode = mode, offset = offset](RenderCommandEncoder& encoder) mutable {
 		encoder.setVisibilityResultMode(mode, offset);

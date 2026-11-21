@@ -98,6 +98,7 @@ namespace Indium {
 			_macro(vkCmdCopyBuffer) \
 			_macro(vkCmdCopyBufferToImage) \
 			_macro(vkCmdCopyImage) \
+			_macro(vkCmdResolveImage) \
 			_macro(vkCmdCopyImageToBuffer) \
 			_macro(vkCmdCopyQueryPoolResults) \
 			_macro(vkCmdResetQueryPool) \
