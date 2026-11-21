@@ -45,6 +45,19 @@ namespace Indium {
 		virtual void setTriangleFillMode(TriangleFillMode triangleFillMode) = 0;
 		virtual void setStencilReferenceValue(uint32_t value) = 0;
 		virtual void setStencilReferenceValue(uint32_t front, uint32_t back) = 0;
+
+		/**
+		 * Sets what happens to an attachment when the pass ends, for an attachment whose store action was left
+		 * `StoreAction::Unknown` in the descriptor (or to change it). The last value set before `endEncoding()`
+		 * applies. Contents are always kept, which Metal allows for `DontCare`; a multisample resolve that was not
+		 * asked for by the descriptor is performed when the pass ends.
+		 */
+		virtual void setColorStoreAction(StoreAction storeAction, size_t colorAttachmentIndex) = 0;
+		virtual void setColorStoreActionOptions(StoreActionOptions options, size_t colorAttachmentIndex) = 0;
+		virtual void setDepthStoreAction(StoreAction storeAction) = 0;
+		virtual void setDepthStoreActionOptions(StoreActionOptions options) = 0;
+		virtual void setStencilStoreAction(StoreAction storeAction) = 0;
+		virtual void setStencilStoreActionOptions(StoreActionOptions options) = 0;
 		virtual void setVisibilityResultMode(VisibilityResultMode mode, size_t offset) = 0;
 
 		virtual void drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) = 0;

@@ -62,6 +62,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		return color.texture && (color.storeAction == StoreAction::MultisampleResolve || color.storeAction == StoreAction::StoreAndMultisampleResolve);
 	};
 	for (const auto& color : descriptor.colorAttachments) {
+		_resolvedInPass.push_back(resolvesColor(color));
 		if (!color.texture) {
 			continue;
 		}
@@ -666,6 +667,111 @@ void Indium::PrivateRenderCommandEncoder::setVertexBytes(const void* bytes, size
 	_functionResources[0].setBytes(cmdBuf->device(), _scratch, _keepAliveBuffers, bytes, length, index);
 };
 
+void Indium::PrivateRenderCommandEncoder::setColorStoreAction(StoreAction storeAction, size_t colorAttachmentIndex) {
+	if (colorAttachmentIndex < _descriptor.colorAttachments.size()) {
+		_descriptor.colorAttachments[colorAttachmentIndex].storeAction = storeAction;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setColorStoreActionOptions(StoreActionOptions options, size_t colorAttachmentIndex) {
+	if (colorAttachmentIndex < _descriptor.colorAttachments.size()) {
+		_descriptor.colorAttachments[colorAttachmentIndex].storeActionOptions = options;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setDepthStoreAction(StoreAction storeAction) {
+	if (_descriptor.depthAttachment) {
+		_descriptor.depthAttachment->storeAction = storeAction;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setDepthStoreActionOptions(StoreActionOptions options) {
+	if (_descriptor.depthAttachment) {
+		_descriptor.depthAttachment->storeActionOptions = options;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setStencilStoreAction(StoreAction storeAction) {
+	if (_descriptor.stencilAttachment) {
+		_descriptor.stencilAttachment->storeAction = storeAction;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::setStencilStoreActionOptions(StoreActionOptions options) {
+	if (_descriptor.stencilAttachment) {
+		_descriptor.stencilAttachment->storeActionOptions = options;
+	}
+};
+
+void Indium::PrivateRenderCommandEncoder::resolveLateColorAttachments(VkCommandBuffer commandBuffer) {
+	// A resolve that the descriptor did not ask for but the store action set before the end of the pass does, as
+	// with a store action left Unknown in the descriptor. Vulkan cannot resolve once the pass is over, so it is
+	// a separate copy; the render pass already stored the multisample contents.
+	for (size_t i = 0; i < _descriptor.colorAttachments.size() && i < _resolvedInPass.size(); ++i) {
+		const auto& color = _descriptor.colorAttachments[i];
+		if (_resolvedInPass[i] || !color.texture || !color.resolveTexture) {
+			continue;
+		}
+		if (color.storeAction != StoreAction::MultisampleResolve && color.storeAction != StoreAction::StoreAndMultisampleResolve) {
+			continue;
+		}
+		// the same restrictions as a resolve in the pass
+		if (color.texture->sampleCount() == 1 || color.resolveTexture->sampleCount() != 1 ||
+			color.resolveTexture->pixelFormat() != color.texture->pixelFormat() ||
+			color.resolveTexture->width() != color.texture->width() || color.resolveTexture->height() != color.texture->height() ||
+			color.level || color.slice || color.depthPlane || color.resolveLevel || color.resolveSlice || color.resolveDepthPlane) {
+			continue;
+		}
+		auto source = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
+		auto destination = std::dynamic_pointer_cast<PrivateTexture>(color.resolveTexture);
+		if (!source || !destination) {
+			continue;
+		}
+
+		VkImageMemoryBarrier barriers[2] {};
+		for (auto& barrier: barriers) {
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+		}
+		barriers[0].image = source->image();
+		barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barriers[0].oldLayout = source->imageLayout();
+		barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barriers[1].image = destination->image();
+		barriers[1].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barriers[1].oldLayout = destination->imageLayout();
+		barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+		VkImageResolve region {};
+		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.srcSubresource.layerCount = 1;
+		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.dstSubresource.layerCount = 1;
+		region.extent.width = color.texture->width();
+		region.extent.height = color.texture->height();
+		region.extent.depth = 1;
+		DynamicVK::vkCmdResolveImage(commandBuffer, source->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, destination->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		// back to the layouts the rest of the library expects, visible to everything that follows
+		barriers[0].srcAccessMask = 0;
+		barriers[0].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barriers[0].newLayout = source->imageLayout();
+		barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barriers[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barriers[1].newLayout = destination->imageLayout();
+		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+	}
+};
+
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
 	if (_visibilityResults) {
@@ -675,6 +781,7 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 		_timer->end(buf->commandBuffer());
 	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
+	resolveLateColorAttachments(buf->commandBuffer());
 	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
 		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfVertexSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfFragmentSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
