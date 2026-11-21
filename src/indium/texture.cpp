@@ -1284,14 +1284,16 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 		throw std::runtime_error("Invalid usage of getBytes on non-managed and non-shared texture");
 	}
 
-	// FIXME: handle compressed formats
-	size_t bytesPerPixel = pixelFormatToByteCount(accessFormat);
+	// The unit of a buffer row: one texel, or for a block-compressed format one block, whose rows are
+	// bytesPerRow apart (a "row" of a compressed format is a row of blocks, as in replaceRegion).
+	auto block = pixelFormatTexelBlock(accessFormat);
+	size_t bytesPerPixel = block.bytes;
 	if (bytesPerPixel == 0) {
 		throw std::runtime_error("Invalid usage of getBytes on a format with no known texel size");
 	}
 
 	// VkBufferImageCopy expresses the buffer's row stride in texels, so a
-	// bytesPerRow that is not a whole number of texels cannot be honoured here.
+	// bytesPerRow that is not a whole number of texels (blocks) cannot be honoured here.
 	// Rounding it down would hand back a buffer laid out at a different stride
 	// than the caller asked for, so refuse it instead.
 	if (bytesPerRow % bytesPerPixel != 0) {
@@ -1300,6 +1302,11 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 
 	if (bytesPerImage != 0 && bytesPerImage % bytesPerRow != 0) {
 		throw std::runtime_error("Invalid bytesPerImage for getBytes: not a whole number of rows");
+	}
+
+	// a block-compressed image is copied in whole blocks, from a block-aligned origin
+	if (region.origin.x % block.width != 0 || region.origin.y % block.height != 0) {
+		throw std::runtime_error("Invalid region for getBytes: the origin is not a multiple of the block size");
 	}
 
 	if (_backingBuffer) {
@@ -1320,7 +1327,8 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 	// copy on the same queue.
 	auto aspect = pixelFormatToVkImageAspectFlags(accessFormat);
 
-	auto byteSize = bytesPerImage == 0 ? (region.size.height * bytesPerRow) : (region.size.depth * bytesPerImage);
+	size_t rows = (region.size.height + block.height - 1) / block.height;
+	auto byteSize = bytesPerImage == 0 ? (rows * bytesPerRow) : (region.size.depth * bytesPerImage);
 	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
 
 	_device->textureUploader().flush();
@@ -1367,8 +1375,9 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	copyInfo.bufferRowLength = texelsPerRow(bytesPerRow, bytesPerPixel);
-	copyInfo.bufferImageHeight = texelRowsPerImage(bytesPerImage, bytesPerRow, bytesPerPixel);
+	auto pitch = bufferTexelPitch(accessFormat, bytesPerRow, bytesPerImage);
+	copyInfo.bufferRowLength = pitch.rowLength;
+	copyInfo.bufferImageHeight = pitch.imageHeight;
 	copyInfo.imageSubresource.aspectMask = aspect;
 	copyInfo.imageSubresource.mipLevel = mipmapLevel;
 	copyInfo.imageSubresource.baseArrayLayer = slice;
