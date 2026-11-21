@@ -179,6 +179,7 @@ namespace Indium {
 		virtual size_t arrayLength() const override;
 		virtual size_t sampleCount() const override;
 		virtual bool framebufferOnly() const override;
+		virtual TextureUsage usage() const override;
 		virtual bool allowGPUOptimizedContents() const override;
 		virtual bool shareable() const override;
 		virtual TextureSwizzleChannels swizzle() const override;
@@ -251,6 +252,7 @@ namespace Indium {
 		virtual size_t arrayLength() const override;
 		virtual size_t sampleCount() const override;
 		virtual bool framebufferOnly() const override;
+		virtual TextureUsage usage() const override;
 		virtual bool allowGPUOptimizedContents() const override;
 		virtual bool shareable() const override;
 		virtual TextureSwizzleChannels swizzle() const override;
@@ -345,6 +347,7 @@ namespace Indium {
 		virtual size_t arrayLength() const override;
 		virtual size_t sampleCount() const override;
 		virtual bool framebufferOnly() const override;
+		virtual TextureUsage usage() const override;
 		virtual bool allowGPUOptimizedContents() const override;
 		virtual bool shareable() const override;
 		virtual TextureSwizzleChannels swizzle() const override;

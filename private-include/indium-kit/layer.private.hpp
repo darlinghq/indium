@@ -60,6 +60,7 @@ namespace IndiumKit {
 		virtual size_t arrayLength() const override;
 		virtual size_t sampleCount() const override;
 		virtual bool framebufferOnly() const override;
+		virtual Indium::TextureUsage usage() const override;
 		virtual bool allowGPUOptimizedContents() const override;
 		virtual bool shareable() const override;
 		virtual Indium::TextureSwizzleChannels swizzle() const override;

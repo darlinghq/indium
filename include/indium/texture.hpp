@@ -66,7 +66,8 @@ namespace Indium {
 		virtual size_t arrayLength() const = 0;
 		virtual size_t sampleCount() const = 0;
 		virtual bool framebufferOnly() const = 0;
-		//virtual TextureUsage usage() const = 0;
+		// the usage the texture was created with; a view has the usage of the texture it views
+		virtual TextureUsage usage() const = 0;
 		virtual bool allowGPUOptimizedContents() const = 0;
 		virtual bool shareable() const = 0;
 		virtual TextureSwizzleChannels swizzle() const = 0;

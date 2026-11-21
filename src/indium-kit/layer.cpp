@@ -193,6 +193,16 @@ bool IndiumKit::PrivateDrawable::framebufferOnly() const {
 	return _state->framebufferOnly;
 };
 
+Indium::TextureUsage IndiumKit::PrivateDrawable::usage() const {
+	// the swapchain images are always color attachments; unless the layer is framebufferOnly they can also be
+	// sampled and written by shaders (see the image usage the swapchain is created with)
+	auto usage = Indium::TextureUsage::RenderTarget;
+	if (!_state->framebufferOnly) {
+		usage |= Indium::TextureUsage::ShaderRead | Indium::TextureUsage::ShaderWrite;
+	}
+	return usage;
+};
+
 bool IndiumKit::PrivateDrawable::allowGPUOptimizedContents() const {
 	return true;
 };

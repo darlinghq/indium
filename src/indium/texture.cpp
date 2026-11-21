@@ -239,6 +239,10 @@ bool Indium::TextureView::framebufferOnly() const {
 	return _original->framebufferOnly();
 };
 
+Indium::TextureUsage Indium::TextureView::usage() const {
+	return _original->usage();
+};
+
 bool Indium::TextureView::allowGPUOptimizedContents() const {
 	return _original->allowGPUOptimizedContents();
 };
@@ -1052,6 +1056,10 @@ bool Indium::ConcreteTexture::framebufferOnly() const {
 	return false;
 };
 
+Indium::TextureUsage Indium::ConcreteTexture::usage() const {
+	return _descriptor.usage;
+};
+
 bool Indium::ConcreteTexture::allowGPUOptimizedContents() const {
 	return _descriptor.allowGPUOptimizedContents;
 };
@@ -1540,6 +1548,10 @@ size_t Indium::BufferTexture::sampleCount() const {
 
 bool Indium::BufferTexture::framebufferOnly() const {
 	return false;
+};
+
+Indium::TextureUsage Indium::BufferTexture::usage() const {
+	return _descriptor.usage;
 };
 
 bool Indium::BufferTexture::allowGPUOptimizedContents() const {
