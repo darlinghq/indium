@@ -93,7 +93,7 @@ namespace Indium {
 		//
 		// Only a managed or shared texture has host-visible contents to read back
 		// from, so the same precondition as replaceRegion applies. bytesPerRow and
-		// bytesPerImage must also be whole numbers of texels and of rows: Vulkan
+		// bytesPerImage must also be whole numbers of texels (of blocks for a compressed format) and of rows: Vulkan
 		// states a copy's buffer pitches in texels, so anything else has no
 		// representation and rounding it down would hand back a buffer at a
 		// stride the caller never asked for. Both throw std::runtime_error.
