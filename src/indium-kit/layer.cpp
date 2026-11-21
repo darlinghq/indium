@@ -198,7 +198,7 @@ Indium::TextureUsage IndiumKit::PrivateDrawable::usage() const {
 	// sampled and written by shaders (see the image usage the swapchain is created with)
 	auto usage = Indium::TextureUsage::RenderTarget;
 	if (!_state->framebufferOnly) {
-		usage |= Indium::TextureUsage::ShaderRead | Indium::TextureUsage::ShaderWrite;
+		usage = usage | Indium::TextureUsage::ShaderRead | Indium::TextureUsage::ShaderWrite;
 	}
 	return usage;
 };
