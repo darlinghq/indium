@@ -4,6 +4,7 @@
 #include <indium/dynamic-vk.hpp>
 
 #include <algorithm>
+#include <set>
 
 Indium::Function::~Function() {};
 Indium::Library::~Library() {};
@@ -91,6 +92,15 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 	_privateDevice(device),
 	_functionInfos(functionInfos)
 {
+	// the varyings of a fragment function may have to be renumbered for a vertex function (fragmentModuleLinkedTo)
+	for (const auto& [name, funcInfo]: _functionInfos) {
+		if (funcInfo.functionType == FunctionType::Fragment && !funcInfo.stageInterface.empty()) {
+			const auto* words = reinterpret_cast<const uint32_t*>(data);
+			_words.assign(words, words + dataLength / sizeof(uint32_t));
+			break;
+		}
+	}
+
 	VkShaderModuleCreateInfo createInfo {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = dataLength;
@@ -205,7 +215,126 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 };
 
 Indium::PrivateLibrary::~PrivateLibrary() {
+	for (auto& [key, module]: _linkedModules) {
+		DynamicVK::vkDestroyShaderModule(_privateDevice->device(), module, nullptr);
+	}
 	DynamicVK::vkDestroyShaderModule(_privateDevice->device(), _shaderModule, nullptr);
+};
+
+namespace {
+	constexpr uint32_t spirvOpEntryPoint = 15;
+	constexpr uint32_t spirvOpVariable = 59;
+	constexpr uint32_t spirvOpDecorate = 71;
+	constexpr uint32_t spirvDecorationLocation = 30;
+	constexpr uint32_t spirvStorageClassInput = 1;
+	constexpr size_t spirvHeaderWords = 5;
+
+	// The words of a literal string operand, from `first`, as a std::string; `end` is set past its last word.
+	std::string spirvLiteralString(const std::vector<uint32_t>& words, size_t first, size_t limit, size_t& end) {
+		std::string text;
+		size_t at = first;
+		for (; at < limit; ++at) {
+			bool terminated = false;
+			for (int byte = 0; byte < 4; ++byte) {
+				char c = static_cast<char>((words[at] >> (8 * byte)) & 0xff);
+				if (c == 0) {
+					terminated = true;
+					break;
+				}
+				text.push_back(c);
+			}
+			if (terminated) {
+				++at;
+				break;
+			}
+		}
+		end = at;
+		return text;
+	}
+};
+
+VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs) {
+	const auto info = _functionInfos.find(entry);
+	if (info == _functionInfos.end() || info->second.stageInterface.empty() || _words.empty()) {
+		return _shaderModule;
+	}
+	const auto& inputs = info->second.stageInterface;
+
+	// the Location each input has to have: its partner's, and past all of the outputs' for an input no output
+	// has (what it reads is undefined, as in Metal, but it must not take the place of a paired one)
+	uint32_t nextFree = 0;
+	for (const auto& output: vertexOutputs) {
+		nextFree = std::max(nextFree, output.location + 1);
+	}
+	std::vector<uint32_t> wanted;
+	bool unchanged = true;
+	for (const auto& input: inputs) {
+		uint32_t location = 0;
+		auto partner = std::find_if(vertexOutputs.begin(), vertexOutputs.end(), [&](const auto& output) {
+			return output.name == input.name && output.type == input.type;
+		});
+		location = partner != vertexOutputs.end() ? partner->location : nextFree++;
+		unchanged = unchanged && location == input.location;
+		wanted.push_back(location);
+	}
+	if (unchanged) {
+		return _shaderModule;
+	}
+
+	std::lock_guard lock(_linkedMutex);
+	auto key = std::make_pair(entry, wanted);
+	if (auto existing = _linkedModules.find(key); existing != _linkedModules.end()) {
+		return existing->second;
+	}
+
+	std::vector<uint32_t> words = _words;
+	std::set<uint32_t> interfaceIDs;
+	std::set<uint32_t> inputVariables;
+	for (size_t at = spirvHeaderWords; at < words.size();) {
+		uint32_t count = words[at] >> 16;
+		uint32_t opcode = words[at] & 0xffff;
+		if (count == 0 || at + count > words.size()) {
+			return VK_NULL_HANDLE;
+		}
+		if (opcode == spirvOpEntryPoint && count >= 4) {
+			size_t nameEnd = 0;
+			auto name = spirvLiteralString(words, at + 3, at + count, nameEnd);
+			if (name == entry) {
+				for (size_t i = nameEnd; i < at + count; ++i) {
+					interfaceIDs.insert(words[i]);
+				}
+			}
+		} else if (opcode == spirvOpVariable && count >= 4 && words[at + 3] == spirvStorageClassInput) {
+			inputVariables.insert(words[at + 2]);
+		}
+		at += count;
+	}
+
+	for (size_t at = spirvHeaderWords; at < words.size();) {
+		uint32_t count = words[at] >> 16;
+		uint32_t opcode = words[at] & 0xffff;
+		if (opcode == spirvOpDecorate && count == 4 && words[at + 2] == spirvDecorationLocation
+			&& interfaceIDs.count(words[at + 1]) != 0 && inputVariables.count(words[at + 1]) != 0) {
+			for (size_t i = 0; i < inputs.size(); ++i) {
+				if (inputs[i].location == words[at + 3]) {
+					words[at + 3] = wanted[i];
+					break;
+				}
+			}
+		}
+		at += count;
+	}
+
+	VkShaderModuleCreateInfo createInfo {};
+	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+	createInfo.codeSize = words.size() * sizeof(uint32_t);
+	createInfo.pCode = words.data();
+	VkShaderModule module = VK_NULL_HANDLE;
+	if (DynamicVK::vkCreateShaderModule(_privateDevice->device(), &createInfo, nullptr, &module) != VK_SUCCESS) {
+		return VK_NULL_HANDLE;
+	}
+	_linkedModules[key] = module;
+	return module;
 };
 
 std::shared_ptr<Indium::Function> Indium::PrivateLibrary::newFunction(const std::string& name) {

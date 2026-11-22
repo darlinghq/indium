@@ -7,6 +7,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <map>
+#include <mutex>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -38,6 +40,8 @@ namespace Indium {
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
 		std::vector<ArgumentInfo> arguments;
 		std::vector<FunctionConstantInfo> functionConstants;
+		// see FunctionReflection::stageInterface
+		std::vector<StageInterfaceField> stageInterface;
 		// see FunctionReflection::gridSizeSpecializationIDs
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
 	};
@@ -98,5 +102,20 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
 		INDIUM_PROPERTY(VkShaderModule, s, S,haderModule) = VK_NULL_HANDLE;
+
+public:
+		/**
+		 * The module to use for the fragment function `entry` of this library in a pipeline whose vertex
+		 * function returns `vertexOutputs`: the library's own module when the fragment function's inputs
+		 * already are at the Locations of the outputs with their names, and otherwise a copy of the module
+		 * in which they are. Lives as long as the library. Returns VK_NULL_HANDLE if the copy cannot be made.
+		 */
+		VkShaderModule fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs);
+
+	private:
+		// the module's words, kept when a function has varyings to link by name
+		std::vector<uint32_t> _words;
+		std::mutex _linkedMutex;
+		std::map<std::pair<std::string, std::vector<uint32_t>>, VkShaderModule> _linkedModules;
 	};
 };

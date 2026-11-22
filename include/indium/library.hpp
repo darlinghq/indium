@@ -227,6 +227,25 @@ namespace Indium {
 	};
 
 	/**
+	 * One varying that crosses from the vertex stage to the fragment stage: a field of a vertex function's
+	 * returned struct, or of a fragment function's stage-in struct.
+	 */
+	struct StageInterfaceField {
+		/** The name the two stages pair it by: the [[user(name)]] of the field, or the field's own name. */
+		std::string name;
+
+		/** The shader type of the field, as the producer spells it (the pairing needs equal types). */
+		std::string type;
+
+		/** The Location of the variable in the module. */
+		uint32_t location = 0;
+
+		bool operator==(const StageInterfaceField& other) const {
+			return name == other.name && type == other.type && location == other.location;
+		}
+	};
+
+	/**
 	 * What a producer knows about one function of a module it has already
 	 * compiled.
 	 */
@@ -251,6 +270,15 @@ namespace Indium {
 		 * `index` of `SIZE_MAX` and a `type` of Sampler refer into this list.
 		 */
 		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
+
+		/**
+		 * For a vertex function, the varyings it returns and, for a fragment function, the ones it reads,
+		 * each at the Location it has in the module. A vertex output and a fragment input are paired by
+		 * name and type when a pipeline is made, whatever their Locations, so a fragment function that
+		 * has Locations of a different numbering than its vertex function's still reads the right
+		 * varyings. A function with none listed (a producer that numbers them consistently) is left as it is.
+		 */
+		std::vector<StageInterfaceField> stageInterface;
 
 		/**
 		 * The function constants the module declares for this function. Their SpecIds must be distinct

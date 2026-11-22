@@ -1220,6 +1220,16 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 		functionInfo.embeddedSamplers = functionReflection.embeddedSamplers;
 
 		{
+			std::unordered_set<std::string> interfaceNames;
+			for (const auto& field: functionReflection.stageInterface) {
+				if (!interfaceNames.insert(field.name).second) {
+					return fail("function '" + name + "' lists the varying '" + field.name + "' twice");
+				}
+			}
+			functionInfo.stageInterface = functionReflection.stageInterface;
+		}
+
+		{
 			std::unordered_set<size_t> indices;
 			std::unordered_set<std::string> names;
 			std::unordered_set<uint32_t> specializationIDs;
