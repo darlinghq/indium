@@ -71,6 +71,19 @@ void Indium::initGlobalDeviceList() {
 			continue;
 		}
 
+		// mslc puts SignedZeroInfNanPreserve (32-bit) on every entry point (VUID 06294).
+		VkPhysicalDeviceFloatControlsProperties floatControls {};
+		floatControls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+		VkPhysicalDeviceProperties2 props2 {};
+		props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		props2.pNext = &floatControls;
+		DynamicVK::vkGetPhysicalDeviceProperties2(device, &props2);
+
+		if (!floatControls.shaderSignedZeroInfNanPreserveFloat32) {
+			// unsupported device: mslc modules require the 32-bit float control
+			continue;
+		}
+
 		globalDeviceList.push_back(std::make_shared<PrivateDevice>(std::move(device)));
 	}
 };
