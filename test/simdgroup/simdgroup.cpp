@@ -66,8 +66,8 @@ int main() {
 		auto library = device->newLibrary(simdgroup_metallib, simdgroup_metallib_len);
 		report(library != nullptr, "the library loads");
 
-		// runs `kernel` over one threadgroup of 64 threads with buffers of the given sizes in words, and returns their contents
-		auto run = [&](const char* kernel, std::vector<size_t> sizes) {
+		// runs `kernel` over one threadgroup of `count` threads with buffers of the given sizes in words, and returns their contents
+		auto run = [&](const char* kernel, std::vector<size_t> sizes, size_t count = threads) {
 			auto pipeline = device->newComputePipelineState(library->newFunction(kernel));
 			if (!pipeline) {
 				throw std::runtime_error(std::string(kernel) + " did not load");
@@ -83,7 +83,7 @@ int main() {
 			for (size_t i = 0; i < bound.size(); ++i) {
 				encoder->setBuffer(bound[i], 0, i);
 			}
-			encoder->dispatchThreadgroups(Indium::Size { 1, 1, 1 }, Indium::Size { threads, 1, 1 });
+			encoder->dispatchThreadgroups(Indium::Size { 1, 1, 1 }, Indium::Size { count, 1, 1 });
 			encoder->endEncoding();
 			commandBuffer->commit();
 			commandBuffer->waitUntilCompleted();
@@ -114,6 +114,37 @@ int main() {
 			}
 			return ok;
 		});
+
+		// 32 where the device can require it for compute, and the device's default otherwise
+		check("simd_ids", "the width is 32 where the device can require it", [&] {
+			VkPhysicalDeviceVulkan13Properties vk13 {};
+			vk13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+			VkPhysicalDeviceVulkan11Properties vk11 {};
+			vk11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+			vk11.pNext = &vk13;
+			VkPhysicalDeviceProperties2 properties {};
+			properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+			properties.pNext = &vk11;
+			Indium::DynamicVK::vkGetPhysicalDeviceProperties2(std::static_pointer_cast<Indium::PrivateDevice>(device)->physicalDevice(), &properties);
+			bool supported = vk13.minSubgroupSize <= 32 && 32 <= vk13.maxSubgroupSize && (vk13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+				32ull * vk13.maxComputeWorkgroupSubgroups >= std::min<uint32_t>(properties.properties.limits.maxComputeWorkGroupInvocations, 1024);
+			size_t expected = supported ? 32 : vk11.subgroupSize;
+			std::printf("     subgroup sizes %u to %u, default %u: expecting %zu\n", vk13.minSubgroupSize, vk13.maxSubgroupSize, vk11.subgroupSize, expected);
+			auto pipeline = device->newComputePipelineState(library->newFunction("simd_ids"));
+			return width == expected && pipeline->threadExecutionWidth() == expected;
+		});
+
+		// a threadgroup whose width is not a multiple of the SIMD-group's has a partial SIMD-group
+		check("simd_ids", "33 threads run at the same width", [&] {
+			constexpr size_t count = 33;
+			auto out = run("simd_ids", { count * 4 }, count)[0];
+			bool ok = true;
+			for (size_t t = 0; t < count; ++t) {
+				ok = ok && out[t * 4 + 3] == width;
+			}
+			return ok;
+		});
+
 		if (width == 0 || threads % width != 0) {
 			std::printf("FAIL unusable simdgroup width %zu\n", width);
 			failures++;
