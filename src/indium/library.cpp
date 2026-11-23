@@ -2,6 +2,7 @@
 #include <indium/device.private.hpp>
 #include <indium/sampler.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <stdexcept>
 
 Indium::Function::~Function() {};
 Indium::Library::~Library() {};
@@ -22,10 +23,50 @@ Indium::PrivateFunction::PrivateFunction(std::shared_ptr<PrivateLibrary> library
 	_name = name;
 };
 
+namespace {
+	// SPIR-V binary layout: a five-word header, then instructions whose first word is
+	// (word count << 16) | opcode.
+	constexpr uint32_t kSpirvHeaderWords = 5;
+	constexpr uint32_t kOpCapability = 17;
+	constexpr uint32_t kCapabilityFloat16 = 9;
+
+	bool declaresFloat16(const char* data, size_t dataLength) {
+		const auto* words = reinterpret_cast<const uint32_t*>(data);
+		const size_t count = dataLength / sizeof(uint32_t);
+		for (size_t i = kSpirvHeaderWords; i < count;) {
+			const uint32_t wordCount = words[i] >> 16;
+			if (wordCount == 0) {
+				break;
+			}
+			if ((words[i] & 0xFFFFu) == kOpCapability && i + 1 < count && words[i + 1] == kCapabilityFloat16) {
+				return true;
+			}
+			i += wordCount;
+		}
+		return false;
+	}
+
+	bool supportsSignedZeroFloat16(VkPhysicalDevice physicalDevice) {
+		VkPhysicalDeviceFloatControlsProperties floatControls {};
+		floatControls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+		VkPhysicalDeviceProperties2 props2 {};
+		props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		props2.pNext = &floatControls;
+		Indium::DynamicVK::vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
+		return floatControls.shaderSignedZeroInfNanPreserveFloat16;
+	}
+}
+
 Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, const char* data, size_t dataLength, std::unordered_map<std::string, FunctionInfo> functionInfos):
 	_privateDevice(device),
 	_functionInfos(functionInfos)
 {
+	// mslc puts SignedZeroInfNanPreserve (16-bit) on every entry point of a module that declares
+	// half (VUID 06293), so such a module needs the device property.
+	if (declaresFloat16(data, dataLength) && !supportsSignedZeroFloat16(_privateDevice->physicalDevice())) {
+		throw std::runtime_error("this device does not support the 16-bit signed-zero float control that the shader module needs");
+	}
+
 	VkShaderModuleCreateInfo createInfo {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = dataLength;
