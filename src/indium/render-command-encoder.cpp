@@ -51,6 +51,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 
 		// TODO: distinguish between read-only and read-write textures
 		_readWriteTextures.push_back(color.texture);
+		// framebuffer fetch: the fragment function can read each color attachment it writes
+		_functionResources[1].inputAttachments.push_back(color.texture);
 	}
 
 	if (descriptor.depthAttachment || descriptor.stencilAttachment) {
@@ -97,6 +99,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	}
 
 	std::vector<VkAttachmentReference> colorAttachments;
+	std::vector<VkAttachmentReference> inputAttachments;
 	VkAttachmentReference depthStencilAttachment {};
 
 	size_t index = 0;
@@ -105,6 +108,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		ref.attachment = index;
 		ref.layout = VK_IMAGE_LAYOUT_GENERAL;
 		colorAttachments.push_back(ref);
+		// the same attachment, read back through the input attachment with the same index
+		inputAttachments.push_back(ref);
 		++index;
 	}
 
@@ -118,7 +123,20 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
 	subpassDesc.pColorAttachments = colorAttachments.data();
+	subpassDesc.inputAttachmentCount = inputAttachments.size();
+	subpassDesc.pInputAttachments = inputAttachments.data();
 	subpassDesc.pDepthStencilAttachment = (descriptor.depthAttachment || descriptor.stencilAttachment) ? &depthStencilAttachment : nullptr;
+
+	// reading an attachment as an input while writing it in the same subpass needs a self-dependency;
+	// updateBindings() records the matching barrier before each draw that reads one
+	auto& selfDependency = dependencies.emplace_back();
+	selfDependency.srcSubpass = 0;
+	selfDependency.dstSubpass = 0;
+	selfDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	selfDependency.dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	selfDependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	selfDependency.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+	selfDependency.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
 	VkRenderPassCreateInfo renderPassInfo {};
 	renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -291,6 +309,19 @@ void Indium::PrivateRenderCommandEncoder::updateBindings() {
 	// TODO: better descriptor set resource management
 
 	auto buf = _privateCommandBuffer.lock();
+
+	for (const auto& binding: _privatePSO->fragmentFunctionInfo().bindings) {
+		if (binding.type == Iridium::BindingType::InputAttachment) {
+			// make the previous draw's color writes visible to this draw's input attachment reads.
+			// TODO: same-draw overlapping fragments are unordered without VK_EXT_rasterization_order_attachment_access.
+			VkMemoryBarrier barrier {};
+			barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+			barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			barrier.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+			DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_DEPENDENCY_BY_REGION_BIT, 1, &barrier, 0, nullptr, 0, nullptr);
+			break;
+		}
+	}
 
 	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _pool, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers);
 

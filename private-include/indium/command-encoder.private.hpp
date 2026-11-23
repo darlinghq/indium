@@ -1,6 +1,8 @@
 #pragma once
 
 #include <vector>
+#include <stdexcept>
+#include <string>
 #include <memory>
 #include <optional>
 #include <array>
@@ -22,6 +24,8 @@ namespace Indium {
 		std::vector<std::pair<std::shared_ptr<Buffer>, size_t>> buffers;
 		std::vector<std::shared_ptr<Texture>> textures;
 		std::vector<std::shared_ptr<SamplerState>> samplers;
+		// color attachments readable by the fragment function, indexed by color attachment index
+		std::vector<std::shared_ptr<Texture>> inputAttachments;
 
 		void setBytes(std::shared_ptr<Device> device, const void* bytes, size_t length, size_t index) {
 			// TODO: we can make this "Private" instead
@@ -155,6 +159,26 @@ namespace Indium {
 					descSet.descriptorType = (bindingInfo.textureAccessType == Iridium::TextureAccessType::Sample) ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 					descSet.descriptorCount = 1;
 					descSet.pImageInfo = &info;
+				} else if (bindingInfo.type == Iridium::BindingType::InputAttachment) {
+					if (bindingInfo.index >= functionResources.inputAttachments.size()) {
+						throw std::runtime_error("input attachment binding " + std::to_string(bindingInfo.internalIndex) + " reads color attachment " + std::to_string(bindingInfo.index) + ", which the render pass does not have");
+					}
+
+					auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(functionResources.inputAttachments[bindingInfo.index]);
+
+					auto& info = imageInfos.emplace_front();
+					info.imageView = privateTexture->imageView();
+					// matches the subpass input attachment reference
+					info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+					auto& descSet = writeDescSet.emplace_back();
+					descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+					descSet.dstSet = descriptorSets[i];
+					descSet.dstBinding = bindingInfo.internalIndex;
+					descSet.dstArrayElement = 0;
+					descSet.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+					descSet.descriptorCount = 1;
+					descSet.pImageInfo = &info;
 				} else if (bindingInfo.type == Iridium::BindingType::Sampler) {
 					bool embeddedSampler = false;
 
@@ -188,10 +212,11 @@ namespace Indium {
 		return descriptorSets;
 	};
 
-	static constexpr std::array<VkDescriptorPoolSize, 4> poolSizes {
+	static constexpr std::array<VkDescriptorPoolSize, 5> poolSizes {
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 512 },
 	};
 };

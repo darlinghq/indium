@@ -329,7 +329,8 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	// we don't know ahead of time how the image is going to be used, so specify everything we support
 	info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	if (isColor) {
-		info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		// INPUT_ATTACHMENT lets a fragment function read the target it is writing (framebuffer fetch)
+		info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
 	} else if (isDepthStencil) {
 		info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	}

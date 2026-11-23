@@ -21,6 +21,8 @@ namespace Iridium {
 		Texture,
 		Sampler,
 		VertexInput,
+		// framebuffer fetch: `index` is the color attachment index read, `internalIndex` the descriptor binding
+		InputAttachment,
 	};
 
 	enum class TextureAccessType {

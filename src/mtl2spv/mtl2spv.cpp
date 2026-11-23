@@ -96,6 +96,8 @@ int main(int argc, char** argv) {
 					outFileJSON << "sampler";
 				} else if (binding.type == Iridium::BindingType::VertexInput) {
 					outFileJSON << "vertex-input";
+				} else if (binding.type == Iridium::BindingType::InputAttachment) {
+					outFileJSON << "input-attachment";
 				} else {
 					outFileJSON << "undefined";
 				}
@@ -105,7 +107,7 @@ int main(int argc, char** argv) {
 
 				if (binding.type != Iridium::BindingType::VertexInput) {
 					outFileJSON << "," << std::endl;
-					outFileJSON << "\t\t\t\t\t\"internal-index\": " << std::to_string(binding.internalIndex) << (binding.type == Iridium::BindingType::Buffer ? "" : ",") << std::endl;
+					outFileJSON << "\t\t\t\t\t\"internal-index\": " << std::to_string(binding.internalIndex) << (binding.type == Iridium::BindingType::Texture || binding.type == Iridium::BindingType::Sampler ? "," : "") << std::endl;
 				} else {
 					outFileJSON << std::endl;
 				}
