@@ -134,6 +134,8 @@ namespace Indium {
 		virtual std::string name() const override;
 		virtual uint64_t recommendedMaxWorkingSetSize() const override;
 		virtual uint64_t maxBufferLength() const override;
+		virtual Size maxThreadsPerThreadgroup() const override;
+		virtual size_t maxThreadgroupMemoryLength() const override;
 		virtual uint32_t vendorID() const override;
 		virtual uint32_t deviceID() const override;
 		virtual DeviceType deviceType() const override;

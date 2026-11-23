@@ -139,6 +139,19 @@ namespace Indium {
 		virtual uint64_t maxBufferLength() const = 0;
 
 		/**
+		 * The most threads a threadgroup can have along each dimension. Each is capped by Vulkan's
+		 * maximum invocations per workgroup and by Metal's 1024; the compute pipeline may limit the
+		 * total further.
+		 */
+		virtual Size maxThreadsPerThreadgroup() const = 0;
+
+		/**
+		 * The most bytes of threadgroup memory a compute function can use, in total
+		 * (VkPhysicalDeviceLimits::maxComputeSharedMemorySize).
+		 */
+		virtual size_t maxThreadgroupMemoryLength() const = 0;
+
+		/**
 		 * Whether textures of `PixelFormat::Depth24Unorm_Stencil8` can be created and rendered to.
 		 */
 		virtual bool supportsDepth24Stencil8PixelFormat() const = 0;

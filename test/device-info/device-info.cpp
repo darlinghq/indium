@@ -70,6 +70,18 @@ int main() {
 		}
 		report(sampleCountsMatch, "texture sample counts");
 
+		const auto& limits = properties.properties.limits;
+		auto threads = device->maxThreadsPerThreadgroup();
+		bool threadsMatch = true;
+		size_t axes[3] = { threads.width, threads.height, threads.depth };
+		for (int i = 0; i < 3; ++i) {
+			threadsMatch = threadsMatch && axes[i] == std::min({ limits.maxComputeWorkGroupSize[i], limits.maxComputeWorkGroupInvocations, 1024u });
+		}
+		auto threadgroupMemory = device->maxThreadgroupMemoryLength();
+		std::printf("     threads per threadgroup %zu x %zu x %zu, threadgroup memory %zu\n", threads.width, threads.height, threads.depth, threadgroupMemory);
+		report(threadsMatch, "threads per threadgroup");
+		report(threadgroupMemory == limits.maxComputeSharedMemorySize, "threadgroup memory length");
+
 		auto all = Indium::copyAllDevices();
 		report(!all.empty() && all.front() == device, "the default device comes first");
 		report(Indium::createSystemDefaultDevice("0") == all.front() && Indium::createSystemDefaultDevice(std::to_string(all.size() - 1)) == all.back(), "a device chosen by index");

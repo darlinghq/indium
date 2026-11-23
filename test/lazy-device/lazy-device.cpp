@@ -70,6 +70,8 @@ int main() {
 		(void)device->deviceUUID();
 		(void)device->recommendedMaxWorkingSetSize();
 		(void)device->maxBufferLength();
+		(void)device->maxThreadsPerThreadgroup();
+		(void)device->maxThreadgroupMemoryLength();
 		(void)device->supportsDepth24Stencil8PixelFormat();
 		(void)device->supportsDMABufImport();
 		(void)device->memoryTypeIndex(~0u, Indium::StorageMode::Shared);

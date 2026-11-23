@@ -860,6 +860,18 @@ uint64_t Indium::PrivateDevice::maxBufferLength() const {
 	});
 };
 
+Indium::Size Indium::PrivateDevice::maxThreadsPerThreadgroup() const {
+	const auto& limits = _properties.limits;
+	auto axis = [&](uint32_t size) -> size_t {
+		return std::min({ size, limits.maxComputeWorkGroupInvocations, 1024u });
+	};
+	return { axis(limits.maxComputeWorkGroupSize[0]), axis(limits.maxComputeWorkGroupSize[1]), axis(limits.maxComputeWorkGroupSize[2]) };
+};
+
+size_t Indium::PrivateDevice::maxThreadgroupMemoryLength() const {
+	return _properties.limits.maxComputeSharedMemorySize;
+};
+
 uint64_t Indium::PrivateDevice::recommendedMaxWorkingSetSize() const {
 	uint64_t deviceLocal = 0;
 	uint64_t all = 0;
