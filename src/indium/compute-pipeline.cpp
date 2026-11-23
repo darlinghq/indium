@@ -33,17 +33,21 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 		abort();
 	}
 
-	// determine device properties
-	VkPhysicalDeviceVulkan13Properties vk13Props {};
-	vk13Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
+	VkPhysicalDeviceVulkan11Properties vk11Props {};
+	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
 	VkPhysicalDeviceProperties2 props {};
 	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-	props.pNext = &vk13Props;
+	props.pNext = &vk11Props;
 	DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
 
-	_maxTotalThreadsPerThreadgroup = vk13Props.maxSubgroupSize;
-	_threadExecutionWidth = props.properties.limits.maxComputeWorkGroupInvocations;
-	_staticThreadgroupMemoryLength = props.properties.limits.maxComputeSharedMemorySize; // not entirely sure about this one, but it seems close enough
+	// 1024 is Metal's limit
+	_maxTotalThreadsPerThreadgroup = std::min<size_t>(props.properties.limits.maxComputeWorkGroupInvocations, 1024);
+	if (_descriptor.maxTotalThreadsPerThreadgroup) {
+		_maxTotalThreadsPerThreadgroup = std::min(_maxTotalThreadsPerThreadgroup, _descriptor.maxTotalThreadsPerThreadgroup);
+	}
+	// a SPIR-V 1.5 module, created without a required subgroup size or stage flags, runs at the default size
+	_threadExecutionWidth = vk11Props.subgroupSize;
+	// Iridium does not report the threadgroup memory a kernel declares, so _staticThreadgroupMemoryLength stays 0
 };
 
 Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {
