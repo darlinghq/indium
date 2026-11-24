@@ -1167,18 +1167,22 @@ static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& bui
 // subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
 // of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Reductions
 // and scans support 32-bit integers and floats; broadcasts and shuffles also 8 and 16-bit integers and halfs.
-// `subgroupInput(builtin)` loads one of the 32-bit built-ins of the subgroup.
+// Also translates the shuffles and the ballot of the quad-group functions, air.quad_<operation>[.<s|u>].<type>, which
+// work on the groups of four consecutive lanes of a subgroup. `subgroupInput(builtin)` loads one of the 32-bit
+// built-ins of the subgroup.
 template <typename SubgroupInput>
 static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, SubgroupInput&& subgroupInput, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.simd_";
-	if (name.substr(0, prefix.size()) != prefix) {
+	constexpr std::string_view quadPrefix = "air.quad_";
+	bool quad = name.substr(0, quadPrefix.size()) == quadPrefix;
+	if (!quad && name.substr(0, prefix.size()) != prefix) {
 		return false;
 	}
 
 	// <operation>[.<s|u>].<type>
 	std::vector<std::string_view> parts;
-	for (auto rest = name.substr(prefix.size()); !rest.empty();) {
+	for (auto rest = name.substr(quad ? quadPrefix.size() : prefix.size()); !rest.empty();) {
 		auto dot = rest.find('.');
 		parts.push_back(rest.substr(0, dot));
 		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
@@ -1245,6 +1249,23 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		return std::make_pair(source, inside);
 	};
 
+	if (quad && operation == "ballot") {
+		// the four bits of the quad-group in the subgroup's ballot
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		auto words = builder.declareType(Type(Type::VectorTag {}, 4, u32Type));
+		auto ballot = builder.encodeOp(Opcode::GroupNonUniformBallot, words, { scopeID, argument(0) });
+		auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+		auto word = builder.encodeVectorExtractDynamic(u32Type, ballot, builder.encodeArithBinop(Opcode::ShiftRightLogical, u32Type, self, u32(5)));
+		auto bits = builder.encodeArithBinop(Opcode::ShiftRightLogical, u32Type, word, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, u32(28)));
+		bits = builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, bits, u32(15));
+		resID = builder.encodeBitcast(resultType, builder.encodeUConvert(resultType, bits));
+		return true;
+	}
+	bool quadShuffle = operation == "shuffle" || operation == "shuffle_xor" || operation == "shuffle_down" || operation == "shuffle_up";
+	if (quad && !quadShuffle && operation != "shuffle_and_fill_down" && operation != "shuffle_and_fill_up") {
+		throw ImpossibleResultID("unsupported quad-group function " + std::string(name));
+	}
+
 	if (operation == "all" || operation == "any") {
 		builder.requireCapability(Capability::GroupNonUniformVote);
 		resID = builder.encodeOp(operation == "all" ? Opcode::GroupNonUniformAll : Opcode::GroupNonUniformAny, resultType, { scopeID, argument(0) });
@@ -1267,6 +1288,26 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	bool movesValues = operation.substr(0, 9) == "broadcast" || operation.substr(0, 7) == "shuffle";
 	if (typeName != "i32" && typeName != "f32" && !(narrow && movesValues)) {
 		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+
+	if (quad && quadShuffle) {
+		// the lane operand is the lane in the quad-group, or the distance or mask within it
+		builder.requireCapability(Capability::GroupNonUniformShuffle);
+		auto value = typed(0);
+		auto argumentLane = lane(1);
+		if (operation == "shuffle") {
+			auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+			auto source = builder.encodeArithBinop(Opcode::BitwiseOr, u32Type, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, u32(~3u)), builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, argumentLane, u32(3)));
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, source });
+		} else if (operation == "shuffle_xor") {
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffleXor, operationType, { scopeID, value, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, argumentLane, u32(3)) });
+		} else {
+			// the lanes with no lane delta lanes down (or up) in the quad-group keep their value
+			auto [source, inside] = withinGroup(u32(4), argumentLane, operation == "shuffle_down");
+			resID = builder.encodeOp(Opcode::Select, operationType, { inside, builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, source }), value });
+		}
+		resID = untyped(resID);
+		return true;
 	}
 
 	// reductions and scans: the operation, and the group operation (reduce 0, inclusive scan 1, exclusive scan 2)
@@ -1356,9 +1397,9 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	bool fillDown = operation == "shuffle_and_fill_down";
 	bool fillUp = operation == "shuffle_and_fill_up";
 	if (fillDown || fillUp) {
-		// (data, filling, delta, modulo): the subgroup is split into vectors of modulo lanes, a power of two. Each lane
-		// reads data from the lane delta lanes down (or up) in its vector, and the lanes past the end of the vector read
-		// filling from the lane that many lanes past its other end instead.
+		// (data, filling, delta, modulo): the subgroup (or quad-group) is split into vectors of modulo lanes, a power of
+		// two. Each lane reads data from the lane delta lanes down (or up) in its vector, and the lanes past the end of
+		// the vector read filling from the lane that many lanes past its other end instead.
 		builder.requireCapability(Capability::GroupNonUniformShuffle);
 		auto data = typed(0);
 		auto filling = typed(1);

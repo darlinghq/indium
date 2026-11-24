@@ -57,6 +57,7 @@ add_subdirectory(simdgroup)
 add_subdirectory(pipeline-limits)
 add_subdirectory(pipeline-bench)
 add_subdirectory(pipeline-cache)
+add_subdirectory(quad-functions)
 add_subdirectory(diagnostics)
 
 # cube, cubemap, lighting and texturing include <glm/gtx/transform.hpp> and
