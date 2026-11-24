@@ -3616,8 +3616,28 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+				case LLVMTrunc: {
+					auto source = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto argument = llvmValueToResultID(builder, source);
+					auto typeInst = *builder.reverseLookupType(type);
+					auto component = typeInst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(typeInst.targetType) : typeInst;
+
+					SPIRV::ResultID resID;
+					if (component.backingType == SPIRV::Type::BackingType::Boolean) {
+						// i1 is a SPIR-V boolean, which OpUConvert cannot produce: test the low bit
+						auto sourceType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source));
+						auto low = builder.encodeOp(SPIRV::Opcode::BitwiseAnd, sourceType, { argument, integerConstantOfType(builder, sourceType, 1) });
+						resID = builder.encodeOp(SPIRV::Opcode::INotEqual, type, { low, integerConstantOfType(builder, sourceType, 0) });
+					} else {
+						resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument });
+					}
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
 				case LLVMSExt:
-				case LLVMTrunc:
 				case LLVMFPExt:
 				case LLVMFPToSI:
 				case LLVMFPToUI:
@@ -3630,7 +3650,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					switch (opcode) {
 						case LLVMSExt: resID = builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument }); break;
-						case LLVMTrunc: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument }); break;
 						case LLVMFPExt: resID = builder.encodeFConvert(type, argument); break;
 						case LLVMFPToSI: resID = builder.encodeOp(SPIRV::Opcode::ConvertFToS, type, { argument }); break;
 						case LLVMFPToUI: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::ConvertFToU, type, { argument }); break;
@@ -3644,6 +3663,28 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMFreeze: {
+					// A literal undef or poison is OpUndef, which may differ at every use, so freezing one gives
+					// zero (a pointer is refused). Other operands are used as they are, so a value that is only
+					// partly or sometimes undefined (a phi with an undef input) stays that way.
+					auto operand = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto operandKind = DynamicLLVM::LLVMGetValueKind(operand);
+					SPIRV::ResultID resID;
+					if (operandKind == LLVMUndefValueValueKind || operandKind == LLVMPoisonValueValueKind) {
+						if (DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMTypeOf(operand)) == LLVMPointerTypeKind) {
+							throw ImpossibleResultID("freeze of an undefined pointer");
+						}
+						resID = builder.declareNullValue(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst)));
+					} else {
+						resID = llvmValueToResultID(builder, operand);
+					}
+					// constants have no recorded type, which users of an instruction's result look up
+					if (builder.lookupResultType(resID) == SPIRV::ResultIDInvalid) {
+						builder.setResultType(resID, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst)));
+					}
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 				} break;
 
 				case LLVMAlloca: {

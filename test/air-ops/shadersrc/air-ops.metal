@@ -85,3 +85,20 @@ kernel void control_flow(device uint* out [[buffer(0)]], device const uint* ns [
 	}
 	r[3] = k;
 }
+
+// The `& 1` masks mirror `trunc ... to i1`, which keeps the low bit. MSL has no freeze; LLVM's
+// optimizations insert it, and air-ops.ll freezes a loaded value (r[6]), undef and poison (r[7], r[8]).
+kernel void trunc_freeze(device int* out [[buffer(0)]], device const int* a [[buffer(1)]], device const uchar4* v [[buffer(2)]], uint id [[thread_position_in_grid]]) {
+	int x = a[id];
+	device int* r = out + id * 9;
+	r[0] = bool(uchar(x) & 1);
+	r[1] = (x & 1) ? 7 : 3;
+	bool4 b = bool4(v[id] & 1);
+	r[2] = b.x;
+	r[3] = b.y;
+	r[4] = b.z;
+	r[5] = b.w;
+	r[6] = x;
+	r[7] = 0;
+	r[8] = 0;
+}
