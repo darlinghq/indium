@@ -246,6 +246,23 @@ namespace Indium {
 	};
 
 	/**
+	 * A kernel argument in threadgroup memory ([[threadgroup(n)]]), whose length in bytes the host sets with
+	 * ComputeCommandEncoder::setThreadgroupMemoryLength(). The module declares it as a Workgroup array whose
+	 * length, in elements, is a specialization constant; indium sets that constant when it creates the pipeline
+	 * for a dispatch, to the number of whole elements in the length set for `index`, and to at least 1.
+	 */
+	struct ThreadgroupArgumentInfo {
+		/** The Metal threadgroup memory index, the one setThreadgroupMemoryLength() takes. */
+		size_t index = 0;
+
+		/** The SpecId of the array's length: a 32-bit unsigned integer. */
+		uint32_t specializationID = 0;
+
+		/** The size of one element of the array in bytes, as Metal lays it out. */
+		size_t elementSize = 0;
+	};
+
+	/**
 	 * What a producer knows about one function of a module it has already
 	 * compiled.
 	 */
@@ -296,6 +313,12 @@ namespace Indium {
 		 * function constants, and not 0 to 2.
 		 */
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
+
+		/**
+		 * For a kernel only: its threadgroup memory arguments. Their indices must be distinct, and their
+		 * SpecIds distinct from each other and from the ids above, and not 0 to 2.
+		 */
+		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
 	};
 
 	/**

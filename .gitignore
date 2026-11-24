@@ -9,5 +9,6 @@ compile_commands.*.json
 .gdb_history
 *.spv
 !test/basic-compute-mslc/add-mslc.spv
+!test/threadgroup-arguments/threadgroup-arguments.spv
 *.air
 *.bak

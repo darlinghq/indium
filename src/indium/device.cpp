@@ -1277,6 +1277,26 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				}
 				functionInfo.gridSizeSpecializationIDs = functionReflection.gridSizeSpecializationIDs;
 			}
+
+			if (!functionReflection.threadgroupArguments.empty() && functionReflection.functionType != FunctionType::Kernel) {
+				return fail("function '" + name + "' is not a kernel and has threadgroup memory arguments");
+			}
+			std::unordered_set<size_t> threadgroupIndices;
+			for (const auto& argument: functionReflection.threadgroupArguments) {
+				if (!threadgroupIndices.insert(argument.index).second) {
+					return fail("function '" + name + "' has two threadgroup memory arguments with index " + std::to_string(argument.index));
+				}
+				if (argument.elementSize == 0) {
+					return fail("function '" + name + "' has a threadgroup memory argument with elements of size 0");
+				}
+				if (argument.specializationID < 3) {
+					return fail("function '" + name + "' uses specialization ID " + std::to_string(argument.specializationID) + ", which carries the threadgroup size, for a threadgroup memory argument");
+				}
+				if (!specializationIDs.insert(argument.specializationID).second) {
+					return fail("function '" + name + "' uses specialization ID " + std::to_string(argument.specializationID) + " for a threadgroup memory argument and for another constant");
+				}
+			}
+			functionInfo.threadgroupArguments = functionReflection.threadgroupArguments;
 		}
 
 		// The translation in library.cpp turns an unrecognised enum value into a
