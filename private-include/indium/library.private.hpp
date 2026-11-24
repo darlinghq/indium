@@ -79,6 +79,8 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY(const FunctionInfo&, f, F,unctionInfo);
 
 	private:
+		void addSpecialization(uint32_t id, FunctionConstantType type, uint64_t bits);
+
 		std::vector<VkSpecializationMapEntry> _specializationEntries;
 		std::vector<uint32_t> _specializationData;
 		VkSpecializationInfo _specializationInfo {};

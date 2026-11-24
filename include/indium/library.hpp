@@ -169,13 +169,21 @@ namespace Indium {
 	};
 
 	/**
-	 * The scalar types a function constant can have. Each is passed to the pipeline as 32 bits.
+	 * The scalar types a function constant can have. Each is passed to the pipeline at its own size, a
+	 * Bool as a VkBool32.
 	 */
 	enum class FunctionConstantType: uint8_t {
 		Bool = 0,
 		Int = 1,
 		UInt = 2,
 		Float = 3,
+		Char = 4,
+		UChar = 5,
+		Short = 6,
+		UShort = 7,
+		Half = 8,
+		Long = 9,
+		ULong = 10,
 	};
 
 	/**
@@ -191,7 +199,7 @@ namespace Indium {
 		size_t index = 0;
 
 		/**
-		 * The SpecId of the constant's value: a 32-bit scalar of `type` (a VkBool32 for Bool).
+		 * The SpecId of the constant's value: a scalar of `type` (a VkBool32 for Bool).
 		 */
 		uint32_t specializationID = 0;
 
@@ -210,12 +218,12 @@ namespace Indium {
 		struct Value {
 			FunctionConstantType type = FunctionConstantType::Int;
 
-			/** The value's 32 bits: 0 or 1 for Bool, the bit pattern of an int32, uint32 or float. */
-			uint32_t bits = 0;
+			/** The value: 0 or 1 for Bool, otherwise the bit pattern of the type in the low bits. */
+			uint64_t bits = 0;
 		};
 
-		void setValue(size_t index, FunctionConstantType type, uint32_t bits) { _byIndex[index] = Value { type, bits }; }
-		void setValue(const std::string& name, FunctionConstantType type, uint32_t bits) { _byName[name] = Value { type, bits }; }
+		void setValue(size_t index, FunctionConstantType type, uint64_t bits) { _byIndex[index] = Value { type, bits }; }
+		void setValue(const std::string& name, FunctionConstantType type, uint64_t bits) { _byName[name] = Value { type, bits }; }
 		void reset() { _byIndex.clear(); _byName.clear(); }
 
 		const std::map<size_t, Value>& byIndex() const { return _byIndex; }

@@ -10,5 +10,6 @@ compile_commands.*.json
 *.spv
 !test/basic-compute-mslc/add-mslc.spv
 !test/threadgroup-arguments/threadgroup-arguments.spv
+!test/function-constant-types/function-constant-types.spv
 *.air
 *.bak
