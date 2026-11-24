@@ -33,6 +33,8 @@ namespace Indium {
 		ScratchArena _scratch;
 		// the length asked for each threadgroup memory argument index (see setThreadgroupMemoryLength())
 		std::unordered_map<size_t, size_t> _threadgroupMemoryLengths;
+		// the region setStageInRegion() set; without one, an empty region at the origin
+		Region _stageInRegion {};
 		// whether the commands of the encoder are ordered by what they access (see HazardTracker)
 		bool _tracked = true;
 		// resources declared with useResource() and useHeap(), which every later dispatch may access

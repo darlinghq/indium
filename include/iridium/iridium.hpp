@@ -1,9 +1,11 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
 #include <vector>
+#include <optional>
 #include <unordered_map>
 #include <string>
 
@@ -142,6 +144,12 @@ namespace Iridium {
 
 		/** For a kernel: the most threads a threadgroup may have, as the module declares it, or 0 when it declares none. */
 		size_t maxTotalThreadsPerThreadgroup = 0;
+
+		/**
+		 * For a kernel that reads the stage-in region (MSL's [[grid_origin]] and [[grid_size]]): the SpecIds of its
+		 * origin and size, x, y and z of each, 32-bit unsigned integers.
+		 */
+		std::optional<std::array<uint32_t, 6>> stageInRegionSpecializationIDs;
 	};
 
 	struct OutputInfo {

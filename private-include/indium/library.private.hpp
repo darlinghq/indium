@@ -48,6 +48,8 @@ namespace Indium {
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
 		// see FunctionReflection::maxTotalThreadsPerThreadgroup
 		size_t maxTotalThreadsPerThreadgroup = 0;
+		// the SpecIds of the stage-in region's origin and size (x, y, z each), for a kernel that reads them
+		std::optional<std::array<uint32_t, 6>> stageInRegionSpecializationIDs;
 	};
 
 	class PrivateFunction: public Function {
