@@ -1,8 +1,10 @@
 // Copyright (C) 2026 Darling Developers
 //
 // Runs the kernels in simd-relative-shuffles.metallib over one threadgroup of 64 threads: simd_shuffle_down and
-// simd_shuffle_up, which leave the lanes with no lane to read from unchanged. The host compares every thread's
-// results with what the Metal Shading Language specification defines for the simdgroup width of the device.
+// simd_shuffle_up, which leave the lanes with no lane to read from unchanged, and simd_shuffle_and_fill_down and
+// simd_shuffle_and_fill_up, which shuffle within vectors of `modulo` lanes and fill the lanes past the end of a
+// vector from a second value. The host compares every thread's results with what the Metal Shading Language
+// specification defines for the simdgroup width of the device.
 // Prints SKIP and exits 0 without a Vulkan device.
 
 #include "simd-relative-shuffles.h"
@@ -120,6 +122,30 @@ int main() {
 			};
 			check(device.get(), queue.get(), library.get(), "shuffle_up_down", 5, "shuffle_down and shuffle_up of integers keep the lanes at the ends", upDown);
 			check(device.get(), queue.get(), library.get(), "shuffle_up_down_float", 5, "shuffle_down and shuffle_up of floats keep the lanes at the ends", upDown);
+
+			// shuffle_and_fill_down with (delta, modulo) (1, 2), (1, 4), (3, 8), then shuffle_and_fill_up with (1, 2), (3, 4),
+			// (2, 8), then shuffle_and_fill_down with (3, width) and shuffle_and_fill_up with (2, width)
+			auto fill = [&](size_t t, size_t width) {
+				auto down = [&](size_t delta, size_t modulo) {
+					size_t position = t % modulo, first = t - position;
+					return position + delta < modulo ? data(first + position + delta) : filling(first + position + delta - modulo);
+				};
+				auto up = [&](size_t delta, size_t modulo) {
+					size_t position = t % modulo, first = t - position;
+					return position >= delta ? data(first + position - delta) : filling(first + position + modulo - delta);
+				};
+				return std::vector<uint32_t> { down(1, 2), down(1, 4), down(3, 8), up(1, 2), up(3, 4), up(2, 8), down(3, width), up(2, width) };
+			};
+			check(device.get(), queue.get(), library.get(), "shuffle_and_fill", 9, "shuffle_and_fill_down and shuffle_and_fill_up of integers", fill);
+			check(device.get(), queue.get(), library.get(), "shuffle_and_fill_float", 9, "shuffle_and_fill_down and shuffle_and_fill_up of floats", fill);
+			// the same values truncated to 16 bits
+			check(device.get(), queue.get(), library.get(), "shuffle_and_fill_short", 9, "shuffle_and_fill_down and shuffle_and_fill_up of 16-bit integers", [&](size_t t, size_t width) {
+				auto want = fill(t, width);
+				for (auto& word: want) {
+					word &= 0xFFFF;
+				}
+				return want;
+			});
 		}
 
 		keepPollingDevice = false;
