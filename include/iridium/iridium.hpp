@@ -139,6 +139,9 @@ namespace Iridium {
 		std::vector<BindingInfo> bindings;
 		std::vector<EmbeddedSampler> embeddedSamplers;
 		std::vector<ArgumentInfo> arguments;
+
+		/** For a kernel: the most threads a threadgroup may have, as the module declares it, or 0 when it declares none. */
+		size_t maxTotalThreadsPerThreadgroup = 0;
 	};
 
 	struct OutputInfo {

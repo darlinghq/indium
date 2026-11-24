@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <indium/dynamic-vk.hpp>
 
 Indium::ComputePipelineState::~ComputePipelineState() {};
@@ -21,6 +22,45 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 		throw std::runtime_error("TODO: support stage-in parameters in compute shaders");
 	}
 
+	VkPhysicalDeviceVulkan11Properties vk11Props {};
+	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+	VkPhysicalDeviceProperties2 props {};
+	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+	props.pNext = &vk11Props;
+	DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
+
+	// 1024 is Metal's limit
+	const size_t deviceLimit = std::min<size_t>(props.properties.limits.maxComputeWorkGroupInvocations, 1024);
+	_maxTotalThreadsPerThreadgroup = deviceLimit;
+	if (_descriptor.maxTotalThreadsPerThreadgroup) {
+		_maxTotalThreadsPerThreadgroup = std::min(_maxTotalThreadsPerThreadgroup, _descriptor.maxTotalThreadsPerThreadgroup);
+	}
+	if (auto functionLimit = functionInfo().maxTotalThreadsPerThreadgroup) {
+		// the Metal Shading Language specification has no pipeline for a kernel that allows more threads than the device
+		if (functionLimit > deviceLimit) {
+			throw std::invalid_argument("The function allows " + std::to_string(functionLimit) + " threads per threadgroup, more than the device's " + std::to_string(deviceLimit));
+		}
+		_maxTotalThreadsPerThreadgroup = std::min(_maxTotalThreadsPerThreadgroup, functionLimit);
+	}
+
+	// with a required size, that size is the only one a dispatch can use
+	const auto& required = _descriptor.requiredThreadsPerThreadgroup;
+	if (required.width || required.height || required.depth) {
+		const auto& limits = props.properties.limits;
+		if (!required.width || !required.height || !required.depth ||
+			required.width > limits.maxComputeWorkGroupSize[0] || required.height > limits.maxComputeWorkGroupSize[1] || required.depth > limits.maxComputeWorkGroupSize[2] ||
+			required.width * required.height * required.depth > _maxTotalThreadsPerThreadgroup) {
+			throw std::invalid_argument("The required threadgroup size " + std::to_string(required.width) + "x" + std::to_string(required.height) + "x" + std::to_string(required.depth) +
+				" is not one the pipeline allows: at most " + std::to_string(_maxTotalThreadsPerThreadgroup) + " threads, and at most " +
+				std::to_string(limits.maxComputeWorkGroupSize[0]) + "x" + std::to_string(limits.maxComputeWorkGroupSize[1]) + "x" + std::to_string(limits.maxComputeWorkGroupSize[2]));
+		}
+		_requiredThreadsPerThreadgroup = required;
+		_maxTotalThreadsPerThreadgroup = required.width * required.height * required.depth;
+	}
+	// a SPIR-V 1.5 module, created without a required subgroup size or stage flags, runs at the default size
+	_threadExecutionWidth = vk11Props.subgroupSize;
+	// Iridium does not report the threadgroup memory a kernel declares, so _staticThreadgroupMemoryLength stays 0
+
 	_descriptorSetLayouts.processFunction(std::dynamic_pointer_cast<PrivateFunction>(_descriptor.computeFunction), 0);
 
 	VkPipelineLayoutCreateInfo layoutInfo {};
@@ -32,22 +72,6 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 		// TODO
 		abort();
 	}
-
-	VkPhysicalDeviceVulkan11Properties vk11Props {};
-	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
-	VkPhysicalDeviceProperties2 props {};
-	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-	props.pNext = &vk11Props;
-	DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
-
-	// 1024 is Metal's limit
-	_maxTotalThreadsPerThreadgroup = std::min<size_t>(props.properties.limits.maxComputeWorkGroupInvocations, 1024);
-	if (_descriptor.maxTotalThreadsPerThreadgroup) {
-		_maxTotalThreadsPerThreadgroup = std::min(_maxTotalThreadsPerThreadgroup, _descriptor.maxTotalThreadsPerThreadgroup);
-	}
-	// a SPIR-V 1.5 module, created without a required subgroup size or stage flags, runs at the default size
-	_threadExecutionWidth = vk11Props.subgroupSize;
-	// Iridium does not report the threadgroup memory a kernel declares, so _staticThreadgroupMemoryLength stays 0
 };
 
 Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {

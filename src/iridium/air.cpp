@@ -2483,6 +2483,27 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 		builder.referenceGlobalVariable(globalInvocationIdVar);
 
+		// the operands after the parameters describe the kernel as a whole, each a node of a key and its value.
+		// air.max_work_group_size is the limit MSL's [[max_total_threads_per_threadgroup(N)]] sets.
+		for (size_t i = 3; i < rootInfoOperands.size(); ++i) {
+			auto attribute = rootInfoOperands[i];
+			if (!attribute || DynamicLLVM::LLVMGetValueKind(attribute) != LLVMMetadataAsValueValueKind || DynamicLLVM::LLVMIsAMDString(attribute)) {
+				continue;
+			}
+			std::vector<LLVMValueRef> fields(DynamicLLVM::LLVMGetMDNodeNumOperands(attribute));
+			DynamicLLVM::LLVMGetMDNodeOperands(attribute, fields.data());
+			if (fields.empty() || !fields[0] || !DynamicLLVM::LLVMIsAMDString(fields[0]) || llvmMDStringToStringView(fields[0]) != "air.max_work_group_size") {
+				continue;
+			}
+			if (fields.size() != 2 || !fields[1] || !DynamicLLVM::LLVMIsAConstantInt(fields[1]) ||
+				DynamicLLVM::LLVMGetIntTypeWidth(DynamicLLVM::LLVMTypeOf(fields[1])) != 32) {
+				throw ImpossibleResultID("air.max_work_group_size is not a 32-bit integer");
+			}
+			funcInfo.maxTotalThreadsPerThreadgroup = DynamicLLVM::LLVMConstIntGetZExtValue(fields[1]);
+			if (funcInfo.maxTotalThreadsPerThreadgroup == 0) {
+				throw ImpossibleResultID("air.max_work_group_size is 0");
+			}
+		}
 	}
 
 	// TODO: inspect the output of some more compiled shaders; the current code is only valid for

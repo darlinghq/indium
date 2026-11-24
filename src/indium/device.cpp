@@ -134,6 +134,8 @@ namespace {
 				converted.definedSpecializationID = constant.definedSpecializationID;
 				functionInfo.functionConstants.push_back(std::move(converted));
 			}
+
+			functionInfo.maxTotalThreadsPerThreadgroup = info.maxTotalThreadsPerThreadgroup;
 		}
 
 		return functionInfos;
@@ -1278,6 +1280,11 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				functionInfo.gridSizeSpecializationIDs = functionReflection.gridSizeSpecializationIDs;
 			}
 		}
+
+		if (functionReflection.maxTotalThreadsPerThreadgroup && functionReflection.functionType != FunctionType::Kernel) {
+			return fail("function '" + name + "' is not a kernel and has a threadgroup size limit");
+		}
+		functionInfo.maxTotalThreadsPerThreadgroup = functionReflection.maxTotalThreadsPerThreadgroup;
 
 		// The translation in library.cpp turns an unrecognised enum value into a
 		// sampler state that works but is not the one that was asked for, so
