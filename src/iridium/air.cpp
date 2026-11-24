@@ -1429,7 +1429,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			{ "acos", GLSLOpcode::Acos, 1 }, { "atan", GLSLOpcode::Atan, 1 }, { "atan2", GLSLOpcode::Atan2, 2 },
 			{ "sinh", GLSLOpcode::Sinh, 1 }, { "cosh", GLSLOpcode::Cosh, 1 }, { "tanh", GLSLOpcode::Tanh, 1 },
 			{ "fabs", GLSLOpcode::FAbs, 1 }, { "floor", GLSLOpcode::Floor, 1 }, { "ceil", GLSLOpcode::Ceil, 1 },
-			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 }, { "round", GLSLOpcode::Round, 1 },
+			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 },
 			{ "trunc", GLSLOpcode::Trunc, 1 }, { "sign", GLSLOpcode::FSign, 1 }, { "fmin", GLSLOpcode::FMin, 2 },
 			{ "fmax", GLSLOpcode::FMax, 2 }, { "fma", GLSLOpcode::Fma, 3 }, { "mix", GLSLOpcode::FMix, 3 },
 			{ "clamp", GLSLOpcode::FClamp, 3 }, { "step", GLSLOpcode::Step, 2 }, { "smoothstep", GLSLOpcode::SmoothStep, 3 },
@@ -1448,6 +1448,20 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			}
 		}
 
+		if (fn == "round") {
+			// MSL rounds halfway cases away from zero, which GLSL.std.450's Round leaves to the implementation: round
+			// towards zero, and away from it if the part cut off, which is exact, is at least a half
+			auto x = operand(0);
+			auto info = *builder.reverseLookupType(type);
+			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+			auto boolType = info.backingType == Type::BackingType::Vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+			auto truncated = builder.encodeGLSLOp(GLSLOpcode::Trunc, type, { x });
+			auto fraction = builder.encodeGLSLOp(GLSLOpcode::FAbs, type, { builder.encodeArithBinop(Opcode::FSub, type, x, truncated) });
+			auto away = builder.encodeOp(Opcode::FOrdGreaterThanEqual, boolType, { fraction, floatConstantOfType(builder, type, 0.5) });
+			auto rounded = builder.encodeArithBinop(Opcode::FAdd, type, truncated, builder.encodeGLSLOp(GLSLOpcode::FSign, type, { x }));
+			resID = builder.encodeOp(Opcode::Select, type, { away, rounded, truncated });
+			return true;
+		}
 		if (fn == "saturate") {
 			resID = builder.encodeGLSLOp(GLSLOpcode::FClamp, type, { operand(0), floatConstantOfType(builder, type, 0), floatConstantOfType(builder, type, 1) });
 			return true;
