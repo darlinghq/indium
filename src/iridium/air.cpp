@@ -4233,6 +4233,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					// a vector comparison produces a vector of booleans
 					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+
+					if (predicate == LLVMRealORD || predicate == LLVMRealUNO) {
+						// OpOrdered and OpUnordered require the Kernel capability, which Vulkan lacks: test for NaNs instead
+						auto lhs = llvmValueToResultID(builder, op1);
+						auto rhs = llvmValueToResultID(builder, op2);
+						auto unordered = builder.encodeOp(SPIRV::Opcode::LogicalOr, type, { builder.encodeOp(SPIRV::Opcode::IsNan, type, { lhs }), builder.encodeOp(SPIRV::Opcode::IsNan, type, { rhs }) });
+						auto resID = predicate == LLVMRealUNO ? unordered : builder.encodeOp(SPIRV::Opcode::LogicalNot, type, { unordered });
+						builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+						builder.setResultType(resID, type);
+						break;
+					}
+
 					SPIRV::Opcode comparison;
 
 					switch (predicate) {
@@ -4242,8 +4254,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						case LLVMRealOLT: comparison = SPIRV::Opcode::FOrdLessThan; break;
 						case LLVMRealOLE: comparison = SPIRV::Opcode::FOrdLessThanEqual; break;
 						case LLVMRealONE: comparison = SPIRV::Opcode::FOrdNotEqual; break;
-						case LLVMRealORD: comparison = SPIRV::Opcode::Ordered; break;
-						case LLVMRealUNO: comparison = SPIRV::Opcode::Unordered; break;
 						case LLVMRealUEQ: comparison = SPIRV::Opcode::FUnordEqual; break;
 						case LLVMRealUGT: comparison = SPIRV::Opcode::FUnordGreaterThan; break;
 						case LLVMRealUGE: comparison = SPIRV::Opcode::FUnordGreaterThanEqual; break;
