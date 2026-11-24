@@ -385,30 +385,35 @@ void Indium::PrivateBlitCommandEncoder::fillBuffer(const std::shared_ptr<Buffer>
 		((uint32_t)value <<  0)
 		;
 
-	if ((range.start & 3) != 0) {
-		throw std::runtime_error("Misaligned fillBuffer offset");
-	}
-
-	if ((range.length & 3) != 0) {
-		throw std::runtime_error("Misaligned fillBuffer length");
-	}
-
 	useBuffer(*cmdbuf, privateBuffer, range.start, range.length, true);
 	flushUses(*cmdbuf);
 
-	const VkDeviceSize fillOffset = range.start + privateBuffer->bufferOffset();
-	if (fillOffset % 4 == 0) {
-		DynamicVK::vkCmdFillBuffer(cmdbuf->commandBuffer(), privateBuffer->buffer(), fillOffset, range.length, value32);
-	} else {
-		// A buffer over unaligned caller memory starts in the middle of a word of its VkBuffer, where Vulkan cannot
-		// fill: copy from a host-filled buffer instead (the host's writes are visible to the submission).
-		auto scratch = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->newBuffer(range.length, ResourceOptions::StorageModeShared));
-		memset(scratch->contents(), value, range.length);
+	// Vulkan fills whole words at word offsets of the VkBuffer: fill the words the range covers, and copy the bytes
+	// before and after them (at most 3 each) from a host-filled buffer (the host's writes are visible to the submission).
+	const VkDeviceSize start = range.start + privateBuffer->bufferOffset();
+	const VkDeviceSize end = start + range.length;
+	const VkDeviceSize wordsStart = std::min((start + 3) & ~VkDeviceSize(3), end);
+	const VkDeviceSize wordsEnd = std::max(end & ~VkDeviceSize(3), wordsStart);
+
+	if (wordsEnd > wordsStart) {
+		DynamicVK::vkCmdFillBuffer(cmdbuf->commandBuffer(), privateBuffer->buffer(), wordsStart, wordsEnd - wordsStart, value32);
+	}
+
+	VkBufferCopy edges[2] {};
+	uint32_t edgeCount = 0;
+	if (wordsStart > start) {
+		edges[edgeCount].dstOffset = start;
+		edges[edgeCount++].size = wordsStart - start;
+	}
+	if (end > wordsEnd) {
+		edges[edgeCount].dstOffset = wordsEnd;
+		edges[edgeCount++].size = end - wordsEnd;
+	}
+	if (edgeCount > 0) {
+		auto scratch = std::dynamic_pointer_cast<PrivateBuffer>(_privateDevice->newBuffer(3, ResourceOptions::StorageModeShared));
+		memset(scratch->contents(), value, 3);
 		cmdbuf->retainResource(scratch);
-		VkBufferCopy info {};
-		info.dstOffset = fillOffset;
-		info.size = range.length;
-		DynamicVK::vkCmdCopyBuffer(cmdbuf->commandBuffer(), scratch->buffer(), privateBuffer->buffer(), 1, &info);
+		DynamicVK::vkCmdCopyBuffer(cmdbuf->commandBuffer(), scratch->buffer(), privateBuffer->buffer(), edgeCount, edges);
 	}
 };
 
