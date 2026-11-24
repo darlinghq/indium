@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Darling Developers
 //
 // Runs the kernels in quad-functions.metallib over one threadgroup of 64 threads: the quad-group shuffles of
-// 32-bit integers, floats, 8-bit integers and halfs, and quad_ballot, also with only some lanes active. The
-// host compares every thread's results with what the Metal Shading Language specification defines, where a
-// quad-group is four consecutive lanes of a simdgroup.
+// 32-bit integers, floats, 8-bit integers and halfs, quad_ballot, also with only some lanes active, and the
+// votes of simdgroup and quad-group masks. The host compares every thread's results with what the Metal
+// Shading Language specification defines, where a quad-group is four consecutive lanes of a simdgroup.
 // Prints SKIP and exits 0 without a Vulkan device.
 
 #include "quad-functions.h"
@@ -156,6 +156,13 @@ int main() {
 					multiples |= (first + i) % 3 == 0 ? 1u << i : 0;
 				}
 				return std::vector<uint32_t> { multiples, 0xF, lane % 2 == 0 ? 0x5u : 77777u };
+			});
+
+			// all() and any() of simdgroup masks: the ballot of all lanes, of all but lane 1, none, all 64 bits, and only the bits
+			// past the lanes of the simdgroup; then of quad-group masks: the ballot of all lanes, of all but lane 2, 0xFFF0, 0xF
+			// and 0x1
+			check(device.get(), queue.get(), library.get(), "votes", 21, "all() and any() of simdgroup and quad-group masks", [](size_t, size_t) {
+				return std::vector<uint32_t> { 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1 };
 			});
 		}
 

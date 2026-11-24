@@ -1167,8 +1167,8 @@ static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& bui
 // subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
 // of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Reductions
 // and scans support 32-bit integers and floats; broadcasts and shuffles also 8 and 16-bit integers and halfs.
-// Also translates the shuffles and the ballot of the quad-group functions, air.quad_<operation>[.<s|u>].<type>, which
-// work on the groups of four consecutive lanes of a subgroup. `subgroupInput(builtin)` loads one of the 32-bit
+// Also translates the shuffles, the ballot and the votes of the quad-group functions, air.quad_<operation>[.<s|u>].<type>,
+// which work on the groups of four consecutive lanes of a subgroup. `subgroupInput(builtin)` loads one of the 32-bit
 // built-ins of the subgroup.
 template <typename SubgroupInput>
 static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, SubgroupInput&& subgroupInput, Iridium::SPIRV::ResultID& resID) {
@@ -1261,6 +1261,28 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		resID = builder.encodeBitcast(resultType, builder.encodeUConvert(resultType, bits));
 		return true;
 	}
+	if (operation == "vote_all" || operation == "vote_any") {
+		// a mask as simd_ballot and quad_ballot return, of 64 and 16 bits: all() holds when the bits of all lanes of the
+		// group are set, any() when the bit of one of them is, whatever the bits past them are
+		auto mask = argument(0);
+		ResultID maskType, lanes;
+		if (quad) {
+			maskType = u32Type;
+			mask = builder.encodeUConvert(u32Type, mask);
+			lanes = u32(15);
+		} else {
+			maskType = builder.declareType(Type(Type::IntegerTag {}, 64, false));
+			mask = builder.encodeBitcast(maskType, mask);
+			auto width = builder.encodeGLSLOp(GLSLOpcode::UMin, u32Type, { subgroupInput(BuiltinID::SubgroupSize), u32(64) });
+			lanes = builder.encodeArithBinop(Opcode::ShiftRightLogical, maskType, builder.declareConstantScalar<uint64_t>(~0ull), builder.encodeArithBinop(Opcode::ISub, u32Type, u32(64), width));
+		}
+		mask = builder.encodeArithBinop(Opcode::BitwiseAnd, maskType, mask, lanes);
+		resID = operation == "vote_all"
+			? builder.encodeOp(Opcode::IEqual, resultType, { mask, lanes })
+			: builder.encodeOp(Opcode::INotEqual, resultType, { mask, builder.declareNullValue(maskType) });
+		return true;
+	}
+
 	bool quadShuffle = operation == "shuffle" || operation == "shuffle_xor" || operation == "shuffle_down" || operation == "shuffle_up";
 	if (quad && !quadShuffle && operation != "shuffle_and_fill_down" && operation != "shuffle_and_fill_up") {
 		throw ImpossibleResultID("unsupported quad-group function " + std::string(name));
