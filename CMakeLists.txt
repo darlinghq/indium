@@ -36,6 +36,7 @@ set(iridium_sources
 	src/iridium/air.cpp
 	src/iridium/dynamic-llvm.cpp
 	src/iridium/iridium.cpp
+	src/iridium/mslc-reflection.cpp
 	src/iridium/spirv.cpp
 )
 
