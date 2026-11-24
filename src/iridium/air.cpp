@@ -1683,6 +1683,41 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
 }
 
+// llvm.fshl(a, b, n) and llvm.fshr(a, b, n): concatenate a and b (a holding the upper bits), shift left or right by
+// n modulo the width, and return the upper or the lower half. A rotation is a funnel shift of a value with itself.
+static bool translateFunnelShift(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	bool left = name.substr(0, 10) == "llvm.fshl.";
+	if (!left && name.substr(0, 10) != "llvm.fshr.") {
+		return false;
+	}
+	auto operand = [&](unsigned index) {
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, index));
+	};
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	auto scalar = vector ? *builder.reverseLookupType(info.targetType) : info;
+	if (scalar.backingType != Type::BackingType::Integer) {
+		// i1, which is a boolean here
+		return false;
+	}
+	auto width = scalar.scalarWidth;
+	auto mask = integerConstantOfType(builder, type, width - 1);
+	auto high = operand(0), low = operand(1);
+	auto amount = builder.encodeArithBinop(Opcode::BitwiseAnd, type, operand(2), mask);
+	// masked too, so that no lane shifts by the full width, which is undefined
+	auto complement = builder.encodeArithBinop(Opcode::BitwiseAnd, type, builder.encodeArithBinop(Opcode::ISub, type, integerConstantOfType(builder, type, width), amount), mask);
+	auto shiftedHigh = builder.encodeArithBinop(Opcode::ShiftLeftLogical, type, high, left ? amount : complement);
+	auto shiftedLow = builder.encodeArithBinop(Opcode::ShiftRightLogical, type, low, left ? complement : amount);
+	resID = builder.encodeArithBinop(Opcode::BitwiseOr, type, shiftedHigh, shiftedLow);
+	// a shift by a multiple of the width returns one operand unshifted
+	auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+	auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+	auto none = builder.encodeOp(Opcode::IEqual, boolType, { amount, integerConstantOfType(builder, type, 0) });
+	resID = builder.encodeOp(Opcode::Select, type, { none, left ? high : low, resID });
+	return true;
+}
+
 // Reads the components of an integer scalar or vector whose value is fixed when the shader is translated: a
 // constant, or insertelement and shufflevector instructions over constants. The compiler builds a texel offset
 // that way when it is assembled one component at a time, e.g. from a loop counter that unrolling has replaced
@@ -3917,6 +3952,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					} else if (translateAirSimd(builder, inst, name, type, resID)) {
 						// handled
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {
+						// handled
+					} else if (translateFunnelShift(builder, inst, name, type, resID)) {
 						// handled
 					} else if (name == "air.discard_fragment") {
 						builder.encodeOpWithoutResult(SPIRV::Opcode::Kill, {});
