@@ -337,6 +337,14 @@ VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string&
 	return module;
 };
 
+std::vector<std::string> Indium::PrivateLibrary::functionNames() const {
+	std::vector<std::string> names;
+	for (const auto& [name, info]: _functionInfos) {
+		names.push_back(name);
+	}
+	return names;
+};
+
 std::shared_ptr<Indium::Function> Indium::PrivateLibrary::newFunction(const std::string& name) {
 	// Not operator[]: a missing key would default-construct a FunctionInfo and
 	// hand back a Function for a name the library does not have, so the caller

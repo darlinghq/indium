@@ -272,6 +272,12 @@ int main(int argc, char** argv) {
 		reflection = Indium::LibraryReflection();
 
 		if (lib) {
+			// the functions are the ones the reflection describes
+			if (lib->functionNames() != std::vector<std::string> { "add_arrays" }) {
+				std::cerr << "functionNames ERROR: the library does not list exactly add_arrays" << std::endl;
+				ok = false;
+			}
+
 			auto func = lib->newFunction("add_arrays");
 
 			if (!func) {
