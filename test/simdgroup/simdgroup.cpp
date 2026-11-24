@@ -10,6 +10,8 @@
 #include "simdgroup.h"
 
 #include <indium/indium.hpp>
+#include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
 
 #include <algorithm>
 #include <cstdint>
@@ -118,6 +120,20 @@ int main() {
 			width = 32;
 		}
 		std::printf("simdgroup width %zu\n", width);
+
+		check("simd_ids", "the pipeline's limits: the width it ran at, Metal's thread limit and no threadgroup memory", [&] {
+			VkPhysicalDeviceProperties properties;
+			Indium::DynamicVK::vkGetPhysicalDeviceProperties(std::static_pointer_cast<Indium::PrivateDevice>(device)->physicalDevice(), &properties);
+			auto pipeline = device->newComputePipelineState(library->newFunction("simd_ids"));
+			std::printf("     maxTotalThreadsPerThreadgroup %zu, threadExecutionWidth %zu, staticThreadgroupMemoryLength %zu\n", pipeline->maxTotalThreadsPerThreadgroup(), pipeline->threadExecutionWidth(), pipeline->staticThreadgroupMemoryLength());
+			Indium::ComputePipelineDescriptor descriptor;
+			descriptor.computeFunction = library->newFunction("simd_ids");
+			descriptor.maxTotalThreadsPerThreadgroup = 64;
+			auto limited = device->newComputePipelineState(descriptor, Indium::PipelineOption::None, nullptr);
+			return pipeline->maxTotalThreadsPerThreadgroup() == std::min<size_t>(properties.limits.maxComputeWorkGroupInvocations, 1024) &&
+				pipeline->threadExecutionWidth() == width && pipeline->staticThreadgroupMemoryLength() == 0 &&
+				limited->maxTotalThreadsPerThreadgroup() == 64;
+		});
 
 		check("simd_ids_short", "lane and width as 16-bit integers", [&] {
 			auto out = run("simd_ids_short", { threads * 2 })[0];
