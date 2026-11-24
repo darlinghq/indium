@@ -101,6 +101,11 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 		}
 	}
 
+	// a library with no functions has no module (Device::newLibrary)
+	if (dataLength == 0) {
+		return;
+	}
+
 	VkShaderModuleCreateInfo createInfo {};
 	createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	createInfo.codeSize = dataLength;

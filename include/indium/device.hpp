@@ -258,10 +258,16 @@ namespace Indium {
 		 * opposite of the source overload above, which receives a buffer that
 		 * Iridium allocated and therefore frees.
 		 *
+		 * A library with no functions, which Metal makes of a source with no
+		 * entry point, has no module, since Vulkan has none without an entry
+		 * point: it is created from a null `spirv`, a `length` of 0 and a
+		 * `reflection` that describes no function.
+		 *
 		 * @returns `nullptr`, with a description of the problem in
 		 *          `errorMessage` when it is not null and empty when it is not,
 		 *          if:
-		 *          - `spirv` is null, shorter than a SPIR-V header, not a whole
+		 *          - `spirv` is null (except for a library with no functions),
+		 *            shorter than a SPIR-V header, not a whole
 		 *            number of words, or does not start with the SPIR-V magic
 		 *            number;
 		 *          - `reflection` describes no function, describes a function

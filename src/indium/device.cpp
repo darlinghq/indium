@@ -1127,6 +1127,13 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 		return nullptr;
 	};
 
+	// Metal makes a library with no functions of a source with no entry point, and Vulkan has no module
+	// without one, so such a library comes with no module.
+	if (!spirv && length == 0 && reflection.functions.empty()) {
+		*errorMessage = "";
+		return std::make_shared<PrivateLibrary>(shared_from_this(), nullptr, 0, PrivateLibrary::FunctionInfoMap {});
+	}
+
 	// PrivateLibrary abort()s if vkCreateShaderModule rejects the module, so
 	// everything that would make it do so gets rejected here instead, where the
 	// reason can still name the module. A producer that hands over something
