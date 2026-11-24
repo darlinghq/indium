@@ -135,6 +135,9 @@ namespace {
 					skipSpace();
 					std::string key = parseString();
 					expect(':');
+					if (v.object.count(key)) {
+						fail("duplicate key \"" + key + "\"");
+					}
 					v.object[key] = parseValue(depth + 1);
 					skipSpace();
 					if (_p < _end && *_p == ',') {
@@ -172,13 +175,21 @@ namespace {
 			if (literal("true")) { v.kind = Value::Kind::Bool; v.boolean = true; return v; }
 			if (literal("false")) { v.kind = Value::Kind::Bool; return v; }
 			if (literal("null")) { return v; }
-			char* numEnd = nullptr;
-			std::string text(_p, std::min<size_t>(_end - _p, 64));
-			v.number = std::strtod(text.c_str(), &numEnd);
-			if (numEnd == text.c_str()) {
-				fail("unexpected character");
+			// JSON number grammar: -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
+			const char* start = _p;
+			const char* q = _p;
+			auto digits = [&]() { const char* d = q; while (q < _end && *q >= '0' && *q <= '9') { ++q; } return q - d; };
+			if (q < _end && *q == '-') { ++q; }
+			if (q < _end && *q == '0') { ++q; }
+			else if (digits() == 0) { fail("unexpected character"); }
+			if (q < _end && *q == '.') { ++q; if (digits() == 0) { fail("bad number"); } }
+			if (q < _end && (*q == 'e' || *q == 'E')) {
+				++q;
+				if (q < _end && (*q == '+' || *q == '-')) { ++q; }
+				if (digits() == 0) { fail("bad number"); }
 			}
-			_p += numEnd - text.c_str();
+			v.number = std::strtod(std::string(start, q).c_str(), nullptr);
+			_p = q;
 			v.kind = Value::Kind::Number;
 			return v;
 		}

@@ -119,6 +119,29 @@ int main() {
 	rejects(fb, "}\n\t]\n}", "}\n\t]\n} x", "trailing data");
 
 	{
+		auto bad = [&](const std::string& doc, const char* why) {
+			Iridium::OutputInfo info;
+			std::string error;
+			if (parse(doc, info, error)) {
+				std::fprintf(stderr, "expected rejection (%s) was accepted\n", why);
+				++failures;
+			}
+		};
+		const std::string head = "{\"reflection_version\":2,\"entry_points\":[{\"name\":\"f\",\"stage\":\"fragment\",\"embedded_samplers\":[],\"bindings\":[{\"kind\":\"Buffer\",\"metal_index\":";
+		const std::string tail = "}]}]}";
+		Iridium::OutputInfo ok;
+		std::string error;
+		CHECK(parse(head + "1" + tail, ok, error));
+		CHECK(parse(head + "1e0" + tail, ok, error));
+		bad(head + "0x10" + tail, "hex number");
+		bad(head + "+1" + tail, "plus sign");
+		bad(head + ".5" + tail, "leading dot");
+		bad(head + "01" + tail, "leading zero");
+		bad(head + "1." + tail, "trailing dot");
+		bad("{\"reflection_version\":2,\"reflection_version\":2,\"entry_points\":[]}", "duplicate key");
+	}
+
+	{
 		// an unknown kind is skipped, a known unsupported kind is not
 		std::string doc = "{\"reflection_version\":2,\"entry_points\":[{\"name\":\"f\",\"stage\":\"fragment\",\"bindings\":[{\"kind\":\"Future\"}],\"embedded_samplers\":[]}]}";
 		Iridium::OutputInfo info;
