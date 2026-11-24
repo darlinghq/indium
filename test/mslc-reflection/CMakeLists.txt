@@ -1,0 +1,5 @@
+add_executable(mslc-reflection-test mslc-reflection-test.cpp ${CMAKE_SOURCE_DIR}/src/iridium/mslc-reflection.cpp)
+target_include_directories(mslc-reflection-test PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_definitions(mslc-reflection-test PRIVATE FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+set_target_properties(mslc-reflection-test PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME mslc-reflection COMMAND mslc-reflection-test)

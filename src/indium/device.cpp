@@ -11,6 +11,7 @@
 #include <indium/dynamic-vk.hpp>
 
 #include <iridium/iridium.hpp>
+#include <iridium/mslc-reflection.hpp>
 
 #include <set>
 #include <stdexcept>
@@ -348,25 +349,21 @@ std::shared_ptr<Indium::Buffer> Indium::PrivateDevice::newBuffer(const void* poi
 	return std::make_shared<PrivateBuffer>(shared_from_this(), pointer, length, options);
 };
 
-std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
-	// TODO: cache translated libraries
-	size_t translatedSize = 0;
-	Iridium::OutputInfo outputInfo;
-	auto translatedData = Iridium::translate(data, length, translatedSize, outputInfo);
-	PrivateLibrary::FunctionInfoMap funcInfoMap;
+static Indium::PrivateLibrary::FunctionInfoMap toFunctionInfoMap(const Iridium::OutputInfo& outputInfo) {
+	Indium::PrivateLibrary::FunctionInfoMap funcInfoMap;
 
 	for (const auto& [name, info]: outputInfo.functionInfos) {
 		auto& funcInfo = funcInfoMap[name];
 
 		switch (info.type) {
 			case Iridium::FunctionType::Fragment:
-				funcInfo.functionType = FunctionType::Fragment;
+				funcInfo.functionType = Indium::FunctionType::Fragment;
 				break;
 			case Iridium::FunctionType::Vertex:
-				funcInfo.functionType = FunctionType::Vertex;
+				funcInfo.functionType = Indium::FunctionType::Vertex;
 				break;
 			case Iridium::FunctionType::Kernel:
-				funcInfo.functionType = FunctionType::Kernel;
+				funcInfo.functionType = Indium::FunctionType::Kernel;
 				break;
 		}
 
@@ -374,9 +371,29 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* d
 		funcInfo.embeddedSamplers.insert(funcInfo.embeddedSamplers.end(), info.embeddedSamplers.begin(), info.embeddedSamplers.end());
 	}
 
-	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, funcInfoMap);
+	return funcInfoMap;
+};
+
+std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* data, size_t length) {
+	// TODO: cache translated libraries
+	size_t translatedSize = 0;
+	Iridium::OutputInfo outputInfo;
+	auto translatedData = Iridium::translate(data, length, translatedSize, outputInfo);
+
+	auto lib = std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(translatedData), translatedSize, toFunctionInfoMap(outputInfo));
 	free(translatedData);
 	return lib;
+};
+
+std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* spirv, size_t spirvLength, const void* reflection, size_t reflectionLength) {
+	Iridium::OutputInfo outputInfo;
+	std::string error;
+
+	if (!Iridium::parseMslcReflection(static_cast<const char*>(reflection), reflectionLength, outputInfo, error)) {
+		throw std::runtime_error(error);
+	}
+
+	return std::make_shared<PrivateLibrary>(shared_from_this(), static_cast<const char*>(spirv), spirvLength, toFunctionInfoMap(outputInfo));
 };
 
 std::shared_ptr<Indium::Texture> Indium::PrivateDevice::newTexture(const TextureDescriptor& descriptor) {

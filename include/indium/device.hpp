@@ -37,6 +37,11 @@ namespace Indium {
 		virtual std::shared_ptr<Buffer> newBuffer(size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Buffer> newBuffer(const void* pointer, size_t length, ResourceOptions options) = 0;
 		virtual std::shared_ptr<Library> newLibrary(const void* data, size_t length) = 0;
+		/**
+		 * A library from a SPIR-V module and the reflection JSON that mslc wrote with it.
+		 * Throws std::runtime_error if the reflection is rejected.
+		 */
+		virtual std::shared_ptr<Library> newLibrary(const void* spirv, size_t spirvLength, const void* reflection, size_t reflectionLength) = 0;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<SamplerState> newSamplerState(const SamplerDescriptor& descriptor) = 0;
 		virtual std::shared_ptr<DepthStencilState> newDepthStencilState(const DepthStencilDescriptor& descriptor) = 0;

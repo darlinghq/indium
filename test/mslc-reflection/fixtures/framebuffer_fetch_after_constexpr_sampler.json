@@ -1,0 +1,18 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "framebuffer_fetch_after_constexpr_sampler",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "Texture", "metal_index": 0, "descriptor": { "set": 1, "binding": 0 }, "texture_access": "Sample", "param_index": 0, "name": "tex" },
+				{ "kind": "Sampler", "descriptor": { "set": 1, "binding": 1 }, "embedded_sampler": 0, "name": "smp" },
+				{ "kind": "InputAttachment", "metal_index": 0, "descriptor": { "set": 1, "binding": 2 }, "input_attachment_index": 0, "scalar": "float", "name": "dst" }
+			],
+			"embedded_samplers": [
+				{ "s_address": "ClampToEdge", "t_address": "ClampToEdge", "r_address": "ClampToEdge", "mag_filter": "Linear", "min_filter": "Linear", "mip_filter": "None", "normalized_coordinates": true, "compare_function": "Never", "anisotropy": 1, "border_color": "TransparentBlack", "lod_min": 0, "lod_max": 65504 }
+			]
+		}
+	]
+}

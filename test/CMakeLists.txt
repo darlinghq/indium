@@ -7,3 +7,5 @@ add_subdirectory(lighting)
 add_subdirectory(texturing)
 add_subdirectory(cubemap)
 add_subdirectory(basic-compute)
+
+add_subdirectory(mslc-reflection)

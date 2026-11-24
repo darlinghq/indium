@@ -1,0 +1,14 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "framebuffer_fetch_parameter",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "InputAttachment", "metal_index": 0, "descriptor": { "set": 1, "binding": 0 }, "input_attachment_index": 0, "scalar": "float", "name": "c" }
+			],
+			"embedded_samplers": []
+		}
+	]
+}

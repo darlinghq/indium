@@ -1,0 +1,16 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "v",
+			"stage": "vertex",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "VertexInput", "metal_index": 0, "location": 0, "name": "p" },
+				{ "kind": "Buffer", "metal_index": 0, "descriptor": { "set": 0, "binding": 0 }, "member": 0, "param_index": 1, "name": "a" },
+				{ "kind": "Buffer", "metal_index": 1, "descriptor": { "set": 0, "binding": 0 }, "member": 1, "param_index": 2, "name": "b" }
+			],
+			"embedded_samplers": []
+		}
+	]
+}

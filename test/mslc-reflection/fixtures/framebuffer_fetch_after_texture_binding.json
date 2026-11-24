@@ -1,0 +1,16 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "framebuffer_fetch_after_texture_binding",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "Texture", "metal_index": 0, "descriptor": { "set": 1, "binding": 0 }, "texture_access": "Sample", "param_index": 0, "name": "tex" },
+				{ "kind": "Sampler", "metal_index": 0, "descriptor": { "set": 1, "binding": 1 }, "param_index": 1, "name": "smp" },
+				{ "kind": "InputAttachment", "metal_index": 0, "descriptor": { "set": 1, "binding": 2 }, "input_attachment_index": 0, "scalar": "float", "name": "dst" }
+			],
+			"embedded_samplers": []
+		}
+	]
+}
