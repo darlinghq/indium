@@ -44,6 +44,8 @@ namespace Indium {
 		std::vector<StageInterfaceField> stageInterface;
 		// see FunctionReflection::gridSizeSpecializationIDs
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
+		// see FunctionReflection::maxTotalThreadsPerThreadgroup
+		size_t maxTotalThreadsPerThreadgroup = 0;
 	};
 
 	class PrivateFunction: public Function {
