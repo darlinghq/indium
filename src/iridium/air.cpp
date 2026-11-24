@@ -9,6 +9,7 @@
 #include <llvm-c/BitReader.h>
 #include <llvm/Config/llvm-config.h>
 #include <algorithm>
+#include <cmath>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -1382,6 +1383,28 @@ static std::vector<std::string_view> splitAirName(std::string_view name) {
 	return parts;
 }
 
+// llvm.copysign.<type>: the first operand with the sign bit of the second, both taken as bits, so that NaNs and
+// zeros keep or take their signs too
+static bool translateCopysign(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	if (name.substr(0, 14) != "llvm.copysign.") {
+		return false;
+	}
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	auto width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+	auto bitsScalar = builder.declareType(Type(Type::IntegerTag {}, width, false));
+	auto bitsType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, bitsScalar)) : bitsScalar;
+	uint64_t signBit = uint64_t(1) << (width - 1);
+	auto bits = [&](unsigned index) {
+		return builder.encodeBitcast(bitsType, llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, index)));
+	};
+	auto magnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, bits(0), integerConstantOfType(builder, bitsType, static_cast<int64_t>(signBit - 1)));
+	auto sign = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, bits(1), integerConstantOfType(builder, bitsType, static_cast<int64_t>(signBit)));
+	resID = builder.encodeBitcast(type, builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, magnitude, sign));
+	return true;
+}
+
 // "f32", "f16", "v3f32", ...
 static bool airTypeTokenIsFloat(std::string_view token) {
 	if (!token.empty() && token[0] == 'v') {
@@ -1428,6 +1451,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			{ "cos", GLSLOpcode::Cos, 1 }, { "tan", GLSLOpcode::Tan, 1 }, { "asin", GLSLOpcode::Asin, 1 },
 			{ "acos", GLSLOpcode::Acos, 1 }, { "atan", GLSLOpcode::Atan, 1 }, { "atan2", GLSLOpcode::Atan2, 2 },
 			{ "sinh", GLSLOpcode::Sinh, 1 }, { "cosh", GLSLOpcode::Cosh, 1 }, { "tanh", GLSLOpcode::Tanh, 1 },
+			{ "asinh", GLSLOpcode::Asinh, 1 }, { "acosh", GLSLOpcode::Acosh, 1 },
 			{ "fabs", GLSLOpcode::FAbs, 1 }, { "floor", GLSLOpcode::Floor, 1 }, { "ceil", GLSLOpcode::Ceil, 1 },
 			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 }, { "round", GLSLOpcode::Round, 1 },
 			{ "trunc", GLSLOpcode::Trunc, 1 }, { "sign", GLSLOpcode::FSign, 1 }, { "fmin", GLSLOpcode::FMin, 2 },
@@ -1459,6 +1483,195 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "dot") {
 			resID = builder.encodeArithBinop(Opcode::Dot, type, operand(0), operand(1));
+			return true;
+		}
+		if (fn == "exp10") {
+			// GLSL.std.450 has no base-10 functions; MSL defines its fast exp10 and log10 like this
+			resID = builder.encodeGLSLOp(GLSLOpcode::Exp2, type, { builder.encodeArithBinop(Opcode::FMul, type, operand(0), floatConstantOfType(builder, type, 3.321928094887362)) });
+			return true;
+		}
+		if (fn == "log10") {
+			resID = builder.encodeArithBinop(Opcode::FMul, type, builder.encodeGLSLOp(GLSLOpcode::Log2, type, { operand(0) }), floatConstantOfType(builder, type, 0.30102999566398120));
+			return true;
+		}
+		if (fn == "sincos") {
+			// the sine is the result; the cosine is stored where the second operand points, as a store would
+			auto pointer = operand(1);
+			auto pointerType = builder.reverseLookupType(builder.lookupResultType(pointer));
+			if (!pointerType || pointerType->backingType != Type::BackingType::Pointer) {
+				throw ImpossibleResultID("sincos's second operand is not a pointer");
+			}
+			bool logical = isLogicalStorageClass(pointerType->pointerStorageClass);
+			LayoutFreeScope layoutFree(logical);
+			auto storePointerType = builder.declareType(Type(Type::PointerTag {}, pointerType->pointerStorageClass, type, 8));
+			if (storePointerType != builder.lookupResultType(pointer)) {
+				if (logical) {
+					pointer = descendToFirstElement(builder, pointer, builder.reverseLookupType(storePointerType)->targetType);
+					if (storePointerType != builder.lookupResultType(pointer)) {
+						throw ImpossibleResultID("sincos stores its cosine into a local object of another type");
+					}
+				} else {
+					pointer = builder.encodeBitcast(storePointerType, pointer);
+					builder.setResultType(pointer, storePointerType);
+				}
+			}
+			auto alignment = logical ? 0 : builder.reverseLookupType(type)->alignment;
+			builder.encodeStore(pointer, builder.encodeGLSLOp(GLSLOpcode::Cos, type, { operand(0) }), alignment);
+			resID = builder.encodeGLSLOp(GLSLOpcode::Sin, type, { operand(0) });
+			return true;
+		}
+
+		auto info = *builder.reverseLookupType(type);
+		bool vector = info.backingType == Type::BackingType::Vector;
+		auto width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+		auto withLanes = [&](ResultID scalar) {
+			return vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, scalar)) : scalar;
+		};
+		auto boolType = withLanes(builder.declareType(Type(Type::BooleanTag {})));
+		auto choose = [&](ResultID condition, ResultID a, ResultID b, ResultID resultType) {
+			return builder.encodeOp(Opcode::Select, resultType, { condition, a, b });
+		};
+
+		if (fn == "ldexp") {
+			// GLSL.std.450's Ldexp is undefined for exponents beyond those of normal numbers, although e.g.
+			// ldexp(0x1p-20f, 129) is a normal number. Multiply by powers of two built from their exponent bits instead.
+			// Half is scaled as float in one multiplication. For float, an exponent beyond the normal range is split
+			// into three of the same sign, after clamping it to where the result is zero or infinite anyway. The
+			// result is rounded once (unless the driver reassociates the multiplications, which Vulkan allows): by a
+			// single multiplication, or for a small result, by a final one by 2^-64 that the others keep normal.
+			if (width != 16 && width != 32) {
+				return false;
+			}
+			auto floatType = withLanes(builder.declareType(Type(Type::FloatTag {}, 32)));
+			auto x = width == 16 ? builder.encodeFConvert(floatType, operand(0)) : operand(0);
+			auto exponentType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(DynamicLLVM::LLVMGetOperand(inst, 1)));
+			auto constant = [&](int64_t value) { return integerConstantOfType(builder, exponentType, value); };
+			auto power = [&](ResultID n) {
+				// 2^n, for -126 <= n <= 127
+				auto bits = builder.encodeArithBinop(Opcode::ShiftLeftLogical, exponentType, builder.encodeArithBinop(Opcode::IAdd, exponentType, n, constant(127)), constant(23));
+				return builder.encodeBitcast(floatType, bits);
+			};
+			auto exponent = operand(1);
+			if (width == 16) {
+				// any half scaled by 2^-126 is rounded to zero, and by 2^127 to infinity
+				auto clamped = builder.encodeGLSLOp(GLSLOpcode::SClamp, exponentType, { exponent, constant(-126), constant(127) });
+				resID = builder.encodeFConvert(type, builder.encodeArithBinop(Opcode::FMul, floatType, x, power(clamped)));
+				return true;
+			}
+			auto clamped = builder.encodeGLSLOp(GLSLOpcode::SClamp, exponentType, { exponent, constant(-378), constant(381) });
+			auto normal = builder.encodeOp(Opcode::LogicalAnd, boolType, {
+				builder.encodeOp(Opcode::SGreaterThanEqual, boolType, { clamped, constant(-126) }),
+				builder.encodeOp(Opcode::SLessThanEqual, boolType, { clamped, constant(127) }),
+			});
+			auto tiny = builder.encodeOp(Opcode::SLessThan, boolType, { clamped, constant(-126) });
+			auto scaled = choose(tiny, builder.encodeArithBinop(Opcode::IAdd, exponentType, clamped, constant(64)), clamped, exponentType);
+			auto first = choose(normal, clamped, builder.encodeArithBinop(Opcode::SDiv, exponentType, scaled, constant(3)), exponentType);
+			auto rest = builder.encodeArithBinop(Opcode::ISub, exponentType, scaled, first);
+			rest = choose(normal, constant(0), rest, exponentType);
+			auto second = builder.encodeArithBinop(Opcode::SDiv, exponentType, rest, constant(2));
+			auto third = builder.encodeArithBinop(Opcode::ISub, exponentType, rest, second);
+			auto last = choose(tiny, constant(-64), constant(0), exponentType);
+			for (auto n: { first, second, third, last }) {
+				x = builder.encodeArithBinop(Opcode::FMul, floatType, x, power(n));
+			}
+			resID = x;
+			return true;
+		}
+
+		if (fn == "nextafter") {
+			// the neighbour of x towards y, decided on the bits, since comparisons may flush subnormals: y if they're
+			// equal or both zeros, a NaN if either is one, from a zero the smallest subnormal with the sign of y, and
+			// otherwise x's bits plus one if y is further from zero on the same side, or minus one
+			auto bitsType = withLanes(builder.declareType(Type(Type::IntegerTag {}, width, false)));
+			auto bitsConstant = [&](uint64_t value) { return integerConstantOfType(builder, bitsType, static_cast<int64_t>(value)); };
+			auto signMask = bitsConstant(uint64_t(1) << (width - 1));
+			auto magnitudeMask = bitsConstant((uint64_t(1) << (width - 1)) - 1);
+			auto infinity = bitsConstant(width == 16 ? 0x7c00 : (width == 32 ? 0x7f800000 : 0x7ff0000000000000));
+			auto x = operand(0), y = operand(1);
+			auto xBits = builder.encodeBitcast(bitsType, x), yBits = builder.encodeBitcast(bitsType, y);
+			auto xMagnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, xBits, magnitudeMask);
+			auto yMagnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, yBits, magnitudeMask);
+			auto ySign = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, yBits, signMask);
+			auto sameSign = builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, xBits, signMask), ySign });
+			auto away = builder.encodeOp(Opcode::LogicalAnd, boolType, { sameSign, builder.encodeOp(Opcode::UGreaterThan, boolType, { yMagnitude, xMagnitude }) });
+			auto one = bitsConstant(1);
+			auto bits = choose(away, builder.encodeArithBinop(Opcode::IAdd, bitsType, xBits, one), builder.encodeArithBinop(Opcode::ISub, bitsType, xBits, one), bitsType);
+			bits = choose(builder.encodeOp(Opcode::IEqual, boolType, { xMagnitude, bitsConstant(0) }), builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, ySign, one), bits, bitsType);
+			auto equal = builder.encodeOp(Opcode::LogicalOr, boolType, {
+				builder.encodeOp(Opcode::IEqual, boolType, { xBits, yBits }),
+				builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, xMagnitude, yMagnitude), bitsConstant(0) }),
+			});
+			bits = choose(equal, yBits, bits, bitsType);
+			bits = choose(builder.encodeOp(Opcode::UGreaterThan, boolType, { yMagnitude, infinity }), yBits, bits, bitsType);
+			bits = choose(builder.encodeOp(Opcode::UGreaterThan, boolType, { xMagnitude, infinity }), xBits, bits, bitsType);
+			resID = builder.encodeBitcast(type, bits);
+			return true;
+		}
+
+		if (fn == "atanh") {
+			// GLSL.std.450's Atanh is undefined at ±1, where atanh has its poles
+			auto x = operand(0);
+			auto pole = builder.encodeOp(Opcode::FOrdEqual, boolType, { builder.encodeGLSLOp(GLSLOpcode::FAbs, type, { x }), floatConstantOfType(builder, type, 1) });
+			auto infinity = choose(builder.encodeOp(Opcode::FOrdGreaterThan, boolType, { x, floatConstantOfType(builder, type, 0) }), floatConstantOfType(builder, type, INFINITY), floatConstantOfType(builder, type, -INFINITY), type);
+			resID = choose(pole, infinity, builder.encodeGLSLOp(GLSLOpcode::Atanh, type, { x }), type);
+			return true;
+		}
+
+		if (fn == "sinpi" || fn == "cospi" || fn == "tanpi") {
+			// x = k + r with k = rint(x) and |r| <= 1/2, both exact: sin(πx) = (-1)^k sin(πr), cos(πx) = (-1)^k sin(π(1/2 - |r|))
+			// and tan(πx) = sin(πr) / sin(π(1/2 - |r|)). Reducing x before multiplying by π keeps the relative error small
+			// near the zeros and poles. The results at the integers and half-integers, zeros, ±1 and infinities, are exact, selected
+			// rather than computed, with the signs IEEE 754 gives sinPi, cosPi and tanPi. Half is computed as float.
+			if (width != 16 && width != 32) {
+				return false;
+			}
+			auto floatType = withLanes(builder.declareType(Type(Type::FloatTag {}, 32)));
+			auto floatBits = withLanes(builder.declareType(Type(Type::IntegerTag {}, 32, false)));
+			auto constant = [&](double value) { return floatConstantOfType(builder, floatType, value); };
+			auto x = width == 16 ? builder.encodeFConvert(floatType, operand(0)) : operand(0);
+			auto k = builder.encodeGLSLOp(GLSLOpcode::RoundEven, floatType, { x });
+			auto r = builder.encodeArithBinop(Opcode::FSub, floatType, x, k);
+			auto absR = builder.encodeGLSLOp(GLSLOpcode::FAbs, floatType, { r });
+			auto halfK = builder.encodeArithBinop(Opcode::FMul, floatType, k, constant(0.5));
+			auto odd = builder.encodeOp(Opcode::FOrdNotEqual, boolType, { builder.encodeGLSLOp(GLSLOpcode::Floor, floatType, { halfK }), halfK });
+			auto integral = builder.encodeOp(Opcode::FOrdEqual, boolType, { r, constant(0) });
+			// at the half-integers k is even, and r is ±1/2
+			auto halfIntegral = builder.encodeOp(Opcode::FOrdEqual, boolType, { absR, constant(0.5) });
+			auto positive = builder.encodeOp(Opcode::FOrdGreaterThan, boolType, { r, constant(0) });
+			// sin(a) for |a| <= π/2. Vulkan bounds the error of Sin absolutely, and some drivers' Sin is 0 for
+			// arguments close to it, so below 1/8 a Taylor polynomial gives sin(a) to well within an ulp instead.
+			auto sine = [&](ResultID factor) {
+				auto a = builder.encodeArithBinop(Opcode::FMul, floatType, constant(3.141592653589793), factor);
+				auto square = builder.encodeArithBinop(Opcode::FMul, floatType, a, a);
+				auto series = builder.encodeArithBinop(Opcode::FAdd, floatType, constant(-1.0 / 6), builder.encodeArithBinop(Opcode::FMul, floatType, square, constant(1.0 / 120)));
+				auto small = builder.encodeArithBinop(Opcode::FAdd, floatType, a, builder.encodeArithBinop(Opcode::FMul, floatType, builder.encodeArithBinop(Opcode::FMul, floatType, a, square), series));
+				auto isSmall = builder.encodeOp(Opcode::FOrdLessThan, boolType, { builder.encodeGLSLOp(GLSLOpcode::FAbs, floatType, { a }), constant(0.125) });
+				return choose(isSmall, small, builder.encodeGLSLOp(GLSLOpcode::Sin, floatType, { a }), floatType);
+			};
+			auto sinR = sine(r);
+			auto cosR = sine(builder.encodeArithBinop(Opcode::FSub, floatType, constant(0.5), absR));
+			auto negateIfOdd = [&](ResultID value) {
+				return choose(odd, builder.encodeOp(Opcode::FNegate, floatType, { value }), value, floatType);
+			};
+			// a zero with the sign of x, from its sign bit, since Vulkan doesn't keep the signs of zeros in arithmetic
+			auto signMask = integerConstantOfType(builder, floatBits, 0x80000000);
+			auto signOfX = builder.encodeArithBinop(Opcode::BitwiseAnd, floatBits, builder.encodeBitcast(floatBits, x), signMask);
+
+			if (fn == "sinpi") {
+				resID = choose(halfIntegral, negateIfOdd(choose(positive, constant(1), constant(-1), floatType)), negateIfOdd(sinR), floatType);
+				resID = choose(integral, builder.encodeBitcast(floatType, signOfX), resID, floatType);
+			} else if (fn == "cospi") {
+				resID = choose(halfIntegral, constant(0), negateIfOdd(cosR), floatType);
+				resID = choose(integral, negateIfOdd(constant(1)), resID, floatType);
+			} else {
+				resID = choose(halfIntegral, choose(positive, constant(INFINITY), constant(-INFINITY), floatType), builder.encodeArithBinop(Opcode::FDiv, floatType, sinR, cosR), floatType);
+				// tan(πn) is sin(πn) / cos(πn): a zero with the sign of x, flipped for odd n
+				auto zeroBits = choose(odd, builder.encodeArithBinop(Opcode::BitwiseXor, floatBits, signOfX, signMask), signOfX, floatBits);
+				resID = choose(integral, builder.encodeBitcast(floatType, zeroBits), resID, floatType);
+			}
+			if (width == 16) {
+				resID = builder.encodeFConvert(type, resID);
+			}
 			return true;
 		}
 		if (fn == "dfdx" || fn == "dfdy" || fn == "fwidth") {
@@ -3927,6 +4140,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					}, [&](LLVMValueRef sampler) {
 						return readSamplerCalls.count(sampler) != 0;
 					}, resID)) {
+						// handled
+					} else if (translateCopysign(builder, inst, name, type, resID)) {
 						// handled
 					} else if (isFloatWidthConversion(name)) {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
