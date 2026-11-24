@@ -1369,6 +1369,76 @@ static Iridium::SPIRV::ResultID encodeUnsignedResultOp(Iridium::SPIRV::Builder& 
 	return unsignedType == typeID ? result : builder.encodeBitcast(typeID, result);
 }
 
+// Whether `value` is a bitcast to a vector of more than four components, which Vulkan has no type for. Such a
+// vector, like the `<12 x i8>` view of a `<3 x i32>`, is typically only there to have its elements extracted, so the
+// bitcast is not translated and each extractelement takes its bits from the bitcast's operand (see
+// encodeWideVectorElement).
+static bool isWideVectorBitcast(LLVMValueRef value) {
+	if (DynamicLLVM::LLVMGetValueKind(value) != LLVMInstructionValueKind || DynamicLLVM::LLVMGetInstructionOpcode(value) != LLVMBitCast) {
+		return false;
+	}
+	auto type = DynamicLLVM::LLVMTypeOf(value);
+	return DynamicLLVM::LLVMGetTypeKind(type) == LLVMVectorTypeKind && DynamicLLVM::LLVMGetVectorSize(type) > 4;
+}
+
+// Element `index` of the wide vector that the bitcast `bitcast` produces (see isWideVectorBitcast), of type `type`,
+// taken from the bits of the bitcast's operand: a scalar or vector whose elements are a whole multiple of the
+// result's elements wide. Elements are little-endian, so element i of a <12 x i8> view of a <3 x i32> is byte
+// i % 4 of element i / 4.
+static Iridium::SPIRV::ResultID encodeWideVectorElement(Iridium::SPIRV::Builder& builder, LLVMValueRef bitcast, LLVMValueRef index, Iridium::SPIRV::ResultID type) {
+	using namespace Iridium::SPIRV;
+
+	auto source = DynamicLLVM::LLVMGetOperand(bitcast, 0);
+	auto sourceLLVMType = DynamicLLVM::LLVMTypeOf(source);
+	bool sourceIsVector = DynamicLLVM::LLVMGetTypeKind(sourceLLVMType) == LLVMVectorTypeKind;
+	auto sourceElementType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, sourceIsVector ? DynamicLLVM::LLVMGetElementType(sourceLLVMType) : sourceLLVMType));
+	auto elementType = *builder.reverseLookupType(type);
+	auto sourceWidth = sourceElementType.scalarWidth;
+	auto width = elementType.scalarWidth;
+	bool scalars = (sourceElementType.backingType == Type::BackingType::Integer || sourceElementType.backingType == Type::BackingType::FloatingPoint)
+		&& (elementType.backingType == Type::BackingType::Integer || elementType.backingType == Type::BackingType::FloatingPoint);
+	if (!scalars || width == 0 || sourceWidth % width != 0) {
+		throw ImpossibleResultID("bitcast to a vector of more than 4 components from elements that are not a multiple of its elements");
+	}
+	auto ratio = sourceWidth / width;
+	auto sourceID = llvmValueToResultID(builder, source);
+	auto sourceElementTypeID = builder.declareType(sourceElementType);
+	auto unsignedSourceType = builder.declareType(Type(Type::IntegerTag {}, sourceWidth, false));
+	auto unsignedType = builder.declareType(Type(Type::IntegerTag {}, width, false));
+
+	// the source element and the bit offset of the result in it
+	ResultID element;
+	ResultID shift;
+	if (DynamicLLVM::LLVMIsAConstantInt(index)) {
+		auto position = DynamicLLVM::LLVMConstIntGetZExtValue(index);
+		if (position >= DynamicLLVM::LLVMGetVectorSize(DynamicLLVM::LLVMTypeOf(bitcast))) {
+			// an index past the end gives poison
+			return builder.declareUndefinedValue(type);
+		}
+		element = sourceIsVector ? builder.encodeCompositeExtract(sourceElementTypeID, sourceID, { static_cast<uint32_t>(position / ratio) }) : sourceID;
+		shift = builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>((position % ratio) * width));
+	} else {
+		auto indexID = llvmValueToResultID(builder, index);
+		ResultID indexType;
+		if (DynamicLLVM::LLVMGetIntTypeWidth(DynamicLLVM::LLVMTypeOf(index)) == 1) {
+			// an i1 index is a SPIR-V boolean
+			indexType = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+			indexID = builder.encodeOp(Opcode::Select, indexType, { indexID, integerConstantOfType(builder, indexType, 1), integerConstantOfType(builder, indexType, 0) });
+		} else {
+			indexType = integerTypeWithSign(builder, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(index)), false);
+			indexID = builder.encodeBitcast(indexType, indexID);
+		}
+		auto ratioID = integerConstantOfType(builder, indexType, ratio);
+		element = sourceIsVector ? builder.encodeVectorExtractDynamic(sourceElementTypeID, sourceID, builder.encodeArithBinop(Opcode::UDiv, indexType, indexID, ratioID)) : sourceID;
+		shift = builder.encodeArithBinop(Opcode::IMul, indexType, builder.encodeArithBinop(Opcode::UMod, indexType, indexID, ratioID), integerConstantOfType(builder, indexType, width));
+	}
+
+	auto bits = builder.encodeBitcast(unsignedSourceType, element);
+	bits = builder.encodeArithBinop(Opcode::ShiftRightLogical, unsignedSourceType, bits, shift);
+	auto result = builder.encodeUConvert(unsignedType, bits);
+	return unsignedType == type ? result : builder.encodeBitcast(type, result);
+}
+
 static std::vector<std::string_view> splitAirName(std::string_view name) {
 	std::vector<std::string_view> parts;
 	while (true) {
@@ -4205,7 +4275,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					auto resID = builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
+					auto resID = isWideVectorBitcast(vector)
+						? encodeWideVectorElement(builder, vector, index, type)
+						: builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
@@ -4362,6 +4434,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMBitCast: {
+					if (isWideVectorBitcast(inst)) {
+						for (auto use = DynamicLLVM::LLVMGetFirstUse(inst); use; use = DynamicLLVM::LLVMGetNextUse(use)) {
+							auto user = DynamicLLVM::LLVMGetUser(use);
+							if (DynamicLLVM::LLVMGetValueKind(user) != LLVMInstructionValueKind || DynamicLLVM::LLVMGetInstructionOpcode(user) != LLVMExtractElement) {
+								throw ImpossibleResultID("bitcast to a vector of more than 4 components that is used other than by extractelement");
+							}
+						}
+						break;
+					}
+
 					auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 					auto argID = llvmValueToResultID(builder, arg);
 					auto origType = builder.lookupResultType(argID);
