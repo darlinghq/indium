@@ -1,7 +1,7 @@
 ; Copyright (C) 2026 Darling Developers
 ;
 ; Hand-written AIR for the barrier-semantics test: threadgroup and simdgroup barriers and fences that order
-; no memory, or only memory Vulkan doesn't have, and fences. Thread t stores 1, 2, ... to
+; no memory, or only memory Vulkan doesn't have, and fences of every scope. Thread t stores 1, 2, ... to
 ; out[t * n + k] between them. See README.md for how this becomes barrier-semantics.metallib.
 
 source_filename = "barrier-semantics"
@@ -91,6 +91,40 @@ entry:
   ret void
 }
 
+define void @fence_scopes(ptr addrspace(1) noalias nocapture %out, i32 %t, i32 %lane, i32 %width) local_unnamed_addr #0 {
+entry:
+  %base = mul i32 %t, 6
+  %i0 = add i32 %base, 0
+  %x0 = zext i32 %i0 to i64
+  %p0 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x0
+  store i32 1, ptr addrspace(1) %p0, align 4
+  call void @air.atomic.fence(i32 3, i32 5, i32 0) #1
+  %i1 = add i32 %base, 1
+  %x1 = zext i32 %i1 to i64
+  %p1 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x1
+  store i32 2, ptr addrspace(1) %p1, align 4
+  call void @air.atomic.fence(i32 5, i32 0, i32 4) #1
+  %i2 = add i32 %base, 2
+  %x2 = zext i32 %i2 to i64
+  %p2 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x2
+  store i32 3, ptr addrspace(1) %p2, align 4
+  call void @air.atomic.fence(i32 2, i32 4, i32 4) #1
+  %i3 = add i32 %base, 3
+  %x3 = zext i32 %i3 to i64
+  %p3 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x3
+  store i32 4, ptr addrspace(1) %p3, align 4
+  call void @air.atomic.fence(i32 1, i32 5, i32 4) #1
+  %i4 = add i32 %base, 4
+  %x4 = zext i32 %i4 to i64
+  %p4 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x4
+  store i32 5, ptr addrspace(1) %p4, align 4
+  %i5 = add i32 %base, 5
+  %x5 = zext i32 %i5 to i64
+  %p5 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x5
+  store i32 %width, ptr addrspace(1) %p5, align 4
+  ret void
+}
+
 declare void @air.wg.barrier(i32, i32) local_unnamed_addr #1
 declare void @air.simdgroup.barrier(i32, i32) local_unnamed_addr #1
 declare void @air.atomic.fence(i32, i32, i32) local_unnamed_addr #1
@@ -101,7 +135,7 @@ attributes #1 = { convergent nounwind }
 !llvm.module.flags = !{!0}
 !air.version = !{!1}
 !air.language_version = !{!2}
-!air.kernel = !{!100, !101}
+!air.kernel = !{!100, !101, !102}
 
 !0 = !{i32 1, !"wchar_size", i32 4}
 !1 = !{i32 2, i32 4, i32 0}
@@ -114,4 +148,5 @@ attributes #1 = { convergent nounwind }
 !8 = !{i32 3, !"air.threads_per_simdgroup", !"air.arg_type_name", !"uint", !"air.arg_name", !"width"}
 !100 = !{ptr @barriers, !3, !4}
 !101 = !{ptr @fences, !3, !4}
+!102 = !{ptr @fence_scopes, !3, !4}
 

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Darling Developers
 //
 // Runs the kernels in barrier-semantics.metallib, which store between threadgroup and simdgroup barriers and
-// fences that order no memory or only memory Vulkan doesn't have, over one threadgroup of 64 threads, and checks
-// that every store happened.
+// fences that order no memory or only memory Vulkan doesn't have, and fences of every scope, over one
+// threadgroup of 64 threads, and checks that every store happened.
 // Prints SKIP and exits 0 without a Vulkan device.
 
 #include "barrier-semantics.h"
@@ -116,6 +116,7 @@ int main() {
 			};
 			check(device.get(), queue.get(), library.get(), "barriers", 8, "threadgroup and simdgroup barriers of no memory, of imageblock memory, of threadgroup and device memory", stores(7));
 			check(device.get(), queue.get(), library.get(), "fences", 7, "fences of no memory, of imageblock memory, relaxed, of device and of threadgroup memory", stores(6));
+			check(device.get(), queue.get(), library.get(), "fence_scopes", 6, "fences of the thread and of the simdgroup", stores(5));
 		}
 
 		keepPollingDevice = false;

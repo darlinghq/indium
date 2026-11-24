@@ -3884,16 +3884,21 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("atomic fence with a flags, order or scope that is not constant");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// AIR's scopes: thread 0, threadgroup 1, device 2, simdgroup 4; SPIR-V's: Device 1, Workgroup 2, Subgroup 3
 						auto airScope = DynamicLLVM::LLVMConstIntGetZExtValue(scope);
-						if (airScope != 1 && airScope != 2) {
-							throw ImpossibleResultID("atomic fence with a scope other than threadgroup or device");
+						if (airScope != 0 && airScope != 1 && airScope != 2 && airScope != 4) {
+							throw ImpossibleResultID("atomic fence with an unknown scope " + std::to_string(airScope));
 						}
-						// a relaxed fence orders nothing, and neither does one of no memory Vulkan has
+						// a relaxed fence orders nothing, and neither does one of no memory Vulkan has or one for the thread alone,
+						// whose accesses are in order anyway
 						uint32_t semantics = barrierSemantics(memFlags);
-						if (DynamicLLVM::LLVMConstIntGetZExtValue(order) != 0 && semantics != 0) {
-							// SPIR-V scopes: Device 1, Workgroup 2
+						if (DynamicLLVM::LLVMConstIntGetZExtValue(order) != 0 && airScope != 0 && semantics != 0) {
+							if (airScope == 4) {
+								// Vulkan allows the subgroup scope with subgroup operations only
+								builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+							}
 							builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
-								builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
+								builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : (airScope == 1 ? 2 : 3)),
 								builder.declareConstantScalar<uint32_t>(semantics),
 							});
 						}
@@ -3906,7 +3911,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
 						uint32_t semantics = barrierSemantics(memFlags);
-						// scope: Subgroup 3
+						// scope: Subgroup 3, which Vulkan allows with subgroup operations only
+						builder.requireCapability(SPIRV::Capability::GroupNonUniform);
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(3),
 							builder.declareConstantScalar<uint32_t>(3),
