@@ -52,6 +52,12 @@
 	constexpr _enumClass operator|(const _enumClass& left, const _enumClass& right) { \
 		return static_cast<_enumClass>(static_cast<std::underlying_type_t<_enumClass>>(left) | static_cast<std::underlying_type_t<_enumClass>>(right)); \
 	}; \
+	constexpr _enumClass& operator&=(_enumClass& left, const _enumClass& right) { \
+		return left = left & right; \
+	}; \
+	constexpr _enumClass& operator|=(_enumClass& left, const _enumClass& right) { \
+		return left = left | right; \
+	}; \
 	constexpr bool operator!(const _enumClass& value) { \
 		return !static_cast<std::underlying_type_t<_enumClass>>(value); \
 	};
