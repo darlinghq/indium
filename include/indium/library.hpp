@@ -319,6 +319,13 @@ namespace Indium {
 		 * SpecIds distinct from each other and from the ids above, and not 0 to 2.
 		 */
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
+
+		/**
+		 * For a kernel only: the most threads a threadgroup of it may have, as its source declares it (MSL's
+		 * [[max_total_threads_per_threadgroup(N)]]), or 0 when it declares none. A compute pipeline of the
+		 * function allows no more than this.
+		 */
+		size_t maxTotalThreadsPerThreadgroup = 0;
 	};
 
 	/**

@@ -46,6 +46,8 @@ namespace Indium {
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
 		// see FunctionReflection::threadgroupArguments
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
+		// see FunctionReflection::maxTotalThreadsPerThreadgroup
+		size_t maxTotalThreadsPerThreadgroup = 0;
 	};
 
 	class PrivateFunction: public Function {

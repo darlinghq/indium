@@ -51,6 +51,8 @@ namespace Indium {
 		std::shared_ptr<LinkedFunctions> linkedFunctions;
 		bool supportAddingBinaryFunctions = false; // XXX: not sure what the actual default is
 		std::vector<std::shared_ptr<BinaryArchive>> binaryArchives;
+		// the size every dispatch of the pipeline must use; zero in every dimension requires none
+		Size requiredThreadsPerThreadgroup { 0, 0, 0 };
 
 		void reset() {
 			*this = ComputePipelineDescriptor();
@@ -73,5 +75,6 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY(size_t, t,T,hreadExecutionWidth) = 0;
 		INDIUM_PROPERTY_READONLY(size_t, s,S,taticThreadgroupMemoryLength) = 0;
 		INDIUM_PROPERTY_READONLY(bool, s,S,upportIndirectCommandBuffers) = false;
+		INDIUM_PROPERTY_READONLY(Size, r,R,equiredThreadsPerThreadgroup) = Size { 0, 0, 0 };
 	};
 };
