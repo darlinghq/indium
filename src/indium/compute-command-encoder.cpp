@@ -130,9 +130,8 @@ void Indium::PrivateComputeCommandEncoder::setTextures(const std::vector<std::sh
 };
 
 void Indium::PrivateComputeCommandEncoder::setThreadgroupMemoryLength(size_t length, size_t index) {
-	// The length sizes the kernel argument in the threadgroup address space at `index`. The kernels that exist
-	// here keep their threadgroup memory in variables of their own (a threadgroup argument is not lowered by the
-	// shader compilers yet), so there is no argument to size; the length is recorded and nothing reads it.
+	// The length sizes the kernel's threadgroup memory argument at `index`, in the pipelines of the dispatches
+	// that follow (see PrivateComputePipelineState::createPipeline()).
 	_threadgroupMemoryLengths[index] = length;
 };
 
@@ -143,7 +142,7 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize) {
 	auto buf = _privateCommandBuffer.lock();
 
-	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, gridSize);
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths, gridSize);
 	_savedPipelines.push_back(pipeline);
 
 	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -171,7 +170,7 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 
 	auto buf = _privateCommandBuffer.lock();
 
-	auto pipeline = _pso->createPipeline(threadsPerThreadgroup);
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths);
 	_savedPipelines.push_back(pipeline);
 
 	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
