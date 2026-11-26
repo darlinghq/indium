@@ -57,8 +57,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	if (!firstTexture) {
 		firstTexture = depthStencilTexture;
 	}
-	if (!firstTexture) {
-		throw std::runtime_error("Render pass requires an attachment");
+	if (!firstTexture && (descriptor.renderTargetWidth == 0 || descriptor.renderTargetHeight == 0)) {
+		return;
 	}
 	auto resolvesColor = [](const auto& color) {
 		return color.texture && (color.storeAction == StoreAction::MultisampleResolve || color.storeAction == StoreAction::StoreAndMultisampleResolve);
@@ -288,14 +288,19 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		}
 	}
 
+	size_t rtWidth = firstTexture ? firstTexture->width() : descriptor.renderTargetWidth;
+	size_t rtHeight = firstTexture ? firstTexture->height() : descriptor.renderTargetHeight;
+	size_t rtLayers = firstTexture ? std::dynamic_pointer_cast<PrivateTexture>(firstTexture)->vulkanArrayLength()
+		: std::max<size_t>(descriptor.renderTargetArrayLength, 1);
+
 	VkFramebufferCreateInfo framebufferInfo {};
 	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 	framebufferInfo.renderPass = _renderPass;
 	framebufferInfo.attachmentCount = framebufferAttachments.size();
 	framebufferInfo.pAttachments = framebufferAttachments.data();
-	framebufferInfo.width = firstTexture->width();
-	framebufferInfo.height = firstTexture->height();
-	framebufferInfo.layers = std::dynamic_pointer_cast<PrivateTexture>(firstTexture)->vulkanArrayLength();
+	framebufferInfo.width = std::max<size_t>(rtWidth, 1);
+	framebufferInfo.height = std::max<size_t>(rtHeight, 1);
+	framebufferInfo.layers = rtLayers;
 	if (DynamicVK::vkCreateFramebuffer(vkDevice, &framebufferInfo, nullptr, &_framebuffer) != VK_SUCCESS) {
 		// TODO
 		abort();
@@ -305,8 +310,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassBeginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 	renderPassBeginInfo.renderPass = _renderPass;
 	renderPassBeginInfo.framebuffer = _framebuffer;
-	renderPassBeginInfo.renderArea.extent.width = firstTexture->width();
-	renderPassBeginInfo.renderArea.extent.height = firstTexture->height();
+	renderPassBeginInfo.renderArea.extent.width = rtWidth;
+	renderPassBeginInfo.renderArea.extent.height = rtHeight;
 	renderPassBeginInfo.clearValueCount = clearValues.size();
 	renderPassBeginInfo.pClearValues = clearValues.data();
 	// Vulkan cannot tell the vertex and fragment stages apart at the edges of a pass, so both start samples are taken
@@ -321,8 +326,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		_visibilityResults = std::make_unique<VisibilityResults>(_privateDevice, visibilityBuffer);
 	}
 
-	_defaultWidth = firstTexture->width();
-	_defaultHeight = firstTexture->height();
+	_defaultWidth = rtWidth;
+	_defaultHeight = rtHeight;
 	applyDefaultState();
 };
 
@@ -367,6 +372,7 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 };
 
 void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
 	if (_privatePSO) {
@@ -383,16 +389,19 @@ void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shar
 };
 
 void Indium::PrivateRenderCommandEncoder::setFrontFacingWinding(Winding frontFaceWinding) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdSetFrontFace(buf->commandBuffer(), windingToVkFrontFace(frontFaceWinding));
 };
 
 void Indium::PrivateRenderCommandEncoder::setCullMode(CullMode cullMode) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdSetCullMode(buf->commandBuffer(), cullModeToVkCullMode(cullMode));
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float slopeScale, float clamp) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	auto vkCmdBuf = buf->commandBuffer();
 	DynamicVK::vkCmdSetDepthBiasEnable(vkCmdBuf, true);
@@ -400,6 +409,7 @@ void Indium::PrivateRenderCommandEncoder::setDepthBias(float depthBias, float sl
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthClipMode(DepthClipMode depthClipMode) {
+	if (!_renderPass) return;
 	// takes effect with the pipeline bound by the next draw
 	_depthClipMode = depthClipMode;
 };
@@ -409,6 +419,7 @@ void Indium::PrivateRenderCommandEncoder::setViewport(const Viewport& viewport) 
 };
 
 void Indium::PrivateRenderCommandEncoder::setViewports(const Viewport* viewports, size_t count) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	std::vector<VkViewport> tmp;
 	for (size_t i = 0; i < count; ++i) {
@@ -443,6 +454,7 @@ void Indium::PrivateRenderCommandEncoder::setScissorRect(const ScissorRect& scis
 };
 
 void Indium::PrivateRenderCommandEncoder::setScissorRects(const ScissorRect* scissorRects, size_t count) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	std::vector<VkRect2D> tmp;
 	for (size_t i = 0; i < count; ++i) {
@@ -462,6 +474,7 @@ void Indium::PrivateRenderCommandEncoder::setScissorRects(const std::vector<Scis
 };
 
 void Indium::PrivateRenderCommandEncoder::setBlendColor(float red, float green, float blue, float alpha) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	const float tmp[4] = { red, green, blue, alpha };
 	DynamicVK::vkCmdSetBlendConstants(buf->commandBuffer(), tmp);
@@ -620,6 +633,7 @@ void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBu
 };
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, size_t vertexStart, size_t vertexCount, size_t instanceCount, size_t baseInstance) {
+	if (!_renderPass) return;
 	if (!_privatePSO) {
 		return;
 	}
@@ -647,6 +661,7 @@ static_assert(sizeof(VkDrawIndirectCommand) == 4 * sizeof(uint32_t), "indirect d
 static_assert(sizeof(VkDrawIndexedIndirectCommand) == 5 * sizeof(uint32_t), "indexed indirect draw arguments are five 32-bit values");
 
 void Indium::PrivateRenderCommandEncoder::drawPrimitives(PrimitiveType primitiveType, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) {
+	if (!_renderPass) return;
 	if (!_privatePSO || !indirectArgumentsFit(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndirectCommand))) {
 		return;
 	}
@@ -839,6 +854,13 @@ void Indium::PrivateRenderCommandEncoder::resolveLateColorAttachments(VkCommandB
 
 void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	auto buf = _privateCommandBuffer.lock();
+	if (!_renderPass) {
+		if (!_tracked) {
+			buf->endUntrackedEncoder();
+		}
+		buf->endEncoderSegment({}, {}, {});
+		return;
+	}
 	if (_visibilityResults) {
 		_visibilityResults->end(buf->commandBuffer());
 	}
@@ -964,6 +986,7 @@ void Indium::PrivateRenderCommandEncoder::setFragmentTextures(std::vector<std::s
 };
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, size_t indexCount, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, size_t instanceCount, int64_t baseVertex, size_t baseInstance) {
+	if (!_renderPass) return;
 	if (!_privatePSO) {
 		return;
 	}
@@ -999,6 +1022,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 };
 
 void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType primitiveType, IndexType indexType, const std::shared_ptr<Buffer>& indexBuffer, size_t indexBufferOffset, const std::shared_ptr<Buffer>& indirectBuffer, size_t indirectBufferOffset) {
+	if (!_renderPass) return;
 	if (!_privatePSO || !indexBuffer || !indirectArgumentsFit(indirectBuffer, indirectBufferOffset, sizeof(VkDrawIndexedIndirectCommand))) {
 		return;
 	}
@@ -1024,6 +1048,7 @@ void Indium::PrivateRenderCommandEncoder::drawIndexedPrimitives(PrimitiveType pr
 };
 
 void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared_ptr<DepthStencilState>& state) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	auto privateState = std::dynamic_pointer_cast<PrivateDepthStencilState>(state);
 	auto& desc = privateState->descriptor();
@@ -1069,22 +1094,26 @@ void Indium::PrivateRenderCommandEncoder::setDepthStencilState(const std::shared
 };
 
 void Indium::PrivateRenderCommandEncoder::setTriangleFillMode(TriangleFillMode triangleFillMode) {
+	if (!_renderPass) return;
 	// takes effect with the pipeline bound by the next draw
 	_triangleFillMode = triangleFillMode;
 };
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t value) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_AND_BACK, value);
 };
 
 void Indium::PrivateRenderCommandEncoder::setStencilReferenceValue(uint32_t front, uint32_t back) {
+	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
 	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_FRONT_BIT, front);
 	DynamicVK::vkCmdSetStencilReference(buf->commandBuffer(), VK_STENCIL_FACE_BACK_BIT, back);
 };
 
 void Indium::PrivateRenderCommandEncoder::setVisibilityResultMode(VisibilityResultMode mode, size_t offset) {
+	if (!_renderPass) return;
 	// without a visibility result buffer there is nowhere to write the results to
 	if (_visibilityResults) {
 		_visibilityResults->setMode(_privateCommandBuffer.lock()->commandBuffer(), mode, offset);
@@ -1132,17 +1161,20 @@ void Indium::PrivateRenderCommandEncoder::useResources(const std::vector<std::sh
 };
 
 void Indium::PrivateRenderCommandEncoder::updateFence(const std::shared_ptr<Fence>& fence, RenderStages after) {
+	if (!_renderPass) return;
 	// see checkFence(): nothing to record, and the stages cannot make it cheaper
 	checkFence(fence, _privateDevice);
 };
 
 void Indium::PrivateRenderCommandEncoder::waitForFence(const std::shared_ptr<Fence>& fence, RenderStages before) {
+	if (!_renderPass) return;
 	checkFence(fence, _privateDevice);
 	// the barrier cannot be recorded inside the pass: see orderPass()
 	_waitsForFence = true;
 };
 
 void Indium::PrivateRenderCommandEncoder::memoryBarrier(BarrierScope scope, RenderStages after, RenderStages before) {
+	if (!_renderPass) return;
 	constexpr size_t knownScope = static_cast<size_t>(BarrierScope::Buffers | BarrierScope::Textures | BarrierScope::RenderTargets);
 	constexpr size_t supportedStages = static_cast<size_t>(RenderStages::Vertex | RenderStages::Fragment);
 	if (!scope || (static_cast<size_t>(scope) & ~knownScope)) {
@@ -1218,6 +1250,7 @@ void Indium::PrivateRenderCommandEncoder::useHeaps(const std::vector<std::shared
 };
 
 void Indium::PrivateRenderCommandEncoder::sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) {
+	if (!_renderPass) return;
 	// Draw boundary sampling is not offered (Device::supportsCounterSampling()): a query cannot be reset inside a
 	// render pass, so there is nothing to record here.
 };
