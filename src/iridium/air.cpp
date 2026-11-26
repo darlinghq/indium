@@ -2043,7 +2043,8 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 	using namespace Iridium::SPIRV;
 
 	bool compare = name.substr(0, 25) == "air.sample_compare_depth_";
-	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare;
+	bool sampleDepth = name.substr(0, 17) == "air.sample_depth_";
+	bool sample = name.substr(0, 19) == "air.sample_texture_" || compare || sampleDepth;
 	// the multisample depth texture is read like a color one, with a constant in front of the coordinates
 	bool readDepthMultisample = name.substr(0, 21) == "air.read_depth_2d_ms.";
 	bool read = name.substr(0, 17) == "air.read_texture_" || name.substr(0, 20) == "air.read_depth_2d_ms";
@@ -2268,13 +2269,12 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		// (not for cube textures), a flag that selects an explicit LOD, and that LOD.
 		bool cube = imageType.imageDimensionality == Dim::eCube;
 		unsigned lodFlagIndex = compare ? (cube ? 5 : 7) : (cube ? 3 : 5) + layerOperands;
-		auto offset = cube ? nullptr : argument(lodFlagIndex - 1);
-		auto lodFlag = argument(lodFlagIndex);
-		if (!DynamicLLVM::LLVMIsAConstantInt(lodFlag)) {
-			throw ImpossibleResultID("texture sample with a non-constant LOD mode");
+		if (sampleDepth && lodFlagIndex > 3 && (lodFlagIndex >= argumentCount || !DynamicLLVM::LLVMIsAConstantInt(argument(lodFlagIndex)))) {
+			--lodFlagIndex;
 		}
-		// implicit LODs exist only in fragment functions
-		bool givenLod = DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0;
+		auto offset = cube ? nullptr : argument(lodFlagIndex - 1);
+		auto lodFlag = lodFlagIndex < argumentCount ? argument(lodFlagIndex) : nullptr;
+		bool givenLod = (lodFlag && DynamicLLVM::LLVMIsAConstantInt(lodFlag)) ? (DynamicLLVM::LLVMConstIntGetZExtValue(lodFlag) != 0) : false;
 		bool explicitLod = givenLod || stage != Iridium::FunctionType::Fragment;
 		bool hasOffset = offset && !DynamicLLVM::LLVMIsNull(offset);
 		bool constantOffset = true;
@@ -2332,6 +2332,10 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			return true;
 		}
 		value = builder.encodeOp(explicitSample ? Opcode::ImageSampleExplicitLod : Opcode::ImageSampleImplicitLod, texelType, arguments);
+		if (sampleDepth) {
+			finish(builder.encodeCompositeExtract(valueTypeID, value, { 0 }));
+			return true;
+		}
 	} else if (imageType.imageIsMultisampled) {
 		// read(coordinates, [layer,] sample): a fetch of one sample, which has no level
 		if (!read || storage) {
@@ -4032,6 +4036,54 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					if (name.substr(0, 14) == "llvm.lifetime.") {
 						// the lifetime markers of local variables carry nothing SPIR-V needs
 						break;
+					}
+
+					if (name.substr(0, 12) == "llvm.memcpy.") {
+						auto llDst = DynamicLLVM::LLVMGetOperand(inst, 0);
+						auto llSrc = DynamicLLVM::LLVMGetOperand(inst, 1);
+						auto llLen = DynamicLLVM::LLVMGetOperand(inst, 2);
+						if (!DynamicLLVM::LLVMIsAConstantInt(llLen)) {
+							throw std::runtime_error("Unsupported non-constant llvm.memcpy length");
+						}
+						uint64_t bytes = DynamicLLVM::LLVMConstIntGetZExtValue(llLen);
+						if (bytes == 0) {
+							break;
+						}
+						auto dstID = llvmValueToResultID(builder, llDst);
+						auto srcID = llvmValueToResultID(builder, llSrc);
+						auto dstTypeOpt = builder.reverseLookupType(builder.lookupResultType(dstID));
+						auto srcTypeOpt = builder.reverseLookupType(builder.lookupResultType(srcID));
+						if (!dstTypeOpt || !srcTypeOpt) {
+							throw ImpossibleResultID("llvm.memcpy pointer operand has no recorded type");
+						}
+						auto dstSC = dstTypeOpt->pointerStorageClass;
+						auto srcSC = srcTypeOpt->pointerStorageClass;
+						if (!isLogicalStorageClass(dstSC) && !isLogicalStorageClass(srcSC) && (bytes % 4) == 0) {
+							auto u32Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 32, false));
+							auto dPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, dstSC, u32Type, 8));
+							auto sPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, srcSC, u32Type, 8));
+							if (builder.lookupResultType(dstID) != dPtrType) {
+								dstID = builder.encodeBitcast(dPtrType, dstID);
+								builder.setResultType(dstID, dPtrType);
+							}
+							if (builder.lookupResultType(srcID) != sPtrType) {
+								srcID = builder.encodeBitcast(sPtrType, srcID);
+								builder.setResultType(srcID, sPtrType);
+							}
+							for (uint64_t idx = 0; idx < bytes / 4; ++idx) {
+								auto sPtr = idx == 0 ? srcID : builder.encodeAccessChain(sPtrType, srcID, { builder.declareConstantScalar<int32_t>(idx) }, true);
+								auto dPtr = idx == 0 ? dstID : builder.encodeAccessChain(dPtrType, dstID, { builder.declareConstantScalar<int32_t>(idx) }, true);
+								auto val = builder.encodeLoad(u32Type, sPtr, 4);
+								builder.encodeStore(dPtr, val, 4);
+							}
+							break;
+						}
+						if (dstTypeOpt->targetType == srcTypeOpt->targetType) {
+							auto val = builder.encodeLoad(dstTypeOpt->targetType, srcID);
+							builder.encodeStore(dstID, val);
+							break;
+						}
+						throw std::runtime_error("Unsupported llvm.memcpy storage class/size");
 					}
 
 					if (name == "air.get_read_sampler") {
