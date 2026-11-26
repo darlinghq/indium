@@ -716,6 +716,101 @@ bool Indium::PrivateDevice::supportsPixelFormatSampling(PixelFormat format, bool
 	return (properties.optimalTilingFeatures & required) == required;
 };
 
+bool Indium::PrivateDevice::supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const {
+	if (sampleCount == 0 || (sampleCount & (sampleCount - 1)) != 0) {
+		return false;
+	}
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	try {
+		vkFormat = textureVkFormat(format);
+	} catch (const BadEnumValue&) {
+		return false;
+	}
+	if (vkFormat == VK_FORMAT_UNDEFINED) {
+		return false;
+	}
+	VkImageFormatProperties properties {};
+	VkResult res = DynamicVK::vkGetPhysicalDeviceImageFormatProperties(
+		_physicalDevice,
+		vkFormat,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		0,
+		&properties
+	);
+	if (res != VK_SUCCESS) {
+		return false;
+	}
+	return (properties.sampleCounts & sampleCount) != 0;
+};
+
+uint32_t Indium::PrivateDevice::maxPerStageDescriptorSamplers() const {
+	return _properties.limits.maxPerStageDescriptorSamplers;
+};
+
+Indium::Size Indium::PrivateDevice::sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const {
+	if (sampleCount == 0 || tileSizeInBytes == 0 || pixelFormat == PixelFormat::Invalid) {
+		return { 0, 0, 0 };
+	}
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	try {
+		vkFormat = textureVkFormat(pixelFormat);
+	} catch (const BadEnumValue&) {
+		return { 0, 0, 0 };
+	}
+	size_t bytesPerPixel = pixelFormatToByteCount(pixelFormat);
+	if (vkFormat == VK_FORMAT_UNDEFINED || bytesPerPixel == 0) {
+		return { 0, 0, 0 };
+	}
+	size_t texelsPerTile = tileSizeInBytes / (bytesPerPixel * sampleCount);
+	if (texelsPerTile == 0) {
+		return { 0, 0, 0 };
+	}
+	switch (textureType) {
+		case TextureType::e1D:
+		case TextureType::e1DArray:
+			return { texelsPerTile, 1, 1 };
+		case TextureType::e2D:
+		case TextureType::e2DArray:
+		case TextureType::e2DMultisample:
+		case TextureType::eCube:
+		case TextureType::eCubeArray:
+		case TextureType::e2DMultisampleArray: {
+			size_t w = 1;
+			size_t h = 1;
+			bool growWidth = true;
+			while (w * h * 2 <= texelsPerTile) {
+				if (growWidth) {
+					w *= 2;
+				} else {
+					h *= 2;
+				}
+				growWidth = !growWidth;
+			}
+			return { w, h, 1 };
+		}
+		case TextureType::e3D: {
+			size_t w = 1;
+			size_t h = 1;
+			size_t d = 1;
+			while (w * h * d * 2 <= texelsPerTile) {
+				if (w <= h && w <= d) {
+					w *= 2;
+				} else if (h <= d) {
+					h *= 2;
+				} else {
+					d *= 2;
+				}
+			}
+			return { w, h, d };
+		}
+		case TextureType::eTextureBuffer:
+		default:
+			return { 0, 0, 0 };
+	}
+};
+
 size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) const {
 	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
 	try {
