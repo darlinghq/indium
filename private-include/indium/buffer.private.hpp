@@ -59,6 +59,12 @@ namespace Indium {
 		virtual void* contents() override;
 		virtual void didModifyRange(Range<size_t> range) override;
 
+		/**
+		 * The other direction of didModifyRange: makes what the GPU wrote, made available to the host by a barrier,
+		 * visible through contents(). Nothing to do for coherent memory or memory Vulkan did not map.
+		 */
+		void invalidateMappedRange();
+
 		virtual uint64_t gpuAddress() override;
 		virtual std::shared_ptr<Texture> newTexture(const TextureDescriptor& descriptor, size_t offset, size_t bytesPerRow) override;
 

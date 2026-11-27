@@ -641,6 +641,14 @@ void Indium::PrivateCommandBuffer::finishSubmission(const std::vector<std::share
 void Indium::PrivateCommandBuffer::markCompleted() {
 	// the caller's memory gets what the GPU wrote before anything learns that the command buffer is done
 	_privateDevice->syncShadowBuffers(false);
+	std::vector<std::shared_ptr<PrivateBuffer>> invalidated;
+	{
+		std::unique_lock lock(_mutex);
+		invalidated.swap(_hostInvalidatedBuffers);
+	}
+	for (const auto& buffer: invalidated) {
+		buffer->invalidateMappedRange();
+	}
 	{
 		std::unique_lock lock(_mutex);
 		_completed = true;
