@@ -95,6 +95,11 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	cmdbuf->retainResource(privateSource);
 	auto privateDest = std::dynamic_pointer_cast<PrivateTexture>(destination);
 
+	// the bytes of an extended-range texture are codes, which its image does not hold (see extended-range.private.hpp)
+	if (pixelFormatIsExtendedRange(destination->pixelFormat())) {
+		throw std::runtime_error("Copying from a buffer to a texture in an extended-range pixel format is not supported");
+	}
+
 	if (std::find(_readWriteTextures.begin(), _readWriteTextures.end(), destination) == _readWriteTextures.end()) {
 		_readWriteTextures.push_back(destination);
 	}
@@ -161,6 +166,10 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	auto privateSource = std::dynamic_pointer_cast<PrivateTexture>(source);
 	auto privateDest = std::dynamic_pointer_cast<PrivateBuffer>(destination);
 	cmdbuf->retainResource(privateDest);
+
+	if (pixelFormatIsExtendedRange(source->pixelFormat())) {
+		throw std::runtime_error("Copying from a texture in an extended-range pixel format to a buffer is not supported");
+	}
 
 	if (std::find(_readOnlyTextures.begin(), _readOnlyTextures.end(), source) == _readOnlyTextures.end()) {
 		_readOnlyTextures.push_back(source);

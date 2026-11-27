@@ -467,6 +467,17 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
 		_nativeA8Unorm = (formatProperties.optimalTilingFeatures & required) == required;
 	}
+
+	// The extended-range formats are R32G32B32A32_SFLOAT images (see extended-range.private.hpp), which a texture
+	// of any usage may be, so everything Metal lets such a texture do has to work with the format.
+	{
+		VkFormatProperties formatProperties {};
+		DynamicVK::vkGetPhysicalDeviceFormatProperties(_physicalDevice, VK_FORMAT_R32G32B32A32_SFLOAT, &formatProperties);
+		constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT
+			| VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT
+			| VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT;
+		_extendedRange = (formatProperties.optimalTilingFeatures & required) == required;
+	}
 };
 
 void Indium::PrivateDevice::createLogicalDevice() {
@@ -637,6 +648,7 @@ Indium::PrivateDevice::~PrivateDevice() {
 		return;
 	}
 	_textureUploader.releaseAll();
+	_extendedRangeKernel.reset();
 	// every buffer and texture holds a reference to the device, so none is left
 	_memoryPool.releaseAll(_device);
 	// saves the cache; every pipeline made with it is gone with the pipeline states, which hold the device

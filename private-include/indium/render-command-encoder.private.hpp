@@ -61,6 +61,7 @@ namespace Indium {
 		// if their store action says so by the time the pass ends, after it (see endEncoding())
 		std::vector<bool> _resolvedInPass;
 		void resolveLateColorAttachments(VkCommandBuffer commandBuffer);
+		void roundExtendedRangeAttachments(VkCommandBuffer commandBuffer);
 
 		/** Notes the resources the next draw reaches through the bindings of the pipeline. */
 		void noteBindings();

@@ -73,6 +73,7 @@ set(indium_sources
 	src/indium/render-pipeline.cpp
 	src/indium/resource.cpp
 	src/indium/sampler.cpp
+	src/indium/extended-range-kernel.cpp
 	src/indium/sha256.cpp
 	src/indium/texture.cpp
 	src/indium/visibility-results.cpp

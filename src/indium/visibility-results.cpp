@@ -157,6 +157,18 @@ void Indium::PrivateDevice::releaseCachedObjects() {
 		_fallbackBuffer.reset();
 		_fallbackSampler.reset();
 	}
+	{
+		std::scoped_lock lock(_extendedRangeMutex);
+		_extendedRangeKernel.reset();
+	}
 	std::scoped_lock lock(_visibilityResolveMutex);
 	_visibilityResolvePipeline.reset();
+};
+
+Indium::ExtendedRangeKernel& Indium::PrivateDevice::extendedRangeKernel() {
+	std::scoped_lock lock(_extendedRangeMutex);
+	if (!_extendedRangeKernel) {
+		_extendedRangeKernel = std::make_unique<ExtendedRangeKernel>(*this);
+	}
+	return *_extendedRangeKernel;
 };
