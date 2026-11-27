@@ -654,10 +654,17 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	// Mac (no Metal device was available); accepted by the maintainer on that basis.
 	// Test: compressed_texture_usage in the guest tests of darling-metal
 	const bool compressedFormat = isColor && pixelFormatIsCompressed(_descriptor.pixelFormat);
-	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown && !compressedFormat) {
-		if (_descriptor.sampleCount > 1) {
-			throw std::runtime_error("Multisample shader-write textures are unsupported");
-		}
+	// QUIRK: a multisample texture created with ShaderWrite usage is made, without that usage, instead of being
+	// refused. The Metal Shading Language Specification (the texture type sections) gives texture2d_ms,
+	// texture2d_ms_array and depth2d_ms read access only, so no shader can write one and the bit has no effect
+	// a program could observe. That creating one succeeds is the undocumented part. Evidence for it (tier 5,
+	// inference): WebKit's ANGLE Metal backend, which
+	// ships with macOS, asks for ShaderWrite on every multisample renderbuffer of a shader-writable format
+	// (mtl_resources.mm, Texture::MakeTexture), so creating such a texture succeeds on macOS; the Metal
+	// documentation does not say that it fails. Not observed on a Mac (no Metal device was available).
+	// Test: multisample-shader-write in indium's tests
+	const bool multisample = _descriptor.sampleCount > 1;
+	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown && !compressedFormat && !multisample) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	} else if (unknownUsage && _descriptor.sampleCount == 1 && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled()) && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;

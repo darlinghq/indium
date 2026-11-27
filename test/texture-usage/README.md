@@ -15,8 +15,9 @@ render flags are ignored, unknown depth requests an unsupported storage usage,
 and invalid/unsupported usages reach allocation. Candidate must pass all checks.
 The program prints the actual selected device.
 
-PixelFormatView and multisample ShaderWrite requests remain explicitly
-unsupported. Unknown uses the format's supported feature union, then validates
+PixelFormatView requests remain explicitly unsupported. A multisample
+ShaderWrite request is made without storage usage (see the multisample-shader-write
+test): MSL cannot write a multisample texture. Unknown uses the format's supported feature union, then validates
 the complete combination; unsupported combinations fail rather than silently
 remove required operations. Transfer usage remains required for existing
 getBytes/replaceRegion operations. Native draw fixtures must declare RenderTarget
