@@ -308,6 +308,7 @@ void Indium::PrivateCommandQueue::onCompletion() {
 };
 
 void Indium::PrivateCommandQueue::runHandlers() {
+	_handlerThreadId.store(std::this_thread::get_id(), std::memory_order_relaxed);
 	for (;;) {
 		std::shared_ptr<PrivateCommandBuffer> commandBuffer;
 		bool schedule = false;
@@ -325,7 +326,9 @@ void Indium::PrivateCommandQueue::runHandlers() {
 			}
 		}
 		if (schedule) {
+			++_scheduledHandlerDepth;
 			commandBuffer->runScheduledHandlers();
+			--_scheduledHandlerDepth;
 		} else {
 			commandBuffer->retire();
 		}

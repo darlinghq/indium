@@ -717,6 +717,12 @@ void Indium::PrivateCommandBuffer::retire() {
 	eventOperations.clear();
 	semaphores.clear();
 	resources.clear();
+
+	{
+		std::unique_lock lock(_mutex);
+		_completedHandlersFinished = true;
+	}
+	_completedCondvar.notify_all();
 };
 
 void Indium::PrivateCommandBuffer::freeSegments(VkCommandPool pool, const std::vector<VkCommandBuffer>& segments) {
@@ -764,8 +770,21 @@ void Indium::PrivateCommandBuffer::addCompletedHandler(std::function<void(std::s
 void Indium::PrivateCommandBuffer::waitUntilCompleted() {
 	std::unique_lock lock(_mutex);
 
+	if (std::this_thread::get_id() != _privateCommandQueue->handlerThreadId()) {
+		while (!_completedHandlersFinished) {
+			_completedCondvar.wait(lock);
+		}
+		return;
+	}
+
 	while (!_completed) {
 		_completedCondvar.wait(lock);
+	}
+	// While a scheduled handler of an earlier command buffer is on the stack, FIFO completion
+	// order forbids retiring a later command buffer ahead of it.
+	if (!_completedHandlersFinished && !_privateCommandQueue->inScheduledHandler()) {
+		lock.unlock();
+		_privateCommandQueue->runHandlers();
 	}
 };
 

@@ -4,12 +4,14 @@
 
 #include <vulkan/vulkan.h>
 
+#include <atomic>
 #include <chrono>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <vector>
 
 namespace Indium {
@@ -75,11 +77,15 @@ namespace Indium {
 			std::mutex _workersMutex;
 			std::shared_ptr<QueueWorker> _submissionWorker;
 			std::shared_ptr<QueueWorker> _handlerWorker;
+			std::atomic<std::thread::id> _handlerThreadId {};
+			size_t _scheduledHandlerDepth = 0;
 
 			void startWorkers();
-			void runHandlers();
 
 		public:
+			void runHandlers();
+			std::thread::id handlerThreadId() const { return _handlerThreadId.load(std::memory_order_relaxed); }
+			bool inScheduledHandler() const { return _scheduledHandlerDepth > 0; }
 			PrivateCommandQueue(std::shared_ptr<PrivateDevice> device);
 			~PrivateCommandQueue();
 
