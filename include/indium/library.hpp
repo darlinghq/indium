@@ -319,6 +319,14 @@ namespace Indium {
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
 
 		/**
+		 * For a fragment function only: the specialization constant, a 32-bit unsigned integer, that holds the
+		 * number of samples of what the function renders to (MSL's get_num_samples()). Vulkan has no shader
+		 * builtin for it, so a render pipeline sets it to its raster sample count. The id must be distinct from
+		 * the ids of the function constants.
+		 */
+		std::optional<uint32_t> numSamplesSpecializationID;
+
+		/**
 		 * For a kernel only: its threadgroup memory arguments. Their indices must be distinct, and their
 		 * SpecIds distinct from each other and from the ids above, and not 0 to 2.
 		 */
