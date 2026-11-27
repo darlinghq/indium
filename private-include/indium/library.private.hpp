@@ -44,6 +44,8 @@ namespace Indium {
 		std::vector<StageInterfaceField> stageInterface;
 		// see FunctionReflection::gridSizeSpecializationIDs
 		std::optional<std::array<uint32_t, 3>> gridSizeSpecializationIDs;
+		// see FunctionReflection::numSamplesSpecializationID
+		std::optional<uint32_t> numSamplesSpecializationID;
 		// see FunctionReflection::threadgroupArguments
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
 		// see FunctionReflection::maxTotalThreadsPerThreadgroup

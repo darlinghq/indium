@@ -1280,6 +1280,16 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				functionInfo.gridSizeSpecializationIDs = functionReflection.gridSizeSpecializationIDs;
 			}
 
+			if (auto id = functionReflection.numSamplesSpecializationID) {
+				if (functionReflection.functionType != FunctionType::Fragment) {
+					return fail("function '" + name + "' is not a fragment function and has a sample count specialization ID");
+				}
+				if (!specializationIDs.insert(*id).second) {
+					return fail("function '" + name + "' uses specialization ID " + std::to_string(*id) + " for the sample count and for another constant");
+				}
+				functionInfo.numSamplesSpecializationID = id;
+			}
+
 			if (!functionReflection.threadgroupArguments.empty() && functionReflection.functionType != FunctionType::Kernel) {
 				return fail("function '" + name + "' is not a kernel and has threadgroup memory arguments");
 			}

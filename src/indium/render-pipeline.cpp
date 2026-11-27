@@ -39,6 +39,10 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 	std::string vertexFunctionName;
 	std::string fragmentFunctionName;
 	std::vector<VkPipelineShaderStageCreateInfo> stages;
+	// the fragment function's specialization with its sample count added, when it reads one
+	std::vector<VkSpecializationMapEntry> fragmentSpecializationEntries;
+	std::vector<uint32_t> fragmentSpecializationData;
+	VkSpecializationInfo fragmentSpecialization {};
 	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
 	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
 	VkPipelineVertexInputStateCreateInfo vertexInputState {};
@@ -132,6 +136,28 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	}
 	shaderStage.pName = fragmentFunctionName.c_str();
 	shaderStage.pSpecializationInfo = _fragmentFunction->specializationInfo();
+	if (auto id = _fragmentFunction->functionInfo().numSamplesSpecializationID) {
+		auto& entries = recipe.fragmentSpecializationEntries;
+		auto& data = recipe.fragmentSpecializationData;
+		if (auto functionSpecialization = shaderStage.pSpecializationInfo) {
+			entries.assign(functionSpecialization->pMapEntries, functionSpecialization->pMapEntries + functionSpecialization->mapEntryCount);
+			auto words = static_cast<const uint32_t*>(functionSpecialization->pData);
+			data.assign(words, words + functionSpecialization->dataSize / sizeof(uint32_t));
+		}
+		VkSpecializationMapEntry entry {};
+		entry.constantID = *id;
+		entry.offset = data.size() * sizeof(uint32_t);
+		entry.size = sizeof(uint32_t);
+		entries.push_back(entry);
+		// a VkSampleCountFlagBits value is the count it stands for
+		data.push_back(static_cast<uint32_t>(_rasterSampleCount));
+		auto& specialization = recipe.fragmentSpecialization;
+		specialization.mapEntryCount = entries.size();
+		specialization.pMapEntries = entries.data();
+		specialization.dataSize = data.size() * sizeof(uint32_t);
+		specialization.pData = data.data();
+		shaderStage.pSpecializationInfo = &specialization;
+	}
 	stages.push_back(shaderStage);
 
 	auto& vertexInputState = recipe.vertexInputState;
