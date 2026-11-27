@@ -16,6 +16,16 @@
 #include <indium/types.hpp>
 
 namespace Indium {
+	/**
+	 * A range a color output of a fragment function is clamped to before it reaches the attachment's blending, per component.
+	 * `location` is the output's Location, which is the index of the color attachment.
+	 */
+	struct OutputClamp {
+		uint32_t location;
+		std::array<float, 4> low;
+		std::array<float, 4> high;
+	};
+
 	class PrivateLibrary;
 	class PrivateDevice;
 	class SamplerState;
@@ -116,10 +126,10 @@ public:
 		 * already are at the Locations of the outputs with their names, and otherwise a copy of the module
 		 * in which they are. Lives as long as the library. Returns VK_NULL_HANDLE if the copy cannot be made.
 		 */
-		VkShaderModule fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs);
+		VkShaderModule fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs, const std::vector<OutputClamp>& clamps = {});
 
 	private:
-		// the module's words, kept when a function has varyings to link by name
+		// the module's words, kept when a library has a fragment function (see fragmentModuleLinkedTo)
 		std::vector<uint32_t> _words;
 		std::mutex _linkedMutex;
 		std::map<std::pair<std::string, std::vector<uint32_t>>, VkShaderModule> _linkedModules;
