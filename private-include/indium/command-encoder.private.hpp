@@ -164,6 +164,7 @@ namespace Indium {
 				switch (binding.textureAccessType) {
 					case TextureAccessType::Sample:
 					case TextureAccessType::Read:
+					case TextureAccessType::Fetch:
 						access = VK_ACCESS_2_SHADER_READ_BIT;
 						break;
 					case TextureAccessType::Write:
@@ -368,14 +369,16 @@ namespace Indium {
 					// a texture_buffer is bound through the buffer view of its texture and any other texture through
 					// its image view (a storage image may not be swizzled, so it never gets the view a sampler reads
 					// through). A texture of the other kind has no such view, which is left unwritten like an unbound one.
-					bool sampled = bindingInfo.textureAccessType == TextureAccessType::Sample;
+					bool sampled = bindingInfo.textureAccessType == TextureAccessType::Sample
+						|| bindingInfo.textureAccessType == TextureAccessType::Fetch;
 					VkImageView imageView = VK_NULL_HANDLE;
 					VkBufferView bufferView = VK_NULL_HANDLE;
 					if (privateTexture) {
 						if (bindingInfo.texelBuffer) {
 							bufferView = privateTexture->bufferView();
 						} else {
-							imageView = sampled ? privateTexture->sampledImageView() : privateTexture->imageView();
+							imageView = bindingInfo.textureAccessType == TextureAccessType::Fetch ? privateTexture->fetchImageView()
+								: sampled ? privateTexture->sampledImageView() : privateTexture->imageView();
 						}
 						if (bufferView == VK_NULL_HANDLE && imageView == VK_NULL_HANDLE && !privateDevice->nullDescriptorEnabled()) {
 							continue;

@@ -22,7 +22,7 @@ namespace Indium {
 
 	/** The Vulkan descriptor type a texture binding is written as. */
 	inline VkDescriptorType textureDescriptorType(const BindingDescriptor& binding) {
-		bool storage = binding.textureAccessType != TextureAccessType::Sample;
+		bool storage = binding.textureAccessType != TextureAccessType::Sample && binding.textureAccessType != TextureAccessType::Fetch;
 		if (binding.texelBuffer) {
 			return storage ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
 		}

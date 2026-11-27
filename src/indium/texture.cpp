@@ -119,6 +119,20 @@ namespace {
 		}
 		return view;
 	}
+
+	// The faces of a cube or cube array view as a 2D array, sampled as `createSampledImageView` would, for a
+	// shader that fetches from it (an image fetch takes no cube image). VK_NULL_HANDLE for any other view.
+	VkImageView createFaceArrayView(const Indium::PrivateDevice& privateDevice, VkImageViewCreateInfo info, Indium::PixelFormat pixelFormat, const Indium::TextureSwizzleChannels& userSwizzle) {
+		if (info.viewType != VK_IMAGE_VIEW_TYPE_CUBE && info.viewType != VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+			return VK_NULL_HANDLE;
+		}
+		info.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+		VkImageView view = createSampledImageView(privateDevice, info, pixelFormat, userSwizzle);
+		if (view == VK_NULL_HANDLE && Indium::DynamicVK::vkCreateImageView(privateDevice.device(), &info, nullptr, &view) != VK_SUCCESS) {
+			throw std::runtime_error("Failed to create the face array view of a cube texture");
+		}
+		return view;
+	}
 };
 
 // A view starts at one of its texture's levels, and has the size of that level.
@@ -189,14 +203,22 @@ Indium::TextureView::TextureView(std::shared_ptr<PrivateTexture> original, Pixel
 	}
 
 	_sampledImageView = createSampledImageView(*privateDevice, info, _pixelFormat, _swizzle);
+	_faceArrayView = createFaceArrayView(*privateDevice, info, _pixelFormat, _swizzle);
 };
 
 Indium::TextureView::~TextureView() {
 	auto device = std::dynamic_pointer_cast<PrivateDevice>(_original->device())->device();
+	if (_faceArrayView) {
+		DynamicVK::vkDestroyImageView(device, _faceArrayView, nullptr);
+	}
 	if (_sampledImageView) {
 		DynamicVK::vkDestroyImageView(device, _sampledImageView, nullptr);
 	}
 	DynamicVK::vkDestroyImageView(device, _imageView, nullptr);
+};
+
+VkImageView Indium::TextureView::fetchImageView() {
+	return _faceArrayView ? _faceArrayView : sampledImageView();
 };
 
 VkImageView Indium::TextureView::sampledImageView() {
@@ -936,6 +958,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 
 	_sampledImageView = createSampledImageView(*_device, info2, _descriptor.pixelFormat, _descriptor.swizzle);
+	_faceArrayView = createFaceArrayView(*_device, info2, _descriptor.pixelFormat, _descriptor.swizzle);
 };
 
 // Imports the DMA-BUF as the dedicated memory of `_image` (VK_KHR_external_memory_fd,
@@ -996,7 +1019,14 @@ VkImageView Indium::ConcreteTexture::sampledImageView() {
 	return _sampledImageView ? _sampledImageView : _imageView;
 };
 
+VkImageView Indium::ConcreteTexture::fetchImageView() {
+	return _faceArrayView ? _faceArrayView : sampledImageView();
+};
+
 Indium::ConcreteTexture::~ConcreteTexture() {
+	if (_faceArrayView) {
+		DynamicVK::vkDestroyImageView(_device->device(), _faceArrayView, nullptr);
+	}
 	if (_sampledImageView) {
 		DynamicVK::vkDestroyImageView(_device->device(), _sampledImageView, nullptr);
 	}

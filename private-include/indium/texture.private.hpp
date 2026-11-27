@@ -93,6 +93,12 @@ namespace Indium {
 		 */
 		virtual VkImageView sampledImageView() { return imageView(); }
 
+		/**
+		 * The view to bind for a TextureAccessType::Fetch binding: `sampledImageView()`, except that a cube
+		 * or cube array is viewed as the 2D array of its faces, as an image fetch takes no cube image.
+		 */
+		virtual VkImageView fetchImageView() { return sampledImageView(); }
+
 		virtual size_t vulkanArrayLength() const;
 
 		// TODO: figure out how to allow simultaneous reads and properly synchronize them with writes.
@@ -153,6 +159,7 @@ namespace Indium {
 		std::shared_ptr<PrivateTexture> _original;
 		VkImageView _imageView;
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
+		VkImageView _faceArrayView = VK_NULL_HANDLE;
 		PixelFormat _pixelFormat;
 		TextureType _textureType;
 		VkImageAspectFlags _imageAspect;
@@ -190,6 +197,7 @@ namespace Indium {
 
 		virtual VkImageView imageView() override;
 		virtual VkImageView sampledImageView() override;
+		virtual VkImageView fetchImageView() override;
 		virtual VkImage image() override;
 		virtual std::shared_ptr<Device> device() override;
 		virtual VkImageLayout imageLayout() override;
@@ -284,6 +292,7 @@ namespace Indium {
 		VkImage _image = VK_NULL_HANDLE;
 		VkImageView _imageView = VK_NULL_HANDLE;
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
+		VkImageView _faceArrayView = VK_NULL_HANDLE;
 		VkDeviceMemory _memory = VK_NULL_HANDLE;
 		StorageMode _storageMode;
 		MemoryPool::Allocation _allocation;
@@ -354,6 +363,7 @@ namespace Indium {
 
 		virtual VkImageView imageView() override;
 		virtual VkImageView sampledImageView() override;
+		virtual VkImageView fetchImageView() override;
 		virtual VkImage image() override;
 		virtual VkImageLayout imageLayout() override;
 		virtual VkFormat imageFormat() override;
