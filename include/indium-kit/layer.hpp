@@ -93,6 +93,24 @@ namespace IndiumKit {
 		return !(lhs == rhs);
 	}
 
+	/**
+	 * The color space of the values an application writes to a layer's drawables, which is what the
+	 * swapchain has to be told so that the presentation interprets them right (CAMetalLayer.colorspace).
+	 * See Layer::setColorSpace() for what happens when the surface cannot present a color space itself.
+	 */
+	enum class ColorSpace: uint8_t {
+		/** sRGB primaries and transfer function (the default): VK_COLOR_SPACE_SRGB_NONLINEAR_KHR. */
+		SRGB,
+		/** sRGB primaries and transfer function extended to values outside 0 to 1: VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT. */
+		ExtendedSRGB,
+		/** sRGB primaries, linear light, 1.0 is the SDR white (scRGB): VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT. */
+		ExtendedLinearSRGB,
+		/** Display P3 primaries, linear light: VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT. */
+		ExtendedLinearDisplayP3,
+		/** BT.2020 primaries, linear light: VK_COLOR_SPACE_BT2020_LINEAR_EXT. */
+		ExtendedLinearITUR2020,
+	};
+
 	// this is supposed to be CAMetalLayer
 	class Layer {
 	public:
@@ -152,5 +170,26 @@ namespace IndiumKit {
 		 * ignored when the Vulkan device does not support VK_EXT_hdr_metadata.
 		 */
 		virtual void setHdrMetadata(const HdrMetadata& metadata) = 0;
+
+		/**
+		 * Sets the color space of the values the application writes to the drawables, and whether
+		 * the layer shows extended dynamic range (values above 1.0 brighter than the SDR white;
+		 * CAMetalLayer.wantsExtendedDynamicRangeContent). Returns false, changing nothing, when the
+		 * surface cannot present the layer's current pixel format that way. Takes effect when the
+		 * swapchain is next created. When the pixel format and the color space both change, each is
+		 * checked against the other's current value, so call first the one that is valid with the old
+		 * value of the other (a surface may offer a format only together with a color space).
+		 *
+		 * A surface that offers the pixel format in the matching Vulkan color space (through
+		 * VK_EXT_swapchain_colorspace) presents the values itself. Otherwise, for the color spaces
+		 * with sRGB primaries (ExtendedSRGB and ExtendedLinearSRGB), the layer renders to textures of
+		 * its own and converts them to an 8-bit swapchain when presenting: the values are clamped to
+		 * 0 to 1 and linear ones get the sRGB curve, so the colors shown are right but values beyond
+		 * the range are not shown. The same is done for ExtendedLinearSRGB while `extendedDynamicRange`
+		 * is false, as without it values beyond 0 to 1 must not reach the display. The other linear
+		 * color spaces (Display P3, BT.2020) have no such conversion and are refused when the surface
+		 * does not offer them. An HDR transfer function from setHdrMetadata() takes precedence.
+		 */
+		virtual bool setColorSpace(ColorSpace colorSpace, bool extendedDynamicRange) = 0;
 	};
 };
