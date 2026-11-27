@@ -9,6 +9,7 @@
 #include <llvm-c/BitReader.h>
 #include <llvm/Config/llvm-config.h>
 #include <algorithm>
+#include <functional>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -545,11 +546,14 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 	if (!named) {
 		named = DynamicLLVM::LLVMGetTypeByName(module, ("struct." + owned).c_str());
 	}
+	if (!named) {
+		named = DynamicLLVM::LLVMGetTypeByName(module, ("class." + owned).c_str());
+	}
 	if (named) {
 		return llvmTypeToSPIRVType(builder, named);
 	}
 
-	throw ImpossibleResultID("neither a Metal scalar nor a module type named \"" + std::string(name) + "\"");
+	return builder.declareType(Type(Type::IntegerTag {}, 8, false));
 }
 
 static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& builder, LLVMValueRef inst);
@@ -1002,6 +1006,179 @@ static Iridium::SPIRV::ResultID descendToFirstElement(Iridium::SPIRV::Builder& b
 	auto access = builder.encodeAccessChain(resultType, pointer, indices);
 	builder.setResultType(access, resultType);
 	return access;
+}
+
+static Iridium::SPIRV::ResultID tryLoadLogicalReinterpreted(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID pointer, Iridium::SPIRV::ResultID declaredType, Iridium::SPIRV::ResultID wantedType) {
+	using namespace Iridium::SPIRV;
+	auto wantedInfo = builder.reverseLookupType(wantedType);
+	if (!wantedInfo || wantedInfo->size == 0)
+		return ResultIDInvalid;
+
+	auto loaded = builder.encodeLoad(declaredType, pointer, 0);
+	struct ScalarPiece { ResultID val; ResultID type; size_t size; };
+	std::vector<ScalarPiece> pieces;
+	size_t collectedBytes = 0;
+
+	std::function<void(ResultID, ResultID)> collect = [&](ResultID val, ResultID valType) {
+		if (collectedBytes >= wantedInfo->size)
+			return;
+		auto info = builder.reverseLookupType(valType);
+		if (!info)
+			return;
+		if (info->backingType == Type::BackingType::Integer ||
+			info->backingType == Type::BackingType::FloatingPoint ||
+			info->backingType == Type::BackingType::Boolean) {
+			pieces.push_back({ val, valType, info->size });
+			collectedBytes += info->size;
+		} else if (info->backingType == Type::BackingType::Vector) {
+			auto elemInfo = builder.reverseLookupType(info->targetType);
+			size_t elemSize = elemInfo ? elemInfo->size : 0;
+			for (uint32_t k = 0; k < info->entryCount && collectedBytes < wantedInfo->size; ++k) {
+				auto elem = builder.encodeCompositeExtract(info->targetType, val, { k });
+				pieces.push_back({ elem, info->targetType, elemSize });
+				collectedBytes += elemSize;
+			}
+		} else if (info->backingType == Type::BackingType::Array) {
+			for (uint32_t k = 0; k < info->entryCount && collectedBytes < wantedInfo->size; ++k) {
+				auto elem = builder.encodeCompositeExtract(info->targetType, val, { k });
+				collect(elem, info->targetType);
+			}
+		} else if (info->backingType == Type::BackingType::Structure) {
+			for (uint32_t k = 0; k < info->structureMembers.size() && collectedBytes < wantedInfo->size; ++k) {
+				auto memberType = info->structureMembers[k].id;
+				auto elem = builder.encodeCompositeExtract(memberType, val, { k });
+				collect(elem, memberType);
+			}
+		}
+	};
+
+	collect(loaded, declaredType);
+	if (pieces.empty())
+		return ResultIDInvalid;
+
+	if (wantedInfo->backingType == Type::BackingType::Vector) {
+		auto targetElemType = wantedInfo->targetType;
+		auto targetElemInfo = builder.reverseLookupType(targetElemType);
+		if (!targetElemInfo)
+			return ResultIDInvalid;
+		std::vector<ResultID> components;
+		for (uint32_t k = 0; k < wantedInfo->entryCount; ++k) {
+			if (k < pieces.size()) {
+				if (pieces[k].size != targetElemInfo->size)
+					return ResultIDInvalid;
+				ResultID comp = pieces[k].type == targetElemType ? pieces[k].val : builder.encodeBitcast(targetElemType, pieces[k].val);
+				components.push_back(comp);
+			} else {
+				components.push_back(builder.declareNullValue(targetElemType));
+			}
+		}
+		return builder.encodeOp(Opcode::CompositeConstruct, wantedType, components);
+	}
+
+	if (collectedBytes >= wantedInfo->size &&
+		pieces[0].size == wantedInfo->size &&
+		(wantedInfo->backingType == Type::BackingType::Integer ||
+		 wantedInfo->backingType == Type::BackingType::FloatingPoint)) {
+		return pieces[0].type == wantedType ? pieces[0].val : builder.encodeBitcast(wantedType, pieces[0].val);
+	}
+
+	return ResultIDInvalid;
+}
+
+static bool tryStoreLogicalReinterpreted(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID pointer, Iridium::SPIRV::ResultID declaredType, Iridium::SPIRV::StorageClass storageClass, Iridium::SPIRV::ResultID val, Iridium::SPIRV::ResultID valType) {
+	using namespace Iridium::SPIRV;
+	auto valInfo = builder.reverseLookupType(valType);
+	auto declInfo = builder.reverseLookupType(declaredType);
+	if (!valInfo || !declInfo)
+		return false;
+
+	if (valInfo->size == declInfo->size &&
+		(valInfo->backingType == Type::BackingType::Integer || valInfo->backingType == Type::BackingType::FloatingPoint || valInfo->backingType == Type::BackingType::Vector) &&
+		(declInfo->backingType == Type::BackingType::Integer || declInfo->backingType == Type::BackingType::FloatingPoint || declInfo->backingType == Type::BackingType::Vector)) {
+		auto casted = builder.encodeBitcast(declaredType, val);
+		builder.encodeStore(pointer, casted, 0);
+		return true;
+	}
+
+	struct ScalarPiece { ResultID val; ResultID type; size_t size; };
+	std::vector<ScalarPiece> srcPieces;
+	if (valInfo->backingType == Type::BackingType::Integer ||
+		valInfo->backingType == Type::BackingType::FloatingPoint ||
+		valInfo->backingType == Type::BackingType::Boolean) {
+		srcPieces.push_back({ val, valType, valInfo->size });
+	} else if (valInfo->backingType == Type::BackingType::Vector) {
+		auto elemInfo = builder.reverseLookupType(valInfo->targetType);
+		size_t elemSize = elemInfo ? elemInfo->size : 0;
+		for (uint32_t k = 0; k < valInfo->entryCount; ++k) {
+			auto elem = builder.encodeCompositeExtract(valInfo->targetType, val, { k });
+			srcPieces.push_back({ elem, valInfo->targetType, elemSize });
+		}
+	} else {
+		return false;
+	}
+
+	struct DestSlot { std::vector<uint32_t> indices; ResultID type; size_t size; };
+	std::vector<DestSlot> dstSlots;
+	size_t dstBytes = 0;
+	std::vector<uint32_t> path;
+	std::function<void(ResultID)> collectDst = [&](ResultID curType) {
+		if (dstBytes >= valInfo->size)
+			return;
+		auto info = builder.reverseLookupType(curType);
+		if (!info)
+			return;
+		if (info->backingType == Type::BackingType::Integer ||
+			info->backingType == Type::BackingType::FloatingPoint ||
+			info->backingType == Type::BackingType::Boolean) {
+			dstSlots.push_back({ path, curType, info->size });
+			dstBytes += info->size;
+		} else if (info->backingType == Type::BackingType::Vector) {
+			auto elemInfo = builder.reverseLookupType(info->targetType);
+			size_t elemSize = elemInfo ? elemInfo->size : 0;
+			for (uint32_t k = 0; k < info->entryCount && dstBytes < valInfo->size; ++k) {
+				path.push_back(k);
+				dstSlots.push_back({ path, info->targetType, elemSize });
+				path.pop_back();
+				dstBytes += elemSize;
+			}
+		} else if (info->backingType == Type::BackingType::Array) {
+			for (uint32_t k = 0; k < info->entryCount && dstBytes < valInfo->size; ++k) {
+				path.push_back(k);
+				collectDst(info->targetType);
+				path.pop_back();
+			}
+		} else if (info->backingType == Type::BackingType::Structure) {
+			for (uint32_t k = 0; k < info->structureMembers.size() && dstBytes < valInfo->size; ++k) {
+				path.push_back(k);
+				collectDst(info->structureMembers[k].id);
+				path.pop_back();
+			}
+		}
+	};
+	collectDst(declaredType);
+
+	if (dstSlots.empty() || srcPieces.size() < dstSlots.size())
+		return false;
+
+	for (size_t k = 0; k < dstSlots.size(); ++k) {
+		if (srcPieces[k].size != dstSlots[k].size)
+			return false;
+	}
+
+	for (size_t k = 0; k < dstSlots.size(); ++k) {
+		ResultID dstPtr = pointer;
+		if (!dstSlots[k].indices.empty()) {
+			std::vector<ResultID> idxIDs;
+			for (uint32_t idx : dstSlots[k].indices)
+				idxIDs.push_back(builder.declareConstantScalar<int32_t>(idx));
+			auto ptrType = builder.declareType(Type(Type::PointerTag {}, storageClass, dstSlots[k].type, 8));
+			dstPtr = builder.encodeAccessChain(ptrType, pointer, idxIDs);
+			builder.setResultType(dstPtr, ptrType);
+		}
+		ResultID v = srcPieces[k].type == dstSlots[k].type ? srcPieces[k].val : builder.encodeBitcast(dstSlots[k].type, srcPieces[k].val);
+		builder.encodeStore(dstPtr, v, 0);
+	}
+	return true;
 }
 
 // Translates the AIR atomic functions of 32-bit and 64-bit integers and of 32-bit floats,
@@ -3732,6 +3909,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto opDerefType = *builder.reverseLookupType(opType.targetType);
 					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
 
+					SPIRV::ResultID reinterpretedVal = SPIRV::ResultIDInvalid;
+
 					if (logical) {
 						// A local variable or global constant cannot be re-typed: its pointer has no address
 						// to reinterpret, so the load has to read the type the object was declared with.
@@ -3740,9 +3919,13 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						if (type != opType.targetType) {
 							auto stepped = descendToFirstElement(builder, op, type);
 							if (stepped == op) {
-								throw ImpossibleResultID("load reinterprets a local or constant object");
+								reinterpretedVal = tryLoadLogicalReinterpreted(builder, op, opType.targetType, type);
+								if (reinterpretedVal == SPIRV::ResultIDInvalid) {
+									throw ImpossibleResultID("load reinterprets a local or constant object");
+								}
+							} else {
+								op = stepped;
 							}
-							op = stepped;
 						}
 						alignment = 0;
 					} else if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
@@ -3769,7 +3952,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						}
 					}
 
-					auto resID = builder.encodeLoad(type, op, alignment);
+					auto resID = (reinterpretedVal != SPIRV::ResultIDInvalid)
+						? reinterpretedVal
+						: builder.encodeLoad(type, op, alignment);
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
@@ -3804,14 +3989,19 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto opType = *maybeOpType;
 					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
 					LayoutFreeScope layoutFree(logical);
-					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval)), 8));
+					auto valSpirvType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval));
+					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, valSpirvType, 8));
+					bool stored = false;
 
 					if (logical) {
 						// see the LLVMLoad case
 						if (storePtrType != builder.lookupResultType(ptr)) {
-							ptr = descendToFirstElement(builder, ptr, builder.reverseLookupType(storePtrType)->targetType);
+							ptr = descendToFirstElement(builder, ptr, valSpirvType);
 							if (storePtrType != builder.lookupResultType(ptr)) {
-								throw ImpossibleResultID("store reinterprets a local object");
+								if (!tryStoreLogicalReinterpreted(builder, ptr, opType.targetType, opType.pointerStorageClass, val, valSpirvType)) {
+									throw ImpossibleResultID("store reinterprets a local object");
+								}
+								stored = true;
 							}
 						}
 						alignment = 0;
@@ -3821,7 +4011,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						ptr = casted;
 					}
 
-					builder.encodeStore(ptr, val, alignment);
+					if (!stored)
+						builder.encodeStore(ptr, val, alignment);
 				} break;
 
 				case LLVMCall: {
