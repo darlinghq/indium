@@ -1207,7 +1207,7 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				return fail("function '" + name + "' has a binding of an unknown type");
 			}
 
-			if (static_cast<size_t>(binding.textureAccessType) > static_cast<size_t>(TextureAccessType::ReadWrite)) {
+			if (static_cast<size_t>(binding.textureAccessType) > static_cast<size_t>(TextureAccessType::Fetch)) {
 				return fail("function '" + name + "' has a binding with an unknown texture access type");
 			}
 

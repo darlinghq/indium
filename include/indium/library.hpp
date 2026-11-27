@@ -63,15 +63,19 @@ namespace Indium {
 
 	/**
 	 * How a function uses a texture binding. Only meaningful for
-	 * BindingType::Texture; anything but Sample makes indium bind the texture
-	 * as a storage image, so a wrong value here reads or writes a resource the
-	 * shader declared as sampled.
+	 * BindingType::Texture. Read, Write and ReadWrite make indium bind the
+	 * texture as a storage image, so a wrong value here reads or writes a
+	 * resource the shader declared as sampled. Fetch is a texture the function
+	 * only reads by integer coordinate and lod, through a sampled image of all
+	 * its levels; a cube or cube array is bound as the 2D array of its faces,
+	 * as a fetch takes no cube image.
 	 */
 	enum class TextureAccessType: uint8_t {
 		Sample = 0,
 		Read = 1,
 		Write = 2,
 		ReadWrite = 3,
+		Fetch = 4,
 	};
 
 	/**
