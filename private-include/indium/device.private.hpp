@@ -165,9 +165,6 @@ namespace Indium {
 		virtual std::optional<uint32_t> memoryTypeIndex(uint32_t memoryTypeBits, StorageMode storageMode) const override;
 		virtual bool supportsDepth24Stencil8PixelFormat() const override;
 		virtual bool supportsPixelFormatSampling(PixelFormat format, bool filtered) const override;
-		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const override;
-		virtual uint32_t maxPerStageDescriptorSamplers() const override;
-		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const override;
 		virtual size_t minimumLinearTextureAlignment(PixelFormat format) const override;
 		virtual bool supportsTextureSampleCount(uint32_t sampleCount) const override;
 		virtual std::shared_ptr<CommandQueue> newCommandQueue() override;
@@ -208,6 +205,9 @@ namespace Indium {
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;
+		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const override;
+		virtual uint32_t maxPerStageDescriptorSamplers() const override;
+		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const override;
 
 		void waitForSemaphore(VkSemaphore semaphore, uint64_t targetValue, std::function<void()> callback);
 
