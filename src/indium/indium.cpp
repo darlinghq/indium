@@ -79,7 +79,10 @@ void Indium::init(const char** additionalExtensions, size_t additionalExtensionC
 		DynamicVK::vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
 		available.resize(count);
 
-		for (const char* name: { "VK_KHR_xlib_surface", "VK_KHR_wayland_surface" }) {
+		// VK_EXT_swapchain_colorspace is required for a surface to advertise the PQ and HLG color
+		// spaces; without it a swapchain can only use sRGB even on an HDR display.
+		for (const char* name: { "VK_KHR_xlib_surface", "VK_KHR_wayland_surface",
+		                         VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME }) {
 			for (const auto& prop: available) {
 				if (strcmp(prop.extensionName, name) == 0) {
 					extensionSet.insert(name);

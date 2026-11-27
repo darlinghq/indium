@@ -2,6 +2,9 @@
 
 #include <indium-kit/layer.hpp>
 
+#include <indium-kit/hdr.private.hpp>
+
+#include <indium/hdr-compat.hpp>
 #include <indium/indium.private.hpp>
 
 #include <atomic>
@@ -25,6 +28,7 @@ namespace IndiumKit {
 		size_t width = 0;
 		size_t height = 0;
 		Indium::PixelFormat pixelFormat = Indium::PixelFormat::BGRA8Unorm;
+		VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 		bool framebufferOnly = true;
 
 		~SwapchainState();
@@ -79,6 +83,7 @@ namespace IndiumKit {
 		uint32_t _imageCount = 3;
 		bool _framebufferOnly = true;
 		bool _displaySync = true;
+		HdrMetadata _hdrMetadata;
 
 		// guards the swapchain generation and the settings above
 		std::mutex _stateMutex;
@@ -116,6 +121,15 @@ namespace IndiumKit {
 
 		static void runWaiter(std::shared_ptr<Waiter> waiter, std::shared_ptr<Indium::PrivateDevice> device);
 
+		/** The color space the requested HDR transfer function needs, or sRGB for SDR content. */
+		static VkColorSpaceKHR hdrColorSpace(HdrTransferFunction transfer);
+
+		/** Whether the surface can present `format` in `colorSpace`. */
+		bool surfaceSupportsFormat(VkFormat format, VkColorSpaceKHR colorSpace);
+
+		/** Applies the current metadata to a swapchain whose color space can carry it. */
+		void applyHdrMetadata(const std::shared_ptr<SwapchainState>& state);
+
 		// Builds a swapchain for the current settings, or returns null when the surface cannot present them.
 		std::shared_ptr<SwapchainState> createSwapchain(VkSwapchainKHR oldSwapchain);
 
@@ -133,6 +147,7 @@ namespace IndiumKit {
 		virtual void setImageCount(uint32_t count) override;
 		virtual void setFramebufferOnly(bool framebufferOnly) override;
 		virtual void setDisplaySyncEnabled(bool enabled) override;
+		virtual void setHdrMetadata(const HdrMetadata& metadata) override;
 
 		std::shared_ptr<Indium::Device> device();
 

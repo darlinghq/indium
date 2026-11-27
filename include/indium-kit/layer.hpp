@@ -4,6 +4,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 
@@ -49,6 +50,48 @@ namespace IndiumKit {
 	 * exists, since the surface may be presentable by only some of them.
 	 */
 	bool canPresent(const std::shared_ptr<Indium::Device>& device, VkSurfaceKHR surface);
+
+	/** The transfer function of the HDR content presented by a layer. */
+	enum class HdrTransferFunction: uint8_t {
+		None,
+		/** SMPTE ST 2084 (PQ), as used by HDR10. */
+		PQ,
+		/** ITU-R BT.2100 hybrid log-gamma. */
+		HLG,
+	};
+
+	/**
+	 * HDR metadata for a layer's swapchain, obtained from CAEDRMetadata on the guest side. Any field
+	 * left at zero is unknown, which Vulkan also represents as zero; the transfer function selects the
+	 * swapchain's color space. Chromaticities are CIE 1931 x/y values in [0, 1], luminances in nits.
+	 */
+	struct HdrMetadata {
+		HdrTransferFunction transfer = HdrTransferFunction::None;
+		std::array<float, 2> displayPrimaryRed { 0, 0 };
+		std::array<float, 2> displayPrimaryGreen { 0, 0 };
+		std::array<float, 2> displayPrimaryBlue { 0, 0 };
+		std::array<float, 2> whitePoint { 0, 0 };
+		float maxLuminance = 0;
+		float minLuminance = 0;
+		float maxContentLightLevel = 0;
+		float maxFrameAverageLightLevel = 0;
+	};
+
+	inline bool operator==(const HdrMetadata& lhs, const HdrMetadata& rhs) {
+		return lhs.transfer == rhs.transfer &&
+		       lhs.displayPrimaryRed == rhs.displayPrimaryRed &&
+		       lhs.displayPrimaryGreen == rhs.displayPrimaryGreen &&
+		       lhs.displayPrimaryBlue == rhs.displayPrimaryBlue &&
+		       lhs.whitePoint == rhs.whitePoint &&
+		       lhs.maxLuminance == rhs.maxLuminance &&
+		       lhs.minLuminance == rhs.minLuminance &&
+		       lhs.maxContentLightLevel == rhs.maxContentLightLevel &&
+		       lhs.maxFrameAverageLightLevel == rhs.maxFrameAverageLightLevel;
+	}
+
+	inline bool operator!=(const HdrMetadata& lhs, const HdrMetadata& rhs) {
+		return !(lhs == rhs);
+	}
 
 	// this is supposed to be CAMetalLayer
 	class Layer {
@@ -100,5 +143,14 @@ namespace IndiumKit {
 
 		/** Whether presentation waits for the display's vertical blank (the default). */
 		virtual void setDisplaySyncEnabled(bool enabled) = 0;
+
+		/**
+		 * Sets the HDR metadata applied to the swapchain with vkSetHdrMetadataEXT. When the transfer
+		 * function changes, the swapchain is recreated so that it uses the matching HDR color space;
+		 * if the surface cannot present that color space, the layer falls back to sRGB. Changing only
+		 * the values updates the metadata of the current swapchain without recreating it. Metadata is
+		 * ignored when the Vulkan device does not support VK_EXT_hdr_metadata.
+		 */
+		virtual void setHdrMetadata(const HdrMetadata& metadata) = 0;
 	};
 };

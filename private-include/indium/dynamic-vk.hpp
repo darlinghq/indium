@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 
+#include <indium/hdr-compat.hpp>
 #include <indium/instance.private.hpp>
 
 #include <mutex>
@@ -215,6 +216,7 @@ namespace Indium {
 			_macro(vkQueueSubmit2) \
 			_macro(vkGetQueryPoolResults) \
 			_macro(vkResetQueryPool) \
+			_macro(vkSetHdrMetadataEXT) \
 			_macro(vkSignalSemaphore) \
 			_macro(vkUnmapMemory) \
 			_macro(vkUpdateDescriptorSets) \

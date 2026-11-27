@@ -357,6 +357,8 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		{ VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME, Feature::ExternalMemoryDMABuf },
 		{ VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME, Feature::ImageDRMFormatModifier },
 		{ VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, Feature::ExternalMemoryHost },
+		// No feature struct: the extension only adds vkSetHdrMetadataEXT.
+		{ VK_EXT_HDR_METADATA_EXTENSION_NAME, Feature::HdrMetadata },
 	};
 
 	for (const auto& prop: extProps) {

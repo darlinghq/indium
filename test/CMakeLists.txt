@@ -114,6 +114,12 @@ target_include_directories(indium-test-vertex-plan PRIVATE "${INDIUM_ROOT}/inclu
 set_target_properties(indium-test-vertex-plan PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 add_test(NAME vertex-plan COMMAND indium-test-vertex-plan)
 
+# HDR metadata conversion and the swapchain color space for each transfer function need no device.
+add_executable(indium-test-hdr-metadata hdr-metadata/hdr-metadata.cpp)
+target_include_directories(indium-test-hdr-metadata PRIVATE "${INDIUM_ROOT}/include" "${INDIUM_ROOT}/private-include")
+set_target_properties(indium-test-hdr-metadata PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+add_test(NAME hdr-metadata COMMAND indium-test-hdr-metadata)
+
 # init() must report a libLLVM major mismatch with a false return, not an exception (Metal calls it
 # from a library constructor); the library the test loads claims to be LLVM 1.
 add_library(indium-test-fake-llvm MODULE dynamic-llvm-mismatch/fake-llvm.cpp)
