@@ -99,6 +99,8 @@ namespace IndiumKit {
 		bool _framebufferOnly = true;
 		bool _displaySync = true;
 		HdrMetadata _hdrMetadata;
+		ColorSpace _colorSpace = ColorSpace::SRGB;
+		bool _extendedDynamicRange = false;
 
 		// guards the swapchain generation and the settings above
 		std::mutex _stateMutex;
@@ -139,9 +141,6 @@ namespace IndiumKit {
 		/** The color space the requested HDR transfer function needs, or sRGB for SDR content. */
 		static VkColorSpaceKHR hdrColorSpace(HdrTransferFunction transfer);
 
-		/** Whether the surface can present `format` in `colorSpace`. */
-		bool surfaceSupportsFormat(VkFormat format, VkColorSpaceKHR colorSpace);
-
 		/** How an extended-range pixel format reaches the surface: the swapchain it is converted into. */
 		struct ExtendedRangeTarget {
 			VkFormat format;
@@ -149,6 +148,22 @@ namespace IndiumKit {
 			// the swapchain takes linear light, which the gamma encoded values of a non-sRGB format are converted to
 			bool linearLight;
 		};
+
+		/**
+		 * How a layer's content reaches the surface. `intermediate` layers render to textures of their own and
+		 * convert them into the swapchain image (see SwapchainState::ExtendedRangePresentation); the others
+		 * render to the swapchain image. `decode` is for the gamma encoded values of an extended-range pixel
+		 * format that go to a linear swapchain.
+		 */
+		struct PresentationTarget {
+			VkFormat format = VK_FORMAT_UNDEFINED;
+			VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+			bool intermediate = false;
+			bool decode = false;
+		};
+		bool choosePresentationTarget(Indium::PixelFormat pixelFormat, HdrTransferFunction transfer, ColorSpace colorSpace, bool extendedDynamicRange,
+		                              const std::vector<VkSurfaceFormatKHR>& surfaceFormats, PresentationTarget& target);
+		std::vector<VkSurfaceFormatKHR> surfaceFormats();
 		bool chooseExtendedRangeTarget(Indium::PixelFormat pixelFormat, const std::vector<VkSurfaceFormatKHR>& surfaceFormats, ExtendedRangeTarget& target);
 		bool createExtendedRangePresentation(const std::shared_ptr<SwapchainState>& state, bool decode);
 
@@ -173,6 +188,7 @@ namespace IndiumKit {
 		virtual void setFramebufferOnly(bool framebufferOnly) override;
 		virtual void setDisplaySyncEnabled(bool enabled) override;
 		virtual void setHdrMetadata(const HdrMetadata& metadata) override;
+		virtual bool setColorSpace(ColorSpace colorSpace, bool extendedDynamicRange) override;
 
 		std::shared_ptr<Indium::Device> device();
 
