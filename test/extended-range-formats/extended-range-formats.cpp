@@ -11,6 +11,9 @@
 //  - the things a texture of these formats cannot do are refused.
 
 #include <indium/indium.hpp>
+#include <indium/device.private.hpp>
+#include <indium/dynamic-vk.hpp>
+#include <indium/texture.private.hpp>
 
 #include <array>
 #include <atomic>
@@ -330,6 +333,98 @@ static void testRendering(Context& context, const FormatInfo& info) {
 		"red " + std::to_string(blendedCodes[0][2]) + " green " + std::to_string(blendedCodes[0][1]) + " blue " + std::to_string(blendedCodes[0][0]));
 }
 
+
+// The kernel that converts the gamma encoded values of a non-sRGB format to linear light for presentation, run on
+// an RGBA32Float texture: red, green and blue go through the sRGB curve (mirrored below zero), alpha is left alone.
+static void testEncodedToLinearKernel(Context& context) {
+	namespace DynamicVK = Indium::DynamicVK;
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(context.device);
+	const float inputs[] = { -0.752941f, -0.3f, -0.03f, 0.0f, 0.03f, 0.3f, 0.5f, 1.0f, 1.25098f, 2.0f };
+	const size_t count = sizeof(inputs) / sizeof(inputs[0]);
+	auto texture = makeTexture(context, PixelFormat::RGBA32Float, count, 1, Indium::TextureUsage::ShaderRead | Indium::TextureUsage::ShaderWrite);
+	std::vector<float> texels(count * 4);
+	for (size_t i = 0; i < count; ++i) {
+		texels[i * 4] = inputs[i];
+		texels[i * 4 + 1] = inputs[count - 1 - i];
+		texels[i * 4 + 2] = inputs[i];
+		texels[i * 4 + 3] = 0.25f + 0.1f * i;
+	}
+	texture->replaceRegion(Indium::Region::make2D(0, 0, count, 1), 0, texels.data(), count * 16);
+	privateDevice->textureUploader().flush();
+
+	VkDevice device = privateDevice->device();
+	auto& kernel = privateDevice->extendedRangeKernel();
+	VkDescriptorPoolSize poolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 };
+	VkDescriptorPoolCreateInfo poolInfo {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	VkDescriptorPool pool = VK_NULL_HANDLE;
+	DynamicVK::vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool);
+	VkDescriptorSetLayout layout = kernel.setLayout();
+	VkDescriptorSetAllocateInfo setInfo {};
+	setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	setInfo.descriptorPool = pool;
+	setInfo.descriptorSetCount = 1;
+	setInfo.pSetLayouts = &layout;
+	VkDescriptorSet set = VK_NULL_HANDLE;
+	DynamicVK::vkAllocateDescriptorSets(device, &setInfo, &set);
+
+	VkCommandPoolCreateInfo commandPoolInfo {};
+	commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	commandPoolInfo.queueFamilyIndex = *privateDevice->graphicsQueueFamilyIndex();
+	VkCommandPool commandPool = VK_NULL_HANDLE;
+	DynamicVK::vkCreateCommandPool(device, &commandPoolInfo, nullptr, &commandPool);
+	VkCommandBufferAllocateInfo allocateInfo {};
+	allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocateInfo.commandPool = commandPool;
+	allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocateInfo.commandBufferCount = 1;
+	VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+	DynamicVK::vkAllocateCommandBuffers(device, &allocateInfo, &commandBuffer);
+	VkCommandBufferBeginInfo beginInfo {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	DynamicVK::vkBeginCommandBuffer(commandBuffer, &beginInfo);
+	auto privateTexture = std::dynamic_pointer_cast<Indium::PrivateTexture>(texture);
+	kernel.record(commandBuffer, set, privateTexture->imageView(), count, 1, Indium::ExtendedRangeKernel::Mode::EncodedToLinear);
+	DynamicVK::vkEndCommandBuffer(commandBuffer);
+
+	VkFenceCreateInfo fenceInfo {};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	VkFence fence = VK_NULL_HANDLE;
+	DynamicVK::vkCreateFence(device, &fenceInfo, nullptr, &fence);
+	VkSubmitInfo submit {};
+	submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submit.commandBufferCount = 1;
+	submit.pCommandBuffers = &commandBuffer;
+	{
+		std::lock_guard lock(privateDevice->graphicsQueueMutex());
+		DynamicVK::vkQueueSubmit(privateDevice->graphicsQueue(), 1, &submit, fence);
+	}
+	DynamicVK::vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+	DynamicVK::vkDestroyFence(device, fence, nullptr);
+	DynamicVK::vkDestroyCommandPool(device, commandPool, nullptr);
+	DynamicVK::vkDestroyDescriptorPool(device, pool, nullptr);
+
+	std::vector<float> values(count * 4);
+	texture->getBytes(Indium::Region::make2D(0, 0, count, 1), 0, values.data(), count * 16);
+	auto curve = [](float encoded) {
+		float magnitude = std::fabs(encoded);
+		float linear = magnitude <= 0.04045f ? magnitude / 12.92f : std::pow((magnitude + 0.055f) / 1.055f, 2.4f);
+		return std::copysign(linear, encoded);
+	};
+	size_t bad = 0;
+	for (size_t i = 0; i < count; ++i) {
+		float want[3] = { curve(texels[i * 4]), curve(texels[i * 4 + 1]), curve(texels[i * 4 + 2]) };
+		for (int channel = 0; channel < 3; ++channel) {
+			bad += std::fabs(values[i * 4 + channel] - want[channel]) > 4e-6f * std::fmax(1.0f, std::fabs(want[channel]));
+		}
+		bad += values[i * 4 + 3] != texels[i * 4 + 3];
+	}
+	expect(bad == 0, "the presentation pass turns gamma encoded values into linear light and leaves alpha alone", std::to_string(bad) + " differ");
+}
+
 static void testRefusals(Context& context, const FormatInfo& info) {
 	auto texture = makeTexture(context, info.format, 4, 4, Indium::TextureUsage::ShaderRead | Indium::TextureUsage::PixelFormatView);
 	expect(texture != nullptr, std::string(info.name) + ": a texture can be made");
@@ -387,6 +482,7 @@ int main() {
 		samplerDescriptor.minFilter = samplerDescriptor.magFilter = Indium::SamplerMinMagFilter::Linear;
 		context.linearSampler = context.device->newSamplerState(samplerDescriptor);
 
+		testEncodedToLinearKernel(context);
 		for (const auto& info: formats) {
 			testRefusals(context, info);
 			testRawBytesRoundTrip(context, info);

@@ -111,6 +111,14 @@ IndiumKit::SwapchainState::~SwapchainState() {
 		DynamicVK::vkDeviceWaitIdle(device->device());
 	}
 
+	// the presentation may still read the images of an extended-range layer, which the wait above covers
+	if (extendedRange.commandPool != VK_NULL_HANDLE) {
+		DynamicVK::vkDestroyCommandPool(device->device(), extendedRange.commandPool, nullptr);
+	}
+	if (extendedRange.descriptorPool != VK_NULL_HANDLE) {
+		DynamicVK::vkDestroyDescriptorPool(device->device(), extendedRange.descriptorPool, nullptr);
+	}
+
 	for (auto& imageView: imageViews) {
 		DynamicVK::vkDestroyImageView(device->device(), imageView, nullptr);
 	}
@@ -130,7 +138,11 @@ IndiumKit::PrivateDrawable::PrivateDrawable(std::shared_ptr<PrivateLayer> layer,
 	_state(state),
 	_swapchainImageIndex(swapchainImageIndex)
 {
-	_extraWaitSemaphore = extraWaitSemaphore;
+	if (state->extendedRange.textures.empty()) {
+		_extraWaitSemaphore = extraWaitSemaphore;
+	} else {
+		_acquireSemaphore = extraWaitSemaphore;
+	}
 };
 
 IndiumKit::PrivateDrawable::~PrivateDrawable() {
@@ -142,6 +154,9 @@ IndiumKit::PrivateDrawable::~PrivateDrawable() {
 };
 
 std::shared_ptr<Indium::Texture> IndiumKit::PrivateDrawable::texture() {
+	if (!_state->extendedRange.textures.empty()) {
+		return _state->extendedRange.textures[_swapchainImageIndex];
+	}
 	return shared_from_this();
 };
 
@@ -227,8 +242,68 @@ VkImageLayout IndiumKit::PrivateDrawable::imageLayout() {
 void IndiumKit::PrivateDrawable::present() {
 	_presented = true;
 
-	auto sema = synchronizePresentation();
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(device());
+	std::shared_ptr<Indium::BinarySemaphore> sema;
+	if (!_state->extendedRange.textures.empty()) {
+		// The work that rendered the texture signals its timeline; the conversion into the swapchain image comes
+		// after it (and after the image is free), and presenting after the conversion.
+		auto texture = std::dynamic_pointer_cast<Indium::PrivateTexture>(_state->extendedRange.textures[_swapchainImageIndex]);
+		uint64_t waitValue = 0, signalValue = 0;
+		std::shared_ptr<Indium::BinarySemaphore> unused;
+		const auto& timeline = texture->acquire(waitValue, unused, signalValue);
+		bool current = _layer->isCurrent(_state);
+		sema = _state->extendedRange.presentSemaphores[_swapchainImageIndex];
+
+		VkSemaphoreSubmitInfo waits[2] {};
+		uint32_t waitCount = 0;
+		waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+		waits[waitCount].semaphore = timeline.semaphore;
+		waits[waitCount].value = waitValue;
+		waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		++waitCount;
+		if (_acquireSemaphore) {
+			waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+			waits[waitCount].semaphore = _acquireSemaphore->semaphore;
+			waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			++waitCount;
+		}
+		VkSemaphoreSubmitInfo signals[2] {};
+		uint32_t signalCount = 0;
+		signals[signalCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+		signals[signalCount].semaphore = timeline.semaphore;
+		signals[signalCount].value = signalValue;
+		signals[signalCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+		++signalCount;
+		if (current) {
+			signals[signalCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+			signals[signalCount].semaphore = sema->semaphore;
+			signals[signalCount].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+			++signalCount;
+		}
+		VkCommandBufferSubmitInfo commands {};
+		commands.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+		commands.commandBuffer = _state->extendedRange.commandBuffers[_swapchainImageIndex];
+
+		VkSubmitInfo2 submit {};
+		submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+		submit.waitSemaphoreInfoCount = waitCount;
+		submit.pWaitSemaphoreInfos = waits;
+		// a frame of a swapchain that was replaced is dropped; its semaphores still have to be waited for and signaled
+		submit.commandBufferInfoCount = current ? 1 : 0;
+		submit.pCommandBufferInfos = &commands;
+		submit.signalSemaphoreInfoCount = signalCount;
+		submit.pSignalSemaphoreInfos = signals;
+		{
+			std::lock_guard queueLock(privateDevice->graphicsQueueMutex());
+			DynamicVK::vkQueueSubmit2(privateDevice->graphicsQueue(), 1, &submit, VK_NULL_HANDLE);
+		}
+		_acquireSemaphore.reset();
+		if (!current) {
+			sema = nullptr;
+		}
+	} else {
+		sema = synchronizePresentation();
+	}
 
 	VkResult result = VK_ERROR_OUT_OF_DATE_KHR;
 	bool waitForDisplay = false;
@@ -446,6 +521,169 @@ IndiumKit::PrivateLayer::~PrivateLayer() {
 	DynamicVK::vkDestroySurfaceKHR(Indium::globalInstance, _surface, nullptr);
 };
 
+// An extended-range layer renders to textures of its own (see SwapchainState::ExtendedRangePresentation), so
+// the swapchain only has to show their values. Linear light in 16-bit floats shows all of them, those beyond 0..1
+// included, to a display that can; otherwise the values are clamped to what an 8-bit surface shows, for which the
+// sRGB formats are written to a swapchain format that applies the curve and the others to one that does not.
+bool IndiumKit::PrivateLayer::chooseExtendedRangeTarget(Indium::PixelFormat pixelFormat, const std::vector<VkSurfaceFormatKHR>& surfaceFormats, ExtendedRangeTarget& target) {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	if (!privateDevice->extendedRangeEnabled()) {
+		return false;
+	}
+	auto offers = [&](VkFormat format, VkColorSpaceKHR colorSpace) {
+		auto found = std::any_of(surfaceFormats.begin(), surfaceFormats.end(), [&](const VkSurfaceFormatKHR& f) {
+			return f.format == format && f.colorSpace == colorSpace;
+		});
+		if (!found) {
+			return false;
+		}
+		// the conversion is a blit into the image
+		VkFormatProperties properties {};
+		DynamicVK::vkGetPhysicalDeviceFormatProperties(privateDevice->physicalDevice(), format, &properties);
+		return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
+	};
+
+	if (offers(VK_FORMAT_R16G16B16A16_SFLOAT, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)) {
+		target = { VK_FORMAT_R16G16B16A16_SFLOAT, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, true };
+		return true;
+	}
+	bool srgb = Indium::ExtendedRange::isSRGB(pixelFormat);
+	for (VkFormat candidate: srgb ? std::initializer_list<VkFormat> { VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB } : std::initializer_list<VkFormat> { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM }) {
+		if (offers(candidate, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)) {
+			target = { candidate, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, false };
+			return true;
+		}
+	}
+	return false;
+};
+
+// Makes the textures the drawables of the swapchain render to, and records for each image the conversion into it: the
+// values of the texture are converted to linear light first if the swapchain takes that (`decode`) and are
+// blitted into the image then. The blit converts between the formats, clamps for an integer format, and applies the
+// curve for an sRGB one.
+bool IndiumKit::PrivateLayer::createExtendedRangePresentation(const std::shared_ptr<SwapchainState>& state, bool decode) {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	VkDevice vkDevice = privateDevice->device();
+	auto& presentation = state->extendedRange;
+
+	Indium::TextureUsage usage = Indium::TextureUsage::RenderTarget | Indium::TextureUsage::ShaderRead;
+	if (!state->framebufferOnly) {
+		usage = usage | Indium::TextureUsage::ShaderWrite;
+	}
+	for (size_t i = 0; i < state->images.size(); ++i) {
+		auto descriptor = Indium::TextureDescriptor::texture2DDescriptor(state->pixelFormat, state->width, state->height, false);
+		descriptor.resourceOptions = Indium::ResourceOptions::StorageModePrivate;
+		descriptor.usage = usage;
+		auto texture = _device->newTexture(descriptor);
+		if (!texture) {
+			return false;
+		}
+		presentation.textures.push_back(texture);
+		presentation.presentSemaphores.push_back(privateDevice->getWrappedBinarySemaphore());
+	}
+
+	VkCommandPoolCreateInfo poolInfo {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolInfo.queueFamilyIndex = *privateDevice->graphicsQueueFamilyIndex();
+	if (DynamicVK::vkCreateCommandPool(vkDevice, &poolInfo, nullptr, &presentation.commandPool) != VK_SUCCESS) {
+		return false;
+	}
+	presentation.commandBuffers.resize(state->images.size());
+	VkCommandBufferAllocateInfo allocateInfo {};
+	allocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocateInfo.commandPool = presentation.commandPool;
+	allocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocateInfo.commandBufferCount = static_cast<uint32_t>(state->images.size());
+	if (DynamicVK::vkAllocateCommandBuffers(vkDevice, &allocateInfo, presentation.commandBuffers.data()) != VK_SUCCESS) {
+		return false;
+	}
+
+	std::vector<VkDescriptorSet> sets(state->images.size(), VK_NULL_HANDLE);
+	if (decode) {
+		VkDescriptorPoolSize poolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, static_cast<uint32_t>(state->images.size()) };
+		VkDescriptorPoolCreateInfo descriptorPoolInfo {};
+		descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+		descriptorPoolInfo.maxSets = static_cast<uint32_t>(state->images.size());
+		descriptorPoolInfo.poolSizeCount = 1;
+		descriptorPoolInfo.pPoolSizes = &poolSize;
+		if (DynamicVK::vkCreateDescriptorPool(vkDevice, &descriptorPoolInfo, nullptr, &presentation.descriptorPool) != VK_SUCCESS) {
+			return false;
+		}
+		std::vector<VkDescriptorSetLayout> layouts(state->images.size(), privateDevice->extendedRangeKernel().setLayout());
+		VkDescriptorSetAllocateInfo setInfo {};
+		setInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+		setInfo.descriptorPool = presentation.descriptorPool;
+		setInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+		setInfo.pSetLayouts = layouts.data();
+		if (DynamicVK::vkAllocateDescriptorSets(vkDevice, &setInfo, sets.data()) != VK_SUCCESS) {
+			return false;
+		}
+	}
+
+	for (size_t i = 0; i < state->images.size(); ++i) {
+		auto texture = std::dynamic_pointer_cast<Indium::PrivateTexture>(presentation.textures[i]);
+		VkCommandBuffer commandBuffer = presentation.commandBuffers[i];
+
+		VkCommandBufferBeginInfo beginInfo {};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		DynamicVK::vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+		if (decode) {
+			VkMemoryBarrier before {};
+			before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+			before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+			before.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+			privateDevice->extendedRangeKernel().record(commandBuffer, sets[i], texture->imageView(), static_cast<uint32_t>(state->width), static_cast<uint32_t>(state->height),
+				Indium::ExtendedRangeKernel::Mode::EncodedToLinear);
+		}
+
+		VkImageMemoryBarrier barriers[2] {};
+		for (auto& barrier: barriers) {
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+		}
+		barriers[0].image = texture->image();
+		barriers[0].srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+		barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barriers[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barriers[1].image = state->images[i];
+		barriers[1].srcAccessMask = 0;
+		barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+		VkImageBlit blit {};
+		blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blit.srcSubresource.layerCount = 1;
+		blit.srcOffsets[1] = { static_cast<int32_t>(state->width), static_cast<int32_t>(state->height), 1 };
+		blit.dstSubresource = blit.srcSubresource;
+		blit.dstOffsets[1] = blit.srcOffsets[1];
+		DynamicVK::vkCmdBlitImage(commandBuffer, texture->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, state->images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+
+		barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		barriers[0].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+		barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barriers[1].dstAccessMask = 0;
+		barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barriers[1].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+
+		if (DynamicVK::vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+			return false;
+		}
+	}
+	return true;
+};
+
 std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapchain(VkSwapchainKHR oldSwapchain) {
 	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
 	auto physicalDevice = privateDevice->physicalDevice();
@@ -475,13 +713,24 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 
 	VkFormat format = Indium::pixelFormatToVkFormat(_pixelFormat);
 	VkColorSpaceKHR colorSpace = hdrColorSpace(_hdrMetadata.transfer);
+	const bool extendedRange = Indium::pixelFormatIsExtendedRange(_pixelFormat);
+	ExtendedRangeTarget extendedRangeTarget {};
+	if (extendedRange) {
+		// the format of the texture the drawables render to is not the swapchain's, and an HDR transfer function
+		// of the metadata does not apply to values that are shown as they are
+		if (!chooseExtendedRangeTarget(_pixelFormat, formats, extendedRangeTarget)) {
+			return nullptr;
+		}
+		format = extendedRangeTarget.format;
+		colorSpace = extendedRangeTarget.colorSpace;
+	}
 	bool formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
 		return f.format == format && f.colorSpace == colorSpace;
 	});
 
 	// A surface that cannot present the requested HDR transfer function still presents the same pixels
 	// as SDR; the metadata is not applied to it (see applyHdrMetadata()).
-	if (!formatSupported && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+	if (!formatSupported && !extendedRange && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
 		colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 		formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
 			return f.format == format && f.colorSpace == colorSpace;
@@ -515,7 +764,13 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 	}
 
 	VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-	if (!_framebufferOnly) {
+	if (extendedRange) {
+		// the images are written by the blit of the conversion, and only drawn to when the drawables are the images
+		usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		if (!(caps.supportedUsageFlags & usage)) {
+			return nullptr;
+		}
+	} else if (!_framebufferOnly) {
 		usage |= (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT) & caps.supportedUsageFlags;
 	}
 
@@ -588,7 +843,7 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 		viewInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
 		viewInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
 		viewInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-		viewInfo.subresourceRange.aspectMask = Indium::pixelFormatToVkImageAspectFlags(_pixelFormat);
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		viewInfo.subresourceRange.baseMipLevel = 0;
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.baseArrayLayer = 0;
@@ -600,6 +855,13 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 			return nullptr;
 		}
 		state->imageViews.push_back(view);
+	}
+
+	if (extendedRange) {
+		bool decode = extendedRangeTarget.linearLight && !Indium::ExtendedRange::isSRGB(_pixelFormat);
+		if (!createExtendedRangePresentation(state, decode)) {
+			return nullptr;
+		}
 	}
 
 	return state;
@@ -714,6 +976,25 @@ Indium::PixelFormat IndiumKit::PrivateLayer::pixelFormat() {
 };
 
 bool IndiumKit::PrivateLayer::setPixelFormat(Indium::PixelFormat pixelFormat) {
+	if (Indium::pixelFormatIsExtendedRange(pixelFormat)) {
+		auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+		uint32_t count = 0;
+		DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
+		std::vector<VkSurfaceFormatKHR> formats(count);
+		DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
+		formats.resize(count);
+		ExtendedRangeTarget target {};
+		if (!chooseExtendedRangeTarget(pixelFormat, formats, target)) {
+			return false;
+		}
+		std::scoped_lock lock(_stateMutex);
+		if (pixelFormat != _pixelFormat) {
+			_pixelFormat = pixelFormat;
+			_outdated = true;
+		}
+		return true;
+	}
+
 	VkFormat format = Indium::pixelFormatToVkFormat(pixelFormat);
 	HdrTransferFunction transfer;
 	{

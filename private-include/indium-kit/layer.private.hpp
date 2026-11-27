@@ -31,6 +31,18 @@ namespace IndiumKit {
 		VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 		bool framebufferOnly = true;
 
+		// A layer in an extended-range pixel format (see indium/extended-range.private.hpp) has no swapchain image of
+		// its format: it renders to a texture of its own for each image and converts that into the image when presenting.
+		// The conversion of every image is recorded once, here.
+		struct ExtendedRangePresentation {
+			std::vector<std::shared_ptr<Indium::Texture>> textures;
+			VkCommandPool commandPool = VK_NULL_HANDLE;
+			std::vector<VkCommandBuffer> commandBuffers;
+			VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+			std::vector<std::shared_ptr<Indium::BinarySemaphore>> presentSemaphores;
+		};
+		ExtendedRangePresentation extendedRange;
+
 		~SwapchainState();
 	};
 
@@ -41,6 +53,9 @@ namespace IndiumKit {
 		uint32_t _swapchainImageIndex;
 		std::function<void(bool)> _presentCallback;
 		bool _presented = false;
+		// the semaphore the presentation engine signals when the image is free, of a layer whose drawables render to
+		// a texture of their own (the conversion into the image waits for it)
+		std::shared_ptr<Indium::BinarySemaphore> _acquireSemaphore;
 
 	public:
 		PrivateDrawable(std::shared_ptr<PrivateLayer> layer, std::shared_ptr<SwapchainState> state, uint32_t swapchainImageIndex, std::shared_ptr<Indium::BinarySemaphore> extraWaitSemaphore);
@@ -126,6 +141,16 @@ namespace IndiumKit {
 
 		/** Whether the surface can present `format` in `colorSpace`. */
 		bool surfaceSupportsFormat(VkFormat format, VkColorSpaceKHR colorSpace);
+
+		/** How an extended-range pixel format reaches the surface: the swapchain it is converted into. */
+		struct ExtendedRangeTarget {
+			VkFormat format;
+			VkColorSpaceKHR colorSpace;
+			// the swapchain takes linear light, which the gamma encoded values of a non-sRGB format are converted to
+			bool linearLight;
+		};
+		bool chooseExtendedRangeTarget(Indium::PixelFormat pixelFormat, const std::vector<VkSurfaceFormatKHR>& surfaceFormats, ExtendedRangeTarget& target);
+		bool createExtendedRangePresentation(const std::shared_ptr<SwapchainState>& state, bool decode);
 
 		/** Applies the current metadata to a swapchain whose color space can carry it. */
 		void applyHdrMetadata(const std::shared_ptr<SwapchainState>& state);
