@@ -187,13 +187,10 @@ namespace Indium {
 			case PixelFormat::Depth32Float_Stencil8: return VK_FORMAT_D32_SFLOAT_S8_UINT;
 			case PixelFormat::X32_Stencil8:          return VK_FORMAT_UNDEFINED;
 			case PixelFormat::X24_Stencil8:          return VK_FORMAT_UNDEFINED;
-			// Metal's XR formats put blue in the least significant 10 bits and two padding/alpha bits
-			// at the top, which is Vulkan's A2R10G10B10 packing. The HDR color space of the swapchain
-			// describes how the extended-range values in them are transferred to the display.
-			case PixelFormat::BGRA10_XR:             return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
-			case PixelFormat::BGRA10_XR_sRGB:        return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
-			case PixelFormat::BGR10_XR:              return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
-			case PixelFormat::BGR10_XR_sRGB:         return VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+			case PixelFormat::BGRA10_XR:             return VK_FORMAT_UNDEFINED;
+			case PixelFormat::BGRA10_XR_sRGB:        return VK_FORMAT_UNDEFINED;
+			case PixelFormat::BGR10_XR:              return VK_FORMAT_UNDEFINED;
+			case PixelFormat::BGR10_XR_sRGB:         return VK_FORMAT_UNDEFINED;
 
 			default:
 				return VK_FORMAT_UNDEFINED;

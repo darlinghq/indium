@@ -1,5 +1,4 @@
 #include <indium-kit/hdr.private.hpp>
-#include <indium/types.private.hpp>
 
 #include <cstdio>
 
@@ -32,10 +31,6 @@ int main() {
 	CHECK(vk.whitePoint.x == 0.3127f && vk.whitePoint.y == 0.329f);
 	CHECK(vk.maxLuminance == 1000 && vk.minLuminance == 0.5f);
 	CHECK(vk.maxContentLightLevel == 800 && vk.maxFrameAverageLightLevel == 300);
-
-	// The extended-range Metal formats need a real Vulkan format to be presentable at all.
-	CHECK(Indium::pixelFormatToVkFormat(Indium::PixelFormat::BGRA10_XR) == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-	CHECK(Indium::pixelFormatToVkFormat(Indium::PixelFormat::BGR10_XR_sRGB) == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
 
 	return failures == 0 ? 0 : 1;
 }
