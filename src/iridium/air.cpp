@@ -9,6 +9,7 @@
 #include <llvm-c/BitReader.h>
 #include <llvm/Config/llvm-config.h>
 #include <algorithm>
+#include <functional>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -3920,10 +3921,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							if (stepped == op) {
 								reinterpretedVal = tryLoadLogicalReinterpreted(builder, op, opType.targetType, type);
 								if (reinterpretedVal == SPIRV::ResultIDInvalid) {
-									auto wantedInfo = builder.reverseLookupType(type);
-									throw ImpossibleResultID("load reinterprets a local or constant object (src=" +
-										std::to_string((int)opDerefType.backingType) + ":" + std::to_string(opDerefType.size) +
-										" dst=" + std::to_string(wantedInfo ? (int)wantedInfo->backingType : -1) + ":" + std::to_string(wantedInfo ? wantedInfo->size : 0) + ")");
+									throw ImpossibleResultID("load reinterprets a local or constant object");
 								}
 							} else {
 								op = stepped;
@@ -4001,11 +3999,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							ptr = descendToFirstElement(builder, ptr, valSpirvType);
 							if (storePtrType != builder.lookupResultType(ptr)) {
 								if (!tryStoreLogicalReinterpreted(builder, ptr, opType.targetType, opType.pointerStorageClass, val, valSpirvType)) {
-									auto dstInfo = builder.reverseLookupType(opType.targetType);
-									auto srcInfo = builder.reverseLookupType(valSpirvType);
-									throw ImpossibleResultID("store reinterprets a local object (dst=" +
-										std::to_string(dstInfo ? (int)dstInfo->backingType : -1) + ":" + std::to_string(dstInfo ? dstInfo->size : 0) +
-										" src=" + std::to_string(srcInfo ? (int)srcInfo->backingType : -1) + ":" + std::to_string(srcInfo ? srcInfo->size : 0) + ")");
+									throw ImpossibleResultID("store reinterprets a local object");
 								}
 								stored = true;
 							}
