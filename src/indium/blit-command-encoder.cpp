@@ -274,6 +274,9 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	barriers[1].oldLayout = privateDest->imageLayout();
 	barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 	barriers[1].image = privateDest->image();
+	// the levels and slices the copy writes, which need not be those it reads
+	barriers[1].subresourceRange.baseMipLevel = destinationLevel;
+	barriers[1].subresourceRange.baseArrayLayer = destinationSlice;
 
 	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, sizeof(barriers) / sizeof(*barriers), barriers);
 
