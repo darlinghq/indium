@@ -351,8 +351,11 @@ static void testRendering(Context& context, const FormatInfo& info) {
 	render(context, blended, Indium::ClearColor(0.25, 0.5, 0.75, 1.0), makePipeline(context, info.format, blend_shader, blend_shader_len, true));
 	auto blendedCodes = readCodes(info, blended, 2);
 	const uint16_t* blendWant = info.srgb ? blendSrgbCodes : blendLinearCodes;
-	// red, green and alpha (blue is not checked: a Mac clamps the source to the range of the format before blending)
-	bool blendOk = nearCode(blendedCodes[0][2], blendWant[0]) && nearCode(blendedCodes[0][1], blendWant[1]) && (!info.alpha || nearCode(blendedCodes[0][3], blendWant[2]));
+	// The linear formats blend exactly as a Mac does; the sRGB ones may be a code off (their conversions differ between devices), and
+	// so may the alpha, which a Mac computes with less precision (observed on macOS 27.0.1, arm64: 771 where the exact blend rounds to 772).
+	auto blendCode = [&](uint32_t got, uint32_t want) { return info.srgb ? nearCode(got, want) : got == want; };
+	bool blendOk = blendCode(blendedCodes[0][2], blendWant[0]) && blendCode(blendedCodes[0][1], blendWant[1]) && blendCode(blendedCodes[0][0], blendWant[2])
+		&& (!info.alpha || nearCode(blendedCodes[0][3], blendWant[3]));
 	expect(blendOk, std::string(info.name) + ": blending happens on the values and the result is rounded to codes",
 		"red " + std::to_string(blendedCodes[0][2]) + " green " + std::to_string(blendedCodes[0][1]) + " blue " + std::to_string(blendedCodes[0][0]));
 }

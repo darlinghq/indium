@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <set>
+#include <map>
+#include <cstring>
 
 Indium::Function::~Function() {};
 Indium::Library::~Library() {};
@@ -94,7 +96,7 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 {
 	// the varyings of a fragment function may have to be renumbered for a vertex function (fragmentModuleLinkedTo)
 	for (const auto& [name, funcInfo]: _functionInfos) {
-		if (funcInfo.functionType == FunctionType::Fragment && !funcInfo.stageInterface.empty()) {
+		if (funcInfo.functionType == FunctionType::Fragment) {
 			const auto* words = reinterpret_cast<const uint32_t*>(data);
 			_words.assign(words, words + dataLength / sizeof(uint32_t));
 			break;
@@ -253,9 +255,171 @@ namespace {
 	}
 };
 
-VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs) {
+namespace {
+	uint32_t floatBits(float value) {
+		uint32_t bits;
+		std::memcpy(&bits, &value, sizeof(bits));
+		return bits;
+	}
+
+	/**
+	 * Makes the fragment function `entry` clamp the color outputs of `clamps` before it returns: a new entry point calls the
+	 * function, then loads each of those outputs (four 32-bit floats), clamps it with FClamp and stores it back. Nothing is
+	 * done to an output that is not a vec4 of 32-bit floats. Returns false when the module cannot be parsed.
+	 */
+	bool clampFragmentOutputs(std::vector<uint32_t>& words, const std::string& entry, const std::vector<Indium::OutputClamp>& clamps) {
+		constexpr uint32_t opExtInstImport = 11, opMemoryModel = 14, opExecutionMode = 16, opTypeVoid = 19, opTypeFloat = 22, opTypeVector = 23,
+			opTypeFunction = 33, opTypePointer = 32, opConstant = 43, opConstantComposite = 44, opFunction = 54, opFunctionEnd = 56, opFunctionCall = 57,
+			opLoad = 61, opStore = 62, opExtInst = 12, opLabel = 248, opReturn = 253, opExecutionModeId = 331;
+		constexpr uint32_t storageClassOutput = 3, glslFClamp = 43;
+
+		uint32_t entryFunction = 0;
+		std::set<uint32_t> interfaceIDs;
+		std::map<uint32_t, uint32_t> locationOf, pointerTarget, variablePointer;
+		std::map<uint32_t, std::pair<uint32_t, uint32_t>> vectors;
+		std::set<uint32_t> float32;
+		uint32_t glsl = 0, voidType = 0, voidFunction = 0;
+		size_t memoryModelAt = 0, firstFunctionAt = 0;
+
+		for (size_t at = spirvHeaderWords; at < words.size();) {
+			uint32_t count = words[at] >> 16;
+			uint32_t opcode = words[at] & 0xffff;
+			if (count == 0 || at + count > words.size()) {
+				return false;
+			}
+			switch (opcode) {
+				case spirvOpEntryPoint: {
+					size_t nameEnd = 0;
+					if (count >= 4 && spirvLiteralString(words, at + 3, at + count, nameEnd) == entry) {
+						entryFunction = words[at + 2];
+						for (size_t i = nameEnd; i < at + count; ++i) {
+							interfaceIDs.insert(words[i]);
+						}
+					}
+					break;
+				}
+				case opExtInstImport: {
+					size_t end = 0;
+					if (spirvLiteralString(words, at + 2, at + count, end) == "GLSL.std.450") {
+						glsl = words[at + 1];
+					}
+					break;
+				}
+				case opMemoryModel: memoryModelAt = at; break;
+				case opTypeVoid: voidType = words[at + 1]; break;
+				case opTypeFloat: if (count >= 3 && words[at + 2] == 32) { float32.insert(words[at + 1]); } break;
+				case opTypeVector: if (count == 4) { vectors[words[at + 1]] = { words[at + 2], words[at + 3] }; } break;
+				case opTypePointer: if (count == 4 && words[at + 2] == storageClassOutput) { pointerTarget[words[at + 1]] = words[at + 3]; } break;
+				case opTypeFunction: if (count == 3 && voidType != 0 && words[at + 2] == voidType) { voidFunction = words[at + 1]; } break;
+				case spirvOpVariable: if (count >= 4 && words[at + 3] == storageClassOutput) { variablePointer[words[at + 2]] = words[at + 1]; } break;
+				case spirvOpDecorate: if (count == 4 && words[at + 2] == spirvDecorationLocation) { locationOf[words[at + 1]] = words[at + 3]; } break;
+				case opFunction: if (firstFunctionAt == 0) { firstFunctionAt = at; } break;
+				default: break;
+			}
+			at += count;
+		}
+		if (entryFunction == 0 || memoryModelAt == 0 || firstFunctionAt == 0) {
+			return false;
+		}
+
+		struct Target { uint32_t variable, type; const Indium::OutputClamp* clamp; };
+		std::vector<Target> targets;
+		for (const auto& [variable, pointer]: variablePointer) {
+			auto location = locationOf.find(variable);
+			auto target = pointerTarget.find(pointer);
+			if (location == locationOf.end() || target == pointerTarget.end() || interfaceIDs.count(variable) == 0) {
+				continue;
+			}
+			auto vector = vectors.find(target->second);
+			if (vector == vectors.end() || vector->second.second != 4 || float32.count(vector->second.first) == 0) {
+				continue;
+			}
+			for (const auto& clamp: clamps) {
+				if (clamp.location == location->second) {
+					targets.push_back({ variable, target->second, &clamp });
+				}
+			}
+		}
+		if (targets.empty()) {
+			return true;
+		}
+
+		uint32_t bound = words[3];
+		std::vector<uint32_t> importWords, globals, function;
+		auto emit = [](std::vector<uint32_t>& into, uint32_t opcode, std::initializer_list<uint32_t> operands) {
+			into.push_back((static_cast<uint32_t>(operands.size()) + 1) << 16 | opcode);
+			into.insert(into.end(), operands.begin(), operands.end());
+		};
+		if (glsl == 0) {
+			glsl = bound++;
+			const char name[] = "GLSL.std.450";
+			importWords.push_back((2 + 4) << 16 | opExtInstImport);
+			importWords.push_back(glsl);
+			uint32_t packed[4] = {};
+			std::memcpy(packed, name, sizeof(name));
+			importWords.insert(importWords.end(), packed, packed + 4);
+		}
+		if (voidType == 0) {
+			voidType = bound++;
+			emit(globals, opTypeVoid, { voidType });
+		}
+		if (voidFunction == 0) {
+			voidFunction = bound++;
+			emit(globals, opTypeFunction, { voidFunction, voidType });
+		}
+
+		const uint32_t wrapper = bound++, label = bound++, call = bound++;
+		emit(function, opFunction, { voidType, wrapper, 0, voidFunction });
+		emit(function, opLabel, { label });
+		emit(function, opFunctionCall, { voidType, call, entryFunction });
+		for (const auto& target: targets) {
+			uint32_t component = vectors[target.type].first;
+			uint32_t bounds[2][4];
+			for (int side = 0; side < 2; ++side) {
+				const auto& values = side == 0 ? target.clamp->low : target.clamp->high;
+				for (int i = 0; i < 4; ++i) {
+					bounds[side][i] = bound++;
+					emit(globals, opConstant, { component, bounds[side][i], floatBits(values[i]) });
+				}
+			}
+			uint32_t low = bound++, high = bound++;
+			emit(globals, opConstantComposite, { target.type, low, bounds[0][0], bounds[0][1], bounds[0][2], bounds[0][3] });
+			emit(globals, opConstantComposite, { target.type, high, bounds[1][0], bounds[1][1], bounds[1][2], bounds[1][3] });
+			uint32_t loaded = bound++, clamped = bound++;
+			emit(function, opLoad, { target.type, loaded, target.variable });
+			emit(function, opExtInst, { target.type, clamped, glsl, glslFClamp, loaded, low, high });
+			emit(function, opStore, { target.variable, clamped });
+		}
+		emit(function, opReturn, {});
+		emit(function, opFunctionEnd, {});
+
+		// the new entry point takes the place of the function in the entry point and its execution modes
+		for (size_t at = spirvHeaderWords; at < words.size();) {
+			uint32_t count = words[at] >> 16;
+			uint32_t opcode = words[at] & 0xffff;
+			if (opcode == spirvOpEntryPoint && count >= 4 && words[at + 2] == entryFunction) {
+				words[at + 2] = wrapper;
+			} else if ((opcode == opExecutionMode || opcode == opExecutionModeId) && count >= 3 && words[at + 1] == entryFunction) {
+				words[at + 1] = wrapper;
+			}
+			at += count;
+		}
+		words[3] = bound;
+
+		std::vector<uint32_t> result(words.begin(), words.begin() + memoryModelAt);
+		result.insert(result.end(), importWords.begin(), importWords.end());
+		result.insert(result.end(), words.begin() + memoryModelAt, words.begin() + firstFunctionAt);
+		result.insert(result.end(), globals.begin(), globals.end());
+		result.insert(result.end(), words.begin() + firstFunctionAt, words.end());
+		result.insert(result.end(), function.begin(), function.end());
+		words = std::move(result);
+		return true;
+	}
+}
+
+VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string& entry, const std::vector<StageInterfaceField>& vertexOutputs, const std::vector<OutputClamp>& clamps) {
 	const auto info = _functionInfos.find(entry);
-	if (info == _functionInfos.end() || info->second.stageInterface.empty() || _words.empty()) {
+	if (info == _functionInfos.end() || (info->second.stageInterface.empty() && clamps.empty()) || _words.empty()) {
 		return _shaderModule;
 	}
 	const auto& inputs = info->second.stageInterface;
@@ -277,8 +441,15 @@ VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string&
 		unchanged = unchanged && location == input.location;
 		wanted.push_back(location);
 	}
-	if (unchanged) {
+	if (unchanged && clamps.empty()) {
 		return _shaderModule;
+	}
+	for (const auto& clamp: clamps) {
+		// the clamps are part of what makes a module different
+		wanted.push_back(UINT32_MAX);
+		wanted.push_back(clamp.location);
+		for (auto value: clamp.low) { wanted.push_back(floatBits(value)); }
+		for (auto value: clamp.high) { wanted.push_back(floatBits(value)); }
 	}
 
 	std::lock_guard lock(_linkedMutex);
@@ -310,7 +481,7 @@ VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string&
 		at += count;
 	}
 
-	for (size_t at = spirvHeaderWords; at < words.size();) {
+	for (size_t at = spirvHeaderWords; at < words.size() && !unchanged;) {
 		uint32_t count = words[at] >> 16;
 		uint32_t opcode = words[at] & 0xffff;
 		if (opcode == spirvOpDecorate && count == 4 && words[at + 2] == spirvDecorationLocation
@@ -323,6 +494,10 @@ VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string&
 			}
 		}
 		at += count;
+	}
+
+	if (!clamps.empty() && !clampFragmentOutputs(words, entry, clamps)) {
+		return VK_NULL_HANDLE;
 	}
 
 	VkShaderModuleCreateInfo createInfo {};

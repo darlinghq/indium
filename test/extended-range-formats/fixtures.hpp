@@ -46,10 +46,9 @@ static const WriteFixture writeFixtures[] = {
 };
 
 // blending the source (1, 0, 2, 0.6) over the cleared destination (0.25, 0.5, 0.75, 1) with SourceAlpha and OneMinusSourceAlpha:
-// red, green and alpha codes (the source blue 2.0 is clamped to the range of the format before it is blended on a Mac, which
-// gives blue 920 / 956, and not by Indium, so blue is not checked)
-static const uint16_t blendLinearCodes[3] = { 741, 486, 771 };
-static const uint16_t blendSrgbCodes[3] = { 820, 631, 771 };
+// red, green, blue and alpha codes (the source blue 2.0 is clamped to the range of the format before it is blended)
+static const uint16_t blendLinearCodes[4] = { 741, 486, 920, 771 };
+static const uint16_t blendSrgbCodes[4] = { 820, 631, 956, 771 };
 
 // clearing to (1.5, -1.0, 0.5, 2.0): red, green, blue and alpha codes
 static const uint16_t clearLinearCodes[4] = { 1023, 0, 639, 894 };

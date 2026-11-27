@@ -130,7 +130,20 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	stages.push_back(shaderStage);
 
 	shaderStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	shaderStage.module = _fragmentFunction->library()->fragmentModuleLinkedTo(fragmentFunctionName, _vertexFunction->functionInfo().stageInterface);
+	// QUIRK: the source color of a blend into an extended-range attachment is clamped to the range of the format (codes 0 to
+	// 1023, alpha 0 to 1) before it is blended, so the fragment function clamps its outputs for those attachments. Other
+	// formats are not clamped. Not documented. Evidence: black-box observation on macOS 27.0.1 arm64 (tier 2).
+	// Test: the blend check of test/extended-range-formats.
+	std::vector<OutputClamp> clamps;
+	for (size_t i = 0; i < _colorAttachments.size(); ++i) {
+		const auto& attachment = _colorAttachments[i];
+		if (attachment.blendingEnabled && pixelFormatIsExtendedRange(attachment.pixelFormat)) {
+			bool srgb = ExtendedRange::isSRGB(attachment.pixelFormat);
+			float low = ExtendedRange::decodeColor(0, srgb), high = ExtendedRange::decodeColor(ExtendedRange::maxRenderedCode, srgb);
+			clamps.push_back({ static_cast<uint32_t>(i), { low, low, low, 0.0f }, { high, high, high, 1.0f } });
+		}
+	}
+	shaderStage.module = _fragmentFunction->library()->fragmentModuleLinkedTo(fragmentFunctionName, _vertexFunction->functionInfo().stageInterface, clamps);
 	if (shaderStage.module == VK_NULL_HANDLE) {
 		shaderStage.module = _fragmentFunction->library()->shaderModule();
 	}

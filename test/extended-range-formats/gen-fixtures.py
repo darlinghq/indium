@@ -43,10 +43,9 @@ out.append('};')
 out.append('')
 b, bs = blend['BGRA10_XR'], blend['BGRA10_XR_sRGB']
 out.append('// blending the source (1, 0, 2, 0.6) over the cleared destination (0.25, 0.5, 0.75, 1) with SourceAlpha and OneMinusSourceAlpha:')
-out.append('// red, green and alpha codes (the source blue 2.0 is clamped to the range of the format before it is blended on a Mac, which')
-out.append('// gives blue %d / %d, and not by Indium, so blue is not checked)' % (b[0], bs[0]))
-out.append('static const uint16_t blendLinearCodes[3] = { %d, %d, %d };' % (b[2], b[1], b[3]))
-out.append('static const uint16_t blendSrgbCodes[3] = { %d, %d, %d };' % (bs[2], bs[1], bs[3]))
+out.append('// red, green, blue and alpha codes (the source blue 2.0 is clamped to the range of the format before it is blended)')
+out.append('static const uint16_t blendLinearCodes[4] = { %d, %d, %d, %d };' % (b[2], b[1], b[0], b[3]))
+out.append('static const uint16_t blendSrgbCodes[4] = { %d, %d, %d, %d };' % (bs[2], bs[1], bs[0], bs[3]))
 out.append('')
 out.append('// clearing to (1.5, -1.0, 0.5, 2.0): red, green, blue and alpha codes')
 c, cs = clear['BGRA10_XR'], clear['BGRA10_XR_sRGB']
