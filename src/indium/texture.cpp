@@ -778,6 +778,22 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		abort();
 	}
 
+	if (import) {
+		// The image must lie where the DMA-BUF's rows are. A driver may lay a linear image out at a pitch of its
+		// own (a larger alignment) instead of the one given, and then every row after the first is read from the
+		// wrong place. A texture that cannot show the rows as they are is refused, so that its creator falls back
+		// to a copy.
+		VkImageSubresource subresource {};
+		subresource.aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
+		VkSubresourceLayout layout {};
+		DynamicVK::vkGetImageSubresourceLayout(_device->device(), _image, &subresource, &layout);
+		if (layout.offset != import->offset || layout.rowPitch != import->bytesPerRow) {
+			DynamicVK::vkDestroyImage(_device->device(), _image, nullptr);
+			_image = VK_NULL_HANDLE;
+			throw std::runtime_error("The device lays the DMA-BUF image out with another row pitch");
+		}
+	}
+
 	VkMemoryRequirements reqs;
 
 	DynamicVK::vkGetImageMemoryRequirements(_device->device(), _image, &reqs);
