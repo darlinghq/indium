@@ -32,5 +32,27 @@ int main() {
 	CHECK(vk.maxLuminance == 1000 && vk.minLuminance == 0.5f);
 	CHECK(vk.maxContentLightLevel == 800 && vk.maxFrameAverageLightLevel == 300);
 
+	// Metadata without a luminance range is not applied: a driver would forward zeros as they are.
+	HdrMetadata complete;
+	HdrMetadata none;
+	none.transfer = HdrTransferFunction::PQ;
+	CHECK(!completeHdrMetadata(none, complete));
+	CHECK(!completeHdrMetadata(HdrMetadata {}, complete));
+	HdrMetadata flat = metadata;
+	flat.maxLuminance = flat.minLuminance;
+	CHECK(!completeHdrMetadata(flat, complete));
+
+	// Known primaries are kept, unknown ones become those of the BT.2100 color spaces.
+	CHECK(completeHdrMetadata(metadata, complete));
+	CHECK(complete.displayPrimaryRed == metadata.displayPrimaryRed && complete.maxContentLightLevel == 800);
+	HdrMetadata lumaOnly;
+	lumaOnly.transfer = HdrTransferFunction::HLG;
+	lumaOnly.minLuminance = 0.01f;
+	lumaOnly.maxLuminance = 1000;
+	CHECK(completeHdrMetadata(lumaOnly, complete));
+	CHECK(complete.displayPrimaryRed == (std::array<float, 2> { 0.708f, 0.292f }));
+	CHECK(complete.whitePoint == (std::array<float, 2> { 0.3127f, 0.3290f }));
+	CHECK(complete.maxContentLightLevel == 0 && complete.maxLuminance == 1000);
+
 	return failures == 0 ? 0 : 1;
 }

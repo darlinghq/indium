@@ -343,7 +343,12 @@ void IndiumKit::PrivateLayer::applyHdrMetadata(const std::shared_ptr<SwapchainSt
 		return;
 	}
 
-	VkHdrMetadataEXT metadata = IndiumKit::hdrMetadataToVulkan(_hdrMetadata);
+	HdrMetadata complete;
+	if (!IndiumKit::completeHdrMetadata(_hdrMetadata, complete)) {
+		return;
+	}
+
+	VkHdrMetadataEXT metadata = IndiumKit::hdrMetadataToVulkan(complete);
 	DynamicVK::vkSetHdrMetadataEXT(privateDevice->device(), 1, &state->swapchain, &metadata);
 };
 
