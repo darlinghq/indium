@@ -130,9 +130,10 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	stages.push_back(shaderStage);
 
 	shaderStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	// OBSERVED (macOS 27.0.1, arm64; test: the blend check of test/extended-range-formats): the source color of a blend into an extended-range
-	// attachment is clamped to the range of the format (codes 0 to 1023, alpha 0 to 1) before it is blended, so the fragment
-	// function clamps its outputs for those attachments. Other formats are not clamped.
+	// QUIRK: the source color of a blend into an extended-range attachment is clamped to the range of the format (codes 0 to
+	// 1023, alpha 0 to 1) before it is blended, so the fragment function clamps its outputs for those attachments. Other
+	// formats are not clamped. Not documented. Evidence: black-box observation on macOS 27.0.1 arm64 (tier 2).
+	// Test: the blend check of test/extended-range-formats.
 	std::vector<OutputClamp> clamps;
 	for (size_t i = 0; i < _colorAttachments.size(); ++i) {
 		const auto& attachment = _colorAttachments[i];
