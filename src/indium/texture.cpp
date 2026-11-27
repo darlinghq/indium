@@ -223,6 +223,10 @@ bool Indium::TextureView::needsExportablePresentationSemaphore() const {
 	return _original->needsExportablePresentationSemaphore();
 };
 
+bool Indium::TextureView::supportsInputAttachment() const {
+	return _original->supportsInputAttachment();
+};
+
 const Indium::TimelineSemaphore& Indium::PrivateTexture::acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) {
 	std::unique_lock lock(_syncMutex);
 
@@ -277,6 +281,10 @@ void Indium::PrivateTexture::precommit(std::shared_ptr<Indium::PrivateCommandBuf
 bool Indium::PrivateTexture::needsExportablePresentationSemaphore() const {
 	// by default, we do not need exportable presentation semaphores
 	return false;
+};
+
+bool Indium::PrivateTexture::supportsInputAttachment() const {
+	return true;
 };
 
 //

@@ -12,7 +12,48 @@
 
 #include <iridium/iridium.hpp>
 
+#include <cstring>
+#include <stdexcept>
+
 namespace Indium {
+	namespace detail {
+		// SPIR-V binary layout: a five-word header, then instructions whose first word is
+		// (word count << 16) | opcode.
+		constexpr uint32_t kSpirvHeaderWords = 5;
+		constexpr uint32_t kOpCapability = 17;
+		constexpr uint32_t kCapabilityFloat16 = 9;
+
+		inline uint32_t readWord(const char* data, size_t index) {
+			uint32_t word = 0;
+			std::memcpy(&word, data + index * sizeof(uint32_t), sizeof(uint32_t));
+			return word;
+		}
+	}
+
+	inline bool spirvDeclaresFloat16(const char* data, size_t dataLength) {
+		if (!data) {
+			return false;
+		}
+		const size_t count = dataLength / sizeof(uint32_t);
+		for (size_t i = detail::kSpirvHeaderWords; i < count;) {
+			const uint32_t first = detail::readWord(data, i);
+			const uint32_t wordCount = first >> 16;
+			if (wordCount == 0 || wordCount > count - i) {
+				break;
+			}
+			if ((first & 0xFFFFu) == detail::kOpCapability && wordCount >= 2 && detail::readWord(data, i + 1) == detail::kCapabilityFloat16) {
+				return true;
+			}
+			i += wordCount;
+		}
+		return false;
+	}
+
+	inline void requireSignedZeroFloat16ForModule(const char* data, size_t dataLength, bool deviceSupportsFloat16SignedZero) {
+		if (spirvDeclaresFloat16(data, dataLength) && !deviceSupportsFloat16SignedZero) {
+			throw std::runtime_error("this device does not support the 16-bit signed-zero float control that the shader module needs");
+		}
+	}
 	class PrivateLibrary;
 	class PrivateDevice;
 	class SamplerState;

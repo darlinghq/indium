@@ -22,6 +22,13 @@ namespace Indium {
 	void initGlobalDeviceList();
 	void finitGlobalDeviceList();
 
+	inline bool supportsRequiredDeviceFeatures(uint32_t apiVersion, bool timelineSemaphore, bool signedZeroFloat32) {
+		if (VK_API_VERSION_VARIANT(apiVersion) != 0 || apiVersion < VK_API_VERSION_1_3) {
+			return false;
+		}
+		return timelineSemaphore && signedZeroFloat32;
+	}
+
 	class PrivateDevice: public Device, public std::enable_shared_from_this<PrivateDevice> {
 	private:
 

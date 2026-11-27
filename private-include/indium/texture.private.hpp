@@ -88,6 +88,7 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf);
 		virtual bool needsExportablePresentationSemaphore() const;
+		virtual bool supportsInputAttachment() const;
 	};
 
 	class TextureView: public PrivateTexture {
@@ -139,6 +140,7 @@ namespace Indium {
 
 		virtual void precommit(std::shared_ptr<Indium::PrivateCommandBuffer> cmdbuf) override;
 		virtual bool needsExportablePresentationSemaphore() const override;
+		virtual bool supportsInputAttachment() const override;
 	};
 
 	class ConcreteTexture: public PrivateTexture {

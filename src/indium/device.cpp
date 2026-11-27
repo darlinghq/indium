@@ -80,8 +80,8 @@ void Indium::initGlobalDeviceList() {
 		props2.pNext = &floatControls;
 		DynamicVK::vkGetPhysicalDeviceProperties2(device, &props2);
 
-		if (!floatControls.shaderSignedZeroInfNanPreserveFloat32) {
-			// unsupported device: mslc modules require the 32-bit float control
+		if (!supportsRequiredDeviceFeatures(props.apiVersion, features12.timelineSemaphore, floatControls.shaderSignedZeroInfNanPreserveFloat32)) {
+			// unsupported device: mslc modules require Vulkan 1.3, timeline semaphores, and 32-bit float control
 			continue;
 		}
 

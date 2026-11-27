@@ -160,8 +160,8 @@ namespace Indium {
 					descSet.descriptorCount = 1;
 					descSet.pImageInfo = &info;
 				} else if (bindingInfo.type == Iridium::BindingType::InputAttachment) {
-					if (bindingInfo.index >= functionResources.inputAttachments.size()) {
-						throw std::runtime_error("input attachment binding " + std::to_string(bindingInfo.internalIndex) + " reads color attachment " + std::to_string(bindingInfo.index) + ", which the render pass does not have");
+					if (bindingInfo.index >= functionResources.inputAttachments.size() || !functionResources.inputAttachments[bindingInfo.index]) {
+						throw std::runtime_error("input attachment binding " + std::to_string(bindingInfo.internalIndex) + " reads color attachment " + std::to_string(bindingInfo.index) + ", which the render pass does not have or cannot read as an input attachment");
 					}
 
 					auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(functionResources.inputAttachments[bindingInfo.index]);

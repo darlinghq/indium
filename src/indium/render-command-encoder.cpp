@@ -26,6 +26,31 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	auto vkDevice = _privateDevice->device();
 	auto vkCmdBuf = buf->commandBuffer();
 
+	if (descriptor.stencilAttachment) {
+		throw std::runtime_error("TODO: support stencil attachments");
+	}
+
+	std::shared_ptr<Texture> firstTexture;
+	for (const auto& color: descriptor.colorAttachments) {
+		if (!std::dynamic_pointer_cast<PrivateTexture>(color.texture)) {
+			throw std::runtime_error("RenderPassColorAttachmentDescriptor has a null texture");
+		}
+		if (!firstTexture) {
+			firstTexture = color.texture;
+		}
+	}
+	if (descriptor.depthAttachment) {
+		if (!std::dynamic_pointer_cast<PrivateTexture>(descriptor.depthAttachment->texture)) {
+			throw std::runtime_error("RenderPassDepthAttachmentDescriptor has a null texture");
+		}
+		if (!firstTexture) {
+			firstTexture = descriptor.depthAttachment->texture;
+		}
+	}
+	if (!firstTexture) {
+		throw std::runtime_error("RenderPassDescriptor has no attachment texture");
+	}
+
 	VkDescriptorPoolCreateInfo poolCreateInfo {};
 	poolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolCreateInfo.poolSizeCount = poolSizes.size();
@@ -37,7 +62,6 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		abort();
 	}
 
-	auto firstTexture = descriptor.colorAttachments.front().texture;
 	std::vector<VkClearValue> clearValues;
 
 	for (const auto& color: descriptor.colorAttachments) {
@@ -52,7 +76,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		// TODO: distinguish between read-only and read-write textures
 		_readWriteTextures.push_back(color.texture);
 		// framebuffer fetch: the fragment function can read each color attachment it writes
-		_functionResources[1].inputAttachments.push_back(color.texture);
+		auto privateColor = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
+		_functionResources[1].inputAttachments.push_back(privateColor->supportsInputAttachment() ? color.texture : nullptr);
 	}
 
 	if (descriptor.depthAttachment || descriptor.stencilAttachment) {
@@ -94,22 +119,22 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		renderPassAttachments.push_back(desc);
 	}
 
-	if (descriptor.stencilAttachment) {
-		throw std::runtime_error("TODO: support stencil attachments");
-	}
-
 	std::vector<VkAttachmentReference> colorAttachments;
 	std::vector<VkAttachmentReference> inputAttachments;
 	VkAttachmentReference depthStencilAttachment {};
 
 	size_t index = 0;
 	for (const auto& color: descriptor.colorAttachments) {
+		auto privateColor = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
 		VkAttachmentReference ref {};
 		ref.attachment = index;
 		ref.layout = VK_IMAGE_LAYOUT_GENERAL;
 		colorAttachments.push_back(ref);
-		// the same attachment, read back through the input attachment with the same index
-		inputAttachments.push_back(ref);
+		// the same attachment, read back through the input attachment with the same index if supported
+		VkAttachmentReference inRef {};
+		inRef.attachment = privateColor->supportsInputAttachment() ? index : VK_ATTACHMENT_UNUSED;
+		inRef.layout = VK_IMAGE_LAYOUT_GENERAL;
+		inputAttachments.push_back(inRef);
 		++index;
 	}
 

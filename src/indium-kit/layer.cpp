@@ -119,6 +119,10 @@ void IndiumKit::PrivateDrawable::replaceRegion(Indium::Region region, size_t mip
 	throw std::runtime_error("Cannot use replaceRegion on IndiumKit::Drawable");
 };
 
+bool IndiumKit::PrivateDrawable::supportsInputAttachment() const {
+	return _layer->supportsInputAttachment();
+};
+
 std::shared_ptr<IndiumKit::Layer> IndiumKit::Layer::make(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight) {
 	return std::make_shared<PrivateLayer>(surface, device, framebufferWidth, framebufferHeight);
 };
@@ -160,7 +164,8 @@ IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indi
 	swapchainInfo.imageExtent.width = _width;
 	swapchainInfo.imageExtent.height = _height;
 	swapchainInfo.imageArrayLayers = 1;
-	swapchainInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	_supportsInputAttachment = (surfaceCaps.supportedUsageFlags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) != 0;
+	swapchainInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (_supportsInputAttachment ? VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT : 0);
 	swapchainInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swapchainInfo.preTransform = surfaceCaps.currentTransform;
 	swapchainInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;

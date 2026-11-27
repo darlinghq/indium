@@ -1,11 +1,15 @@
 // Feeds reflection documents that mslc wrote (fixtures/, generated from the probes of the same
 // name in mslc's tests/probes) to Iridium::parseMslcReflection. Needs neither LLVM nor Vulkan.
 #include <iridium/mslc-reflection.hpp>
+#include <indium/device.private.hpp>
+#include <indium/library.private.hpp>
 
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 static int failures = 0;
 
@@ -150,6 +154,61 @@ int main() {
 		CHECK(info.functionInfos.at("f").bindings.empty());
 		doc.replace(doc.find("Future"), 6, "TextureBuffer");
 		CHECK(!parse(doc, info, error));
+	}
+
+	{
+		// Float-controls requirement checks (#371): 32-bit device requirement and 16-bit module requirement + refusal.
+		CHECK(Indium::supportsRequiredDeviceFeatures(VK_API_VERSION_1_3, true, true));
+		CHECK(!Indium::supportsRequiredDeviceFeatures(VK_API_VERSION_1_2, true, true));
+		CHECK(!Indium::supportsRequiredDeviceFeatures(VK_API_VERSION_1_3, false, true));
+		CHECK(!Indium::supportsRequiredDeviceFeatures(VK_API_VERSION_1_3, true, false));
+
+		// 5-word SPIR-V header followed by OpCapability Shader (1) and OpCapability Float16 (9).
+		const std::vector<uint32_t> spvNoHalf = {
+			0x07230203u, 0x00010500u, 0u, 10u, 0u,
+			(2u << 16) | 17u, 1u,
+		};
+		const std::vector<uint32_t> spvWithHalf = {
+			0x07230203u, 0x00010500u, 0u, 10u, 0u,
+			(2u << 16) | 17u, 1u,
+			(2u << 16) | 17u, 9u,
+		};
+		const std::vector<uint32_t> spvZeroWordCount = {
+			0x07230203u, 0x00010500u, 0u, 10u, 0u,
+			0u,
+			(2u << 16) | 17u, 9u,
+		};
+
+		CHECK(!Indium::spirvDeclaresFloat16(nullptr, 64));
+		CHECK(!Indium::spirvDeclaresFloat16(reinterpret_cast<const char*>(spvNoHalf.data()), spvNoHalf.size() * sizeof(uint32_t)));
+		CHECK(Indium::spirvDeclaresFloat16(reinterpret_cast<const char*>(spvWithHalf.data()), spvWithHalf.size() * sizeof(uint32_t)));
+		CHECK(!Indium::spirvDeclaresFloat16(reinterpret_cast<const char*>(spvZeroWordCount.data()), spvZeroWordCount.size() * sizeof(uint32_t)));
+
+		// Malformed 1-word OpCapability followed by word 9 must not read across instruction boundaries.
+		const std::vector<uint32_t> spvOneWordCap = {
+			0x07230203u, 0x00010500u, 0u, 10u, 0u,
+			(1u << 16) | 17u,
+			9u,
+		};
+		CHECK(!Indium::spirvDeclaresFloat16(reinterpret_cast<const char*>(spvOneWordCap.data()), spvOneWordCap.size() * sizeof(uint32_t)));
+
+		// Unaligned buffer read via memcpy must work without UB.
+		std::vector<char> unaligned(1 + spvWithHalf.size() * sizeof(uint32_t), 0);
+		std::memcpy(unaligned.data() + 1, spvWithHalf.data(), spvWithHalf.size() * sizeof(uint32_t));
+		CHECK(Indium::spirvDeclaresFloat16(unaligned.data() + 1, spvWithHalf.size() * sizeof(uint32_t)));
+
+		// A module without Float16 succeeds even when the device lacks 16-bit signed-zero float control.
+		Indium::requireSignedZeroFloat16ForModule(reinterpret_cast<const char*>(spvNoHalf.data()), spvNoHalf.size() * sizeof(uint32_t), false);
+		// A module with Float16 succeeds when the device supports 16-bit signed-zero float control.
+		Indium::requireSignedZeroFloat16ForModule(reinterpret_cast<const char*>(spvWithHalf.data()), spvWithHalf.size() * sizeof(uint32_t), true);
+		// A module with Float16 is refused when the device lacks 16-bit signed-zero float control.
+		bool threw = false;
+		try {
+			Indium::requireSignedZeroFloat16ForModule(reinterpret_cast<const char*>(spvWithHalf.data()), spvWithHalf.size() * sizeof(uint32_t), false);
+		} catch (const std::runtime_error& e) {
+			threw = std::string(e.what()).find("16-bit signed-zero float control") != std::string::npos;
+		}
+		CHECK(threw);
 	}
 
 	if (failures) {

@@ -45,6 +45,7 @@ namespace IndiumKit {
 
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, const void* bytes, size_t bytesPerRow) override;
 		virtual void replaceRegion(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) override;
+		virtual bool supportsInputAttachment() const override;
 	};
 
 	class PrivateLayer: public Layer, public std::enable_shared_from_this<PrivateLayer> {
@@ -57,6 +58,7 @@ namespace IndiumKit {
 		std::vector<VkImageView> _imageViews;
 		size_t _width;
 		size_t _height;
+		bool _supportsInputAttachment = false;
 
 	public:
 		PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight);
@@ -67,5 +69,6 @@ namespace IndiumKit {
 		virtual void setPixelFormat(Indium::PixelFormat pixelFormat) override;
 
 		std::shared_ptr<Indium::Device> device();
+		bool supportsInputAttachment() const { return _supportsInputAttachment; }
 	};
 };
