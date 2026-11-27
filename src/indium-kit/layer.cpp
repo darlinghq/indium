@@ -310,6 +310,43 @@ std::shared_ptr<IndiumKit::Layer> IndiumKit::Layer::make(VkSurfaceKHR surface, s
 	}
 };
 
+VkColorSpaceKHR IndiumKit::PrivateLayer::hdrColorSpace(HdrTransferFunction transfer) {
+	return IndiumKit::hdrColorSpace(transfer);
+};
+
+bool IndiumKit::PrivateLayer::surfaceSupportsFormat(VkFormat format, VkColorSpaceKHR colorSpace) {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	uint32_t count = 0;
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
+	std::vector<VkSurfaceFormatKHR> formats(count);
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
+	formats.resize(count);
+
+	return std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
+		return f.format == format && f.colorSpace == colorSpace;
+	});
+};
+
+void IndiumKit::PrivateLayer::applyHdrMetadata(const std::shared_ptr<SwapchainState>& state) {
+	if (!state || state->swapchain == VK_NULL_HANDLE || _hdrMetadata.transfer == HdrTransferFunction::None) {
+		return;
+	}
+
+	// PQ and HLG metadata only describes a swapchain that actually uses that transfer function.
+	if (state->colorSpace != hdrColorSpace(_hdrMetadata.transfer)) {
+		return;
+	}
+
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	if (!(privateDevice->features() & Indium::PrivateDevice::Feature::HdrMetadata)
+	    || !DynamicVK::vkSetHdrMetadataEXT.isAvailable()) {
+		return;
+	}
+
+	VkHdrMetadataEXT metadata = IndiumKit::hdrMetadataToVulkan(_hdrMetadata);
+	DynamicVK::vkSetHdrMetadataEXT(privateDevice->device(), 1, &state->swapchain, &metadata);
+};
+
 IndiumKit::PrivateLayer::PrivateLayer(VkSurfaceKHR surface, std::shared_ptr<Indium::Device> device, size_t framebufferWidth, size_t framebufferHeight):
 	_device(device),
 	_width(framebufferWidth),
@@ -432,9 +469,19 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 	};
 
 	VkFormat format = Indium::pixelFormatToVkFormat(_pixelFormat);
+	VkColorSpaceKHR colorSpace = hdrColorSpace(_hdrMetadata.transfer);
 	bool formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
-		return f.format == format && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+		return f.format == format && f.colorSpace == colorSpace;
 	});
+
+	// A surface that cannot present the requested HDR transfer function still presents the same pixels
+	// as SDR; the metadata is not applied to it (see applyHdrMetadata()).
+	if (!formatSupported && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+		colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+		formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
+			return f.format == format && f.colorSpace == colorSpace;
+		});
+	}
 	if (!formatSupported) {
 		return nullptr;
 	}
@@ -493,7 +540,7 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 	swapchainInfo.surface = _surface;
 	swapchainInfo.minImageCount = imageCount;
 	swapchainInfo.imageFormat = format;
-	swapchainInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+	swapchainInfo.imageColorSpace = colorSpace;
 	swapchainInfo.imageExtent = extent;
 	swapchainInfo.imageArrayLayers = 1;
 	swapchainInfo.imageUsage = usage;
@@ -507,6 +554,7 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 	auto state = std::make_shared<SwapchainState>();
 	state->device = privateDevice;
 	state->pixelFormat = _pixelFormat;
+	state->colorSpace = colorSpace;
 	state->framebufferOnly = _framebufferOnly;
 	state->width = extent.width;
 	state->height = extent.height;
@@ -515,6 +563,8 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 		state->swapchain = VK_NULL_HANDLE;
 		return nullptr;
 	}
+
+	applyHdrMetadata(state);
 
 	count = 0;
 	DynamicVK::vkGetSwapchainImagesKHR(privateDevice->device(), state->swapchain, &count, nullptr);
@@ -659,19 +709,19 @@ Indium::PixelFormat IndiumKit::PrivateLayer::pixelFormat() {
 };
 
 bool IndiumKit::PrivateLayer::setPixelFormat(Indium::PixelFormat pixelFormat) {
-	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
 	VkFormat format = Indium::pixelFormatToVkFormat(pixelFormat);
+	HdrTransferFunction transfer;
+	{
+		std::scoped_lock lock(_stateMutex);
+		transfer = _hdrMetadata.transfer;
+	}
 
-	uint32_t count = 0;
-	std::vector<VkSurfaceFormatKHR> formats;
-	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
-	formats.resize(count);
-	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
-	formats.resize(count);
-
-	if (!std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
-		return f.format == format && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-	})) {
+	VkColorSpaceKHR colorSpace = hdrColorSpace(transfer);
+	bool supported = surfaceSupportsFormat(format, colorSpace);
+	if (!supported && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+		supported = surfaceSupportsFormat(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+	}
+	if (!supported) {
 		return false;
 	}
 
@@ -723,6 +773,18 @@ void IndiumKit::PrivateLayer::setDisplaySyncEnabled(bool enabled) {
 	if (enabled != _displaySync) {
 		_displaySync = enabled;
 		_outdated = true;
+	}
+};
+
+void IndiumKit::PrivateLayer::setHdrMetadata(const HdrMetadata& metadata) {
+	std::scoped_lock lock(_stateMutex);
+	bool transferChanged = metadata.transfer != _hdrMetadata.transfer;
+	_hdrMetadata = metadata;
+	if (transferChanged) {
+		_outdated = true;
+	} else {
+		// Values of the same transfer function take effect on the swapchain already in use.
+		applyHdrMetadata(_state);
 	}
 };
 
