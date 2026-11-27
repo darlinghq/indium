@@ -359,6 +359,9 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 		{ VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, Feature::ExternalMemoryHost },
 		// No feature struct: the extension only adds vkSetHdrMetadataEXT.
 		{ VK_EXT_HDR_METADATA_EXTENSION_NAME, Feature::HdrMetadata },
+		// No feature struct: a fragment function that writes the stencil reference ([[stencil]]) is SPIR-V with the
+		// StencilExportEXT capability, which a module may declare only with this extension enabled.
+		{ VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME, Feature::ShaderStencilExport },
 	};
 
 	for (const auto& prop: extProps) {

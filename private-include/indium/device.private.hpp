@@ -122,6 +122,7 @@ namespace Indium {
 			ShaderAtomicFloat   = 1 << 9,
 			PresentWait         = 1 << 10,
 			HdrMetadata         = 1 << 11,
+			ShaderStencilExport = 1 << 12,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
