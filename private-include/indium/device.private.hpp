@@ -117,6 +117,7 @@ namespace Indium {
 			ExternalMemoryHost  = 1 << 8,
 			ShaderAtomicFloat   = 1 << 9,
 			PresentWait         = 1 << 10,
+			HdrMetadata         = 1 << 11,
 		};
 
 		friend inline Feature operator|(Feature lhs, Feature rhs) {
