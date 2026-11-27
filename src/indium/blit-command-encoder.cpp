@@ -412,6 +412,45 @@ void Indium::PrivateBlitCommandEncoder::fillBuffer(const std::shared_ptr<Buffer>
 	}
 };
 
+namespace {
+	/** Makes every write recorded before it available to the host, as a read of mapped memory after completion needs. */
+	void hostReadBarrier(VkCommandBuffer commandBuffer) {
+		VkMemoryBarrier barrier {};
+		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		Indium::DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+	}
+};
+
+void Indium::PrivateBlitCommandEncoder::synchronize(const std::shared_ptr<Buffer>& buffer) {
+	auto cmdbuf = _privateCommandBuffer.lock();
+	auto privateBuffer = std::dynamic_pointer_cast<PrivateBuffer>(buffer);
+	if (!privateBuffer) {
+		throw std::invalid_argument("synchronize of a buffer from another device");
+	}
+	cmdbuf->retainResource(privateBuffer);
+	useBuffer(*cmdbuf, privateBuffer, 0, privateBuffer->length(), false);
+	flushUses(*cmdbuf);
+	hostReadBarrier(cmdbuf->commandBuffer());
+	cmdbuf->invalidateForHostOnCompletion(privateBuffer);
+};
+
+void Indium::PrivateBlitCommandEncoder::synchronize(const std::shared_ptr<Texture>& texture) {
+	auto cmdbuf = _privateCommandBuffer.lock();
+	auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
+	if (!privateTexture) {
+		throw std::invalid_argument("synchronize of a texture from another device");
+	}
+	cmdbuf->retainResource(privateTexture);
+	useTexture(*cmdbuf, privateTexture, false);
+	flushUses(*cmdbuf);
+	hostReadBarrier(cmdbuf->commandBuffer());
+	if (auto backing = privateTexture->hostBackingBuffer()) {
+		cmdbuf->invalidateForHostOnCompletion(backing);
+	}
+};
+
 void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) {
 	auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
 	auto cmdbuf = _privateCommandBuffer.lock();

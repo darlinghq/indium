@@ -180,6 +180,7 @@ namespace Indium {
 			_macro(vkEnumerateDeviceExtensionProperties) \
 			_macro(vkEnumeratePhysicalDevices) \
 			_macro(vkFlushMappedMemoryRanges) \
+			_macro(vkInvalidateMappedMemoryRanges) \
 			_macro(vkFreeCommandBuffers) \
 			_macro(vkFreeMemory) \
 			_macro(vkGetBufferDeviceAddress) \

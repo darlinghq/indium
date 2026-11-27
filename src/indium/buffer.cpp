@@ -311,6 +311,27 @@ void* Indium::PrivateBuffer::contents() {
 	return _mapped;
 };
 
+void Indium::PrivateBuffer::invalidateMappedRange() {
+	if (_importedMemory || _shadow || (_storageMode != StorageMode::Managed && _storageMode != StorageMode::Shared)) {
+		return;
+	}
+	// Vulkan invalidates mapped memory only, and the buffer's own contents() may not have run yet: a first read
+	// after completion would otherwise see what the host cached of the memory before. Blocks stay mapped once
+	// mapped, so mapping here (under the pool's lock) is what contents() will find.
+	if (!_privateDevice->memoryPool().map(_privateDevice->device(), _allocation)) {
+		abort();
+	}
+	auto vulkanRange = MemoryPool::flushRange(_allocation, 0, _length, _privateDevice->properties().limits.nonCoherentAtomSize);
+	if (vulkanRange.size == 0) {
+		return;
+	}
+	// this runs on the completion path, where an exception would leave the command buffer's waiters hanging; a
+	// failed flush aborts as well (didModifyRange)
+	if (DynamicVK::vkInvalidateMappedMemoryRanges(_privateDevice->device(), 1, &vulkanRange) != VK_SUCCESS) {
+		abort();
+	}
+};
+
 void Indium::PrivateBuffer::didModifyRange(Range<size_t> range) {
 	if (_importedMemory || _shadow) {
 		// the memory is coherent and was never mapped through Vulkan: nothing to flush

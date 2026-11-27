@@ -36,6 +36,22 @@ namespace Indium {
 		virtual void generateMipmapsForTexture(const std::shared_ptr<Texture>& texture) = 0;
 
 		/**
+		 * Makes what the commands before this one wrote to `buffer` visible to the CPU once the command buffer
+		 * has completed: its contents() then read it (Metal's synchronizeResource: on a managed buffer). For a
+		 * buffer whose memory is not host-coherent, the mapped range is invalidated before the command buffer
+		 * is marked completed.
+		 */
+		virtual void synchronize(const std::shared_ptr<Buffer>& buffer) = 0;
+
+		/**
+		 * Makes what the commands before this one wrote to `texture` visible to getBytes once the command buffer
+		 * has completed (Metal's synchronizeResource: and synchronizeTexture:slice:level: on a managed
+		 * texture). getBytes copies out of the image itself, so this orders the writes before it; a texture over a
+		 * buffer synchronizes that buffer.
+		 */
+		virtual void synchronize(const std::shared_ptr<Texture>& texture) = 0;
+
+		/**
 		 * Samples the counters of `sampleBuffer` into `sampleIndex` at this point in the encoder.
 		 * Does nothing for a buffer that is not from this device or an index outside the buffer.
 		 */
