@@ -163,23 +163,6 @@ namespace Indium {
 		virtual bool supportsPixelFormatSampling(PixelFormat format, bool filtered) const = 0;
 
 		/**
-		 * Whether color render targets of `format` support `sampleCount` samples per pixel.
-		 */
-		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const = 0;
-
-		/**
-		 * The maximum number of samplers that can be used per shader stage
-		 * (VkPhysicalDeviceLimits::maxPerStageDescriptorSamplers).
-		 */
-		virtual uint32_t maxPerStageDescriptorSamplers() const = 0;
-
-		/**
-		 * Computes the sparse tile dimensions (in texels) for `textureType`, `pixelFormat`,
-		 * `sampleCount`, and `tileSizeInBytes`, or {0, 0, 0} if invalid or unsupported.
-		 */
-		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const = 0;
-
-		/**
 		 * The row pitch alignment, in bytes, of a texture of `format` that is backed by a buffer
 		 * (Buffer::newTexture()): the `bytesPerRow` of such a texture is a multiple of it. 0 for a format
 		 * that cannot be backed by a buffer (compressed and depth/stencil formats).
@@ -387,6 +370,10 @@ namespace Indium {
 		 */
 		virtual void pollEvents(uint64_t timeoutNanoseconds) = 0;
 		virtual void wakeupEventLoop() = 0;
+
+		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const = 0;
+		virtual uint32_t maxPerStageDescriptorSamplers() const = 0;
+		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const = 0;
 	};
 
 	std::shared_ptr<Device> createSystemDefaultDevice();
