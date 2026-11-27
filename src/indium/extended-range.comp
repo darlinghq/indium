@@ -30,14 +30,14 @@ float linearToSrgb(float linear) {
 }
 
 float roundedCode(float encoded, float low, float high) {
-	return clamp(roundEven(encoded * 510.0 + 384.0), low, high);
+	return clamp(ceil(encoded * 510.0 + 384.0 - 0.5), low, high);
 }
 
 float quantizeColor(float value, bool srgb) {
 	if (isnan(value)) {
 		value = 0.0;
 	}
-	float code = roundedCode(srgb ? linearToSrgb(value) : value, 0.0, 1022.0);
+	float code = roundedCode(srgb ? linearToSrgb(value) : value, 0.0, 1023.0);
 	float encoded = (code - 384.0) / 510.0;
 	return srgb ? srgbToLinear(encoded) : encoded;
 }

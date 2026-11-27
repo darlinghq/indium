@@ -10,8 +10,8 @@
 //  - BGR10_XR and BGR10_XR_sRGB take 4 bytes per texel: blue in bits 0 to 9, green in 10 to 19, red in 20 to 29,
 //    and bits 30 and 31 are padding and zero. There is no alpha, which a shader reads as 1.
 //  - The code of a color component maps to a float with (code - 384) / 510, which covers about -0.752941 to
-//    1.25098 (codes 0 to 1022 are what rendering produces; the documentation names the upper end 1.25098, and a
-//    code of 1023 that memory holds reads as 1.25294 by the same formula). The sRGB variants apply the
+//    1.25098 (the documentation names the upper end 1.25098; code 1023 reads as 1.25294 by the same formula and is
+//    what a rendered value above the range is stored as). The sRGB variants apply the
 //    sRGB transfer function to that number when reading, and its inverse when writing, so the shader sees (and
 //    writes) linear values. The transfer function is odd-symmetric around zero for values below zero, which
 //    gives the documented range of -0.5271 to 1.66894 of the shader float.
@@ -25,10 +25,9 @@
 // A render pass rounds what it wrote to the codes afterwards (see ExtendedRangeKernel), which is what makes
 // the image hold only values a code can have, within the range of the format.
 //
-// What the documentation does not say is filled in at the places marked QUIRK: below, each with the evidence it
-// rests on. No Metal device was available to observe a Mac, so all of them are inference (the weakest tier of
-// AGENTS.md section 3) and are listed in the pull request for the maintainer's decision, and the test that pins each
-// one is named. mac-probe.m of the test prints what a Mac does for every one of them.
+// What the documentation does not say was observed on macOS 27.0.1 (arm64) with mac-probe.m of test/extended-range-formats, whose output is
+// test/extended-range-formats/macos-27.0.1-arm64.txt, and is marked OBSERVED below, with the cases where this implementation differs
+// (the image holds shader values, which cannot keep everything a memory can) marked DIFFERENCE.
 #pragma once
 
 #include <indium/types.hpp>
@@ -42,8 +41,10 @@
 namespace Indium::ExtendedRange {
 	constexpr float codeOffset = 384.0f;
 	constexpr float codeScale = 510.0f;
-	// the codes the range of the format ends at when a value is rendered, and the highest a memory can hold
-	constexpr uint32_t maxRenderedCode = 1022;
+	// The highest code of a color component. Observed on macOS 27.0.1 (arm64): a rendered value is stored up to code 1023, which reads as
+	// 1.25294, not up to the documented 1.25098 (code 1022): the linear formats store 1.66894 and 2.0 as 1023, the sRGB formats
+	// 1.66894 as 1022 and 2.0 as 1023. Test: the shader output and clear color checks of test/extended-range-formats.
+	constexpr uint32_t maxRenderedCode = 1023;
 	constexpr uint32_t maxStoredCode = 1023;
 	constexpr uint32_t maxAlphaCode = 894;
 	constexpr uint32_t minAlphaCode = 384;
@@ -94,13 +95,14 @@ namespace Indium::ExtendedRange {
 		return std::clamp(codeToEncoded(code), 0.0f, 1.0f);
 	};
 
-	// QUIRK: a value is converted to a code by rounding to nearest even, and a NaN converts to 0 (so to the code of 0).
-	// The documentation of the formats gives the mapping of a code to a float but not the conversion back. Evidence
-	// (tier 5, inference): the Metal Shading Language Specification defines these two rules for the conversion of a
-	// float to the normalized integer formats, and the codes are normalized integers with an offset. Not observed on a
-	// Mac. Test: the shader output checks (including a NaN) of test/extended-range-formats.
+	// OBSERVED (macOS 27.0.1, arm64; test: the shader output checks of test/extended-range-formats): a value is converted to a code by
+	// rounding to nearest, a NaN is stored as the code of 0, and a value beyond the range is clamped to codes 0 and 1023 (alpha 384 to 894).
+	// A value a hair above the middle of two codes (the floats nearest to 500.5 and 501.5 once converted, which are 6e-7 above them)
+	// is stored as the lower code, so a value half way between two codes is rounded down here (round to nearest even would give 502).
+	// The documentation of the formats gives the mapping of a code to a float but not the conversion back.
 	inline uint32_t roundToCode(float encoded, uint32_t low, uint32_t high) {
-		float code = std::nearbyint(encoded * codeScale + codeOffset);
+		// half-way cases round down (see the comment above)
+		float code = std::ceil(encoded * codeScale + codeOffset - 0.5f);
 		return static_cast<uint32_t>(std::clamp(code, static_cast<float>(low), static_cast<float>(high)));
 	};
 
@@ -123,11 +125,10 @@ namespace Indium::ExtendedRange {
 	/**
 	 * What a stored texel reads as, for texels of memory in `pixelFormat`: red, green, blue, alpha.
 	 *
-	 * QUIRK: padding bits that are not zero are ignored, and an alpha code outside 384 to 894 reads clamped to 0 or 1
-	 * (so a round trip through bytes returns the nearest code of that range for it). The documentation says the padding
-	 * bits are zero, and that alpha is clamped when sampled, rendered and written. Evidence (tier 5, inference): the
-	 * stored value is the float a shader sees, which alpha clamping makes unable to keep such a code. Not observed on a
-	 * Mac. Test: "padding bits are not stored" of test/extended-range-formats.
+	 * DIFFERENCE from macOS 27.0.1 (arm64), which stores the bytes it is given: padding bits that are not zero are dropped, and an alpha code
+	 * outside 384 to 894 reads clamped to 0 or 1 (so getBytes returns the nearest code of that range for it), because the image holds the
+	 * sampled value. A Mac returns both unchanged from getBytes, and clamps the alpha when it is sampled, as this does.
+	 * Test: "padding bits are not stored" and the alpha check of test/extended-range-formats, which pin this implementation's behavior.
 	 */
 	inline void unpackTexel(PixelFormat pixelFormat, const uint8_t* source, float* rgba) {
 		uint32_t blue, green, red, alpha = 0;
