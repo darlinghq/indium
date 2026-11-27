@@ -25,9 +25,10 @@
 // A render pass rounds what it wrote to the codes afterwards (see ExtendedRangeKernel), which is what makes
 // the image hold only values a code can have, within the range of the format.
 //
-// Not documented, and so assumed (no Metal device was available to observe them): conversions to codes round to
-// nearest even; a NaN converts to 0; padding bits that are not zero are ignored when reading and written as
-// zero; an alpha code outside 384 to 894 reads clamped, so it is not kept by a round trip through bytes.
+// What the documentation does not say is filled in at the places marked QUIRK: below, each with the evidence it
+// rests on. No Metal device was available to observe a Mac, so all of them are inference (the weakest tier of
+// AGENTS.md section 3) and are listed in the pull request for the maintainer's decision, and the test that pins each
+// one is named. mac-probe.m of the test prints what a Mac does for every one of them.
 #pragma once
 
 #include <indium/types.hpp>
@@ -93,6 +94,11 @@ namespace Indium::ExtendedRange {
 		return std::clamp(codeToEncoded(code), 0.0f, 1.0f);
 	};
 
+	// QUIRK: a value is converted to a code by rounding to nearest even, and a NaN converts to 0 (so to the code of 0).
+	// The documentation of the formats gives the mapping of a code to a float but not the conversion back. Evidence
+	// (tier 5, inference): the Metal Shading Language Specification defines these two rules for the conversion of a
+	// float to the normalized integer formats, and the codes are normalized integers with an offset. Not observed on a
+	// Mac. Test: the shader output checks (including a NaN) of test/extended-range-formats.
 	inline uint32_t roundToCode(float encoded, uint32_t low, uint32_t high) {
 		float code = std::nearbyint(encoded * codeScale + codeOffset);
 		return static_cast<uint32_t>(std::clamp(code, static_cast<float>(low), static_cast<float>(high)));
@@ -114,7 +120,15 @@ namespace Indium::ExtendedRange {
 		return roundToCode(value, minAlphaCode, maxAlphaCode);
 	};
 
-	/** What a stored texel reads as, for texels of memory in `pixelFormat`: red, green, blue, alpha. */
+	/**
+	 * What a stored texel reads as, for texels of memory in `pixelFormat`: red, green, blue, alpha.
+	 *
+	 * QUIRK: padding bits that are not zero are ignored, and an alpha code outside 384 to 894 reads clamped to 0 or 1
+	 * (so a round trip through bytes returns the nearest code of that range for it). The documentation says the padding
+	 * bits are zero, and that alpha is clamped when sampled, rendered and written. Evidence (tier 5, inference): the
+	 * stored value is the float a shader sees, which alpha clamping makes unable to keep such a code. Not observed on a
+	 * Mac. Test: "padding bits are not stored" of test/extended-range-formats.
+	 */
 	inline void unpackTexel(PixelFormat pixelFormat, const uint8_t* source, float* rgba) {
 		uint32_t blue, green, red, alpha = 0;
 		if (hasAlpha(pixelFormat)) {

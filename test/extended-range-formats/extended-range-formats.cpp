@@ -159,6 +159,20 @@ static void testRawBytesRoundTrip(Context& context, const FormatInfo& info) {
 	texture->replaceRegion(Indium::Region::make2D(0, 0, 1, 1), 0, dirty.data(), info.bytes);
 	texture->getBytes(Indium::Region::make2D(0, 0, 1, 1), 0, readback.data(), info.bytes);
 	expect(readback == clean, std::string(info.name) + ": padding bits are not stored");
+
+	// QUIRK of the formats with alpha: an alpha code outside 384 to 894 reads clamped to 0 or 1, and so comes back as 384 or 894
+	if (info.alpha) {
+		std::vector<uint8_t> low(8), high(8), expectedLow(8), expectedHigh(8), gotLow(8), gotHigh(8);
+		putTexel(info, low.data(), 500, 500, 500, 0);
+		putTexel(info, high.data(), 500, 500, 500, 1023);
+		putTexel(info, expectedLow.data(), 500, 500, 500, 384);
+		putTexel(info, expectedHigh.data(), 500, 500, 500, 894);
+		texture->replaceRegion(Indium::Region::make2D(0, 0, 1, 1), 0, low.data(), 8);
+		texture->getBytes(Indium::Region::make2D(0, 0, 1, 1), 0, gotLow.data(), 8);
+		texture->replaceRegion(Indium::Region::make2D(1, 0, 1, 1), 0, high.data(), 8);
+		texture->getBytes(Indium::Region::make2D(1, 0, 1, 1), 0, gotHigh.data(), 8);
+		expect(gotLow == expectedLow && gotHigh == expectedHigh, std::string(info.name) + ": an alpha code outside the range of 0 to 1 reads back clamped");
+	}
 }
 
 static void testSampledValues(Context& context, const FormatInfo& info) {

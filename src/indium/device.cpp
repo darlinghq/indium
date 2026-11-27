@@ -746,6 +746,11 @@ size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) 
 		return 0;
 	}
 
+	// the image of an extended-range texture is not laid out like its bytes, so no buffer can hold one
+	if (pixelFormatIsExtendedRange(format)) {
+		return 0;
+	}
+
 	// A buffer's rows may be at any multiple of 16 bytes: a texture whose image can lie there is a linear image,
 	// and any other is an image of its own that is copied to and from the buffer (see Buffer::newTexture()).
 	return std::max<size_t>(16, bytesPerPixel);
