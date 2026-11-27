@@ -16,6 +16,7 @@
 #include <condition_variable>
 
 namespace Indium {
+	class PrivateBuffer;
 	class PrivateCommandQueue;
 	class PrivateDevice;
 	class PipelineTimer;
@@ -92,6 +93,16 @@ namespace Indium {
 		void retainResource(std::shared_ptr<Resource> resource) {
 			std::scoped_lock lock(_mutex);
 			_retainedResources.push_back(std::move(resource));
+		}
+
+		/**
+		 * Invalidates the host mapping of `buffer` when the GPU has finished the command buffer, before it is marked
+		 * completed, so that a read of its contents() after waitUntilCompleted or in a completed handler sees what
+		 * the GPU wrote (BlitCommandEncoder::synchronize).
+		 */
+		void invalidateForHostOnCompletion(std::shared_ptr<PrivateBuffer> buffer) {
+			std::scoped_lock lock(_mutex);
+			_hostInvalidatedBuffers.push_back(std::move(buffer));
 		}
 
 		/**
@@ -190,6 +201,7 @@ namespace Indium {
 		uint64_t _completionValue = 0;
 		std::vector<std::shared_ptr<BinarySemaphore>> _retainedSemaphores;
 		std::vector<std::shared_ptr<Resource>> _retainedResources;
+		std::vector<std::shared_ptr<PrivateBuffer>> _hostInvalidatedBuffers;
 		std::vector<std::shared_ptr<PipelineTimer>> _pipelineTimers;
 
 		VkCommandPool _commandPool = VK_NULL_HANDLE;

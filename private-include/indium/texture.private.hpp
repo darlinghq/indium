@@ -37,6 +37,9 @@ namespace Indium {
 		explicit PrivateTexture(std::shared_ptr<PrivateDevice> device);
 		virtual ~PrivateTexture() = 0;
 
+		/** The buffer whose memory holds the texels, which getBytes reads from the host, or none. */
+		virtual std::shared_ptr<PrivateBuffer> hostBackingBuffer() { return nullptr; }
+
 		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat) override;
 		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers) override;
 		virtual std::shared_ptr<Texture> newTextureView(PixelFormat pixelFormat, TextureType textureType, const Range<size_t>& levels, const Range<size_t>& layers, const TextureSwizzleChannels& swizzle) override;
@@ -157,6 +160,11 @@ namespace Indium {
 
 	private:
 		std::shared_ptr<PrivateTexture> _original;
+
+	public:
+		virtual std::shared_ptr<PrivateBuffer> hostBackingBuffer() override { return _original->hostBackingBuffer(); }
+
+	private:
 		VkImageView _imageView;
 		VkImageView _sampledImageView = VK_NULL_HANDLE;
 		VkImageView _faceArrayView = VK_NULL_HANDLE;
@@ -297,6 +305,11 @@ namespace Indium {
 		StorageMode _storageMode;
 		MemoryPool::Allocation _allocation;
 		std::shared_ptr<PrivateBuffer> _backingBuffer;
+
+	public:
+		virtual std::shared_ptr<PrivateBuffer> hostBackingBuffer() override { return _backingBuffer; }
+
+	private:
 		size_t _backingOffset = 0;
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
