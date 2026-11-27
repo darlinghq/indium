@@ -1,0 +1,16 @@
+#version 450
+// Samples the texture at the texel of the invocation (nearest) or halfway to the next one (linear).
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 1) uniform texture2D src;
+layout(set = 0, binding = 2) uniform sampler smp;
+layout(set = 0, binding = 3, rgba32f) uniform writeonly image2D dst;
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	vec2 size = vec2(textureSize(sampler2D(src, smp), 0));
+#ifdef HALFWAY
+	vec2 uv = (vec2(p) + vec2(1.0, 0.5)) / size;
+#else
+	vec2 uv = (vec2(p) + 0.5) / size;
+#endif
+	imageStore(dst, p, textureLod(sampler2D(src, smp), uv, 0.0));
+}

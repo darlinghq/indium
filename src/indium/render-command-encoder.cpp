@@ -18,6 +18,8 @@
 #include <indium/counter.private.hpp>
 #include <vulkan/vulkan_core.h>
 
+#include <algorithm>
+
 Indium::RenderCommandEncoder::~RenderCommandEncoder() {};
 
 Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr<PrivateCommandBuffer> commandBuffer, const RenderPassDescriptor& descriptor):
@@ -95,6 +97,10 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		clearValue.color.float32[1] = clearColor.green;
 		clearValue.color.float32[2] = clearColor.blue;
 		clearValue.color.float32[3] = clearColor.alpha;
+		if (pixelFormatIsExtendedRange(color.texture->pixelFormat())) {
+			// the texture holds what its codes stand for, which the clear color is rounded to
+			ExtendedRange::quantizeTexel(color.texture->pixelFormat(), clearValue.color.float32);
+		}
 		clearValues.push_back(clearValue);
 
 		// TODO: distinguish between read-only and read-write textures
@@ -703,6 +709,56 @@ void Indium::PrivateRenderCommandEncoder::setStencilStoreActionOptions(StoreActi
 	}
 };
 
+// A texture in an extended-range format stores the values its codes stand for (see extended-range.private.hpp),
+// so what a pass rendered to it, blending included, is rounded to codes (and into the range of the format) once
+// the pass is over. Only a 2D attachment of one level and layer is rounded, and not a multisample one, which
+// only shows through its resolve texture.
+void Indium::PrivateRenderCommandEncoder::roundExtendedRangeAttachments(VkCommandBuffer commandBuffer) {
+	std::vector<std::shared_ptr<PrivateTexture>> targets;
+	auto consider = [&](const std::shared_ptr<Texture>& texture) {
+		if (!texture || !pixelFormatIsExtendedRange(texture->pixelFormat()) || texture->sampleCount() != 1) {
+			return;
+		}
+		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(texture);
+		if (!privateTexture || privateTexture->textureType() != TextureType::e2D || privateTexture->mipmapLevelCount() != 1 || privateTexture->vulkanArrayLength() != 1) {
+			return;
+		}
+		if (std::find(targets.begin(), targets.end(), privateTexture) == targets.end()) {
+			targets.push_back(privateTexture);
+		}
+	};
+	for (const auto& color: _descriptor.colorAttachments) {
+		consider(color.texture);
+		consider(color.resolveTexture);
+	}
+	if (targets.empty()) {
+		return;
+	}
+
+	auto& kernel = _privateDevice->extendedRangeKernel();
+
+	VkMemoryBarrier before {};
+	before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	before.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	before.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+
+	for (const auto& target: targets) {
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		VkDescriptorSetLayout layout = kernel.setLayout();
+		_descriptorPools.allocate(&layout, 1, &set);
+		kernel.record(commandBuffer, set, target->imageView(), static_cast<uint32_t>(target->width()), static_cast<uint32_t>(target->height()),
+			ExtendedRangeKernel::roundingMode(target->pixelFormat()));
+	}
+
+	VkMemoryBarrier after {};
+	after.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	after.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	after.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+	DynamicVK::vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, nullptr, 0, nullptr);
+};
+
 void Indium::PrivateRenderCommandEncoder::resolveLateColorAttachments(VkCommandBuffer commandBuffer) {
 	// A resolve that the descriptor did not ask for but the store action set before the end of the pass does, as
 	// with a store action left Unknown in the descriptor. Vulkan cannot resolve once the pass is over, so it is
@@ -782,6 +838,7 @@ void Indium::PrivateRenderCommandEncoder::endEncoding() {
 	}
 	DynamicVK::vkCmdEndRenderPass(buf->commandBuffer());
 	resolveLateColorAttachments(buf->commandBuffer());
+	roundExtendedRangeAttachments(buf->commandBuffer());
 	for (const auto& [index, attachment]: _descriptor.sampleBufferAttachments) {
 		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfVertexSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, buf->commandBuffer(), attachment.endOfFragmentSampleIndex, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);

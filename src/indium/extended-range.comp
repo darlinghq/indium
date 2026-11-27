@@ -1,0 +1,74 @@
+// Copyright (C) 2026 Lubos Dolezel
+#version 450
+
+// The work of the extended-range pixel formats on the GPU (see extended-range.private.hpp for what the formats
+// store). The image is an R32G32B32A32_SFLOAT image of shader values, changed in place.
+//
+//   mode 0..3: round the texels to what the format can store, as a render pass ends. Bit 0 set: no alpha
+//              (it reads as 1); bit 1 set: the sRGB variant.
+//   mode 4:    the color of the gamma encoded values of the non-sRGB formats to linear light, for presenting
+//              them to a surface that takes linear values.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D image;
+
+layout(push_constant) uniform Params {
+	uint mode;
+} params;
+
+float srgbToLinear(float encoded) {
+	float magnitude = abs(encoded);
+	float linear = magnitude <= 0.04045 ? magnitude / 12.92 : pow((magnitude + 0.055) / 1.055, 2.4);
+	return encoded < 0.0 ? -linear : linear;
+}
+
+float linearToSrgb(float linear) {
+	float magnitude = abs(linear);
+	float encoded = magnitude <= 0.0031308 ? magnitude * 12.92 : 1.055 * pow(magnitude, 1.0 / 2.4) - 0.055;
+	return linear < 0.0 ? -encoded : encoded;
+}
+
+float roundedCode(float encoded, float low, float high) {
+	return clamp(ceil(encoded * 510.0 + 384.0 - 0.5), low, high);
+}
+
+float quantizeColor(float value, bool srgb) {
+	if (isnan(value)) {
+		value = 0.0;
+	}
+	float code = roundedCode(srgb ? linearToSrgb(value) : value, 0.0, 1023.0);
+	float encoded = (code - 384.0) / 510.0;
+	return srgb ? srgbToLinear(encoded) : encoded;
+}
+
+float quantizeAlpha(float value) {
+	if (isnan(value)) {
+		value = 0.0;
+	}
+	float code = roundedCode(value, 384.0, 894.0);
+	return (code - 384.0) / 510.0;
+}
+
+void main() {
+	ivec2 size = imageSize(image);
+	if (gl_GlobalInvocationID.x >= uint(size.x) || gl_GlobalInvocationID.y >= uint(size.y)) {
+		return;
+	}
+	ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+	vec4 texel = imageLoad(image, position);
+
+	if (params.mode < 4u) {
+		bool srgb = (params.mode & 2u) != 0u;
+		bool noAlpha = (params.mode & 1u) != 0u;
+		texel.r = quantizeColor(texel.r, srgb);
+		texel.g = quantizeColor(texel.g, srgb);
+		texel.b = quantizeColor(texel.b, srgb);
+		texel.a = noAlpha ? 1.0 : quantizeAlpha(texel.a);
+	} else {
+		texel.r = srgbToLinear(texel.r);
+		texel.g = srgbToLinear(texel.g);
+		texel.b = srgbToLinear(texel.b);
+	}
+	imageStore(image, position, texel);
+}

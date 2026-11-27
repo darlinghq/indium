@@ -241,6 +241,10 @@ namespace Indium {
 			case PixelFormat::RG11B10Float:          return 4;
 			case PixelFormat::RGB9E5Float:           return 4;
 			case PixelFormat::BGR10A2Unorm:          return 4;
+			case PixelFormat::BGRA10_XR:             return 8;
+			case PixelFormat::BGRA10_XR_sRGB:        return 8;
+			case PixelFormat::BGR10_XR:              return 4;
+			case PixelFormat::BGR10_XR_sRGB:         return 4;
 			case PixelFormat::RG32Uint:              return 8;
 			case PixelFormat::RG32Sint:              return 8;
 			case PixelFormat::RG32Float:             return 8;
@@ -435,6 +439,10 @@ namespace Indium {
 			case PixelFormat::RGBA16Float:
 			case PixelFormat::RGBA32Uint:
 			case PixelFormat::RGBA32Sint:
+			case PixelFormat::BGRA10_XR:
+			case PixelFormat::BGRA10_XR_sRGB:
+			case PixelFormat::BGR10_XR:
+			case PixelFormat::BGR10_XR_sRGB:
 			case PixelFormat::RGBA32Float:
 				return false;
 
@@ -600,6 +608,12 @@ namespace Indium {
 		}
 	};
 
+	// The extended-range formats: BGRA10_XR, BGRA10_XR_sRGB, BGR10_XR and BGR10_XR_sRGB (see extended-range.private.hpp).
+	static constexpr bool pixelFormatIsExtendedRange(PixelFormat pixelFormat) {
+		return pixelFormat == PixelFormat::BGRA10_XR || pixelFormat == PixelFormat::BGRA10_XR_sRGB
+			|| pixelFormat == PixelFormat::BGR10_XR || pixelFormat == PixelFormat::BGR10_XR_sRGB;
+	};
+
 	// The two stencil-only views of a combined depth/stencil texture. They have no format of their own in
 	// Vulkan: the view uses the combined texture's format with only the stencil aspect.
 	static constexpr bool pixelFormatIsStencilView(PixelFormat pixelFormat) {
@@ -656,6 +670,11 @@ namespace Indium {
 		}
 		if (pixelFormatToVkImageAspectFlags(image) != VK_IMAGE_ASPECT_COLOR_BIT
 			|| pixelFormatToVkImageAspectFlags(view) != VK_IMAGE_ASPECT_COLOR_BIT) {
+			return false;
+		}
+		// An extended-range texture holds shader values in a float image, which no other format can read as bytes,
+		// and the values of two extended-range formats mean different things.
+		if (pixelFormatIsExtendedRange(image) || pixelFormatIsExtendedRange(view)) {
 			return false;
 		}
 		if (pixelFormatIsCompressed(image) != pixelFormatIsCompressed(view)) {

@@ -410,6 +410,7 @@ namespace Indium {
 		 * sees the texels in (a view's), and the level and slice are this texture's own.
 		 */
 		void uploadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, const void* bytes, size_t bytesPerRow, size_t bytesPerImage);
+		void uploadExtendedRange(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage);
 		void downloadRegion(Indium::Region region, size_t mipmapLevel, size_t slice, PixelFormat accessFormat, void* bytes, size_t bytesPerRow, size_t bytesPerImage);
 	};
 };

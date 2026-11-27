@@ -521,6 +521,11 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	info.imageType = textureTypeToVkImageType(_descriptor.textureType);
 	info.format = _device->textureVkFormat(_descriptor.pixelFormat);
+	// an extended-range texture is a float image of shader values (see extended-range.private.hpp)
+	const bool extendedRange = pixelFormatIsExtendedRange(_descriptor.pixelFormat);
+	if (extendedRange && info.format == VK_FORMAT_UNDEFINED) {
+		throw std::runtime_error("The device cannot hold textures in an extended-range pixel format");
+	}
 	info.extent.width = _descriptor.width;
 	info.extent.height = _descriptor.height;
 	info.extent.depth = _descriptor.depth;
@@ -550,7 +555,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 		isDepthStencil ||
 
 		// linear textures only support a single mip level
-		_descriptor.mipmapLevelCount > 1 || _descriptor.sampleCount > 1
+		_descriptor.mipmapLevelCount > 1 || _descriptor.sampleCount > 1 ||
+
+		// the image of an extended-range texture is not laid out like its bytes, and is only reached by copies
+		extendedRange
 	) {
 		canBeLinear = false;
 	}
@@ -627,7 +635,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	}
 	// Views of other pixel formats of the same texel size need an image that may be viewed as them. An
 	// unspecified usage is not narrowed down, so it keeps that possibility open as well.
-	if (!import && isColor && _descriptor.sampleCount == 1
+	if (!import && isColor && _descriptor.sampleCount == 1 && !extendedRange
 		&& ((descriptor.usage & TextureUsage::PixelFormatView) != TextureUsage::Unknown || descriptor.usage == TextureUsage::Unknown)) {
 		info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
 		_mutableFormat = true;
@@ -667,6 +675,10 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	if ((descriptor.usage & TextureUsage::ShaderWrite) != TextureUsage::Unknown && !compressedFormat && !multisample) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	} else if (unknownUsage && _descriptor.sampleCount == 1 && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled()) && (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) {
+		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+	}
+	// the rounding pass that follows rendering to an extended-range texture writes its image
+	if (extendedRange && _descriptor.sampleCount == 1) {
 		info.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
 	}
 	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && !compressedFormat && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled())) {
@@ -1268,6 +1280,11 @@ void Indium::ConcreteTexture::uploadRegion(Indium::Region region, size_t mipmapL
 		return;
 	}
 
+	if (pixelFormatIsExtendedRange(_descriptor.pixelFormat)) {
+		uploadExtendedRange(region, mipmapLevel, slice, bytes, bytesPerRow, bytesPerImage);
+		return;
+	}
+
 	// The memory of the image cannot be written by the host when it is optimally tiled, and Metal's replaceRegion
 	// has finished when it returns. So the bytes are copied into staging memory now, and the copy into the image is
 	// submitted with the next work (see TextureUploader).
@@ -1322,6 +1339,51 @@ void Indium::ConcreteTexture::uploadRegion(Indium::Region region, size_t mipmapL
 	}
 
 	_device->textureUploader().stage(shared_from_this(), byteSize, copyInfo, fill);
+};
+
+// The bytes of an extended-range texture are codes (see extended-range.private.hpp), which the image does not
+// hold: it holds the shader values they stand for. The copy to the image is staged in floats, four per texel
+// and tightly packed, converted from the bytes now like any other replaceRegion has its bytes copied now.
+void Indium::ConcreteTexture::uploadExtendedRange(Indium::Region region, size_t mipmapLevel, size_t slice, const void* bytes, size_t bytesPerRow, size_t bytesPerImage) {
+	const PixelFormat format = _descriptor.pixelFormat;
+	const size_t texelBytes = ExtendedRange::bytesPerTexel(format);
+	const size_t width = region.size.width;
+	const size_t height = region.size.height;
+	const size_t depth = std::max<size_t>(region.size.depth, 1);
+	if (width == 0 || height == 0) {
+		return;
+	}
+	const size_t rowBytes = width * texelBytes;
+	if (bytesPerRow < rowBytes && height > 1) {
+		throw std::runtime_error("Invalid bytesPerRow for replaceRegion: shorter than a row of the region");
+	}
+	const size_t imageStride = bytesPerImage != 0 ? bytesPerImage : height * bytesPerRow;
+
+	VkBufferImageCopy copyInfo {};
+	copyInfo.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	copyInfo.imageSubresource.mipLevel = mipmapLevel;
+	copyInfo.imageSubresource.baseArrayLayer = slice;
+	copyInfo.imageSubresource.layerCount = 1;
+	copyInfo.imageOffset.x = region.origin.x;
+	copyInfo.imageOffset.y = region.origin.y;
+	copyInfo.imageOffset.z = region.origin.z;
+	copyInfo.imageExtent.width = width;
+	copyInfo.imageExtent.height = height;
+	copyInfo.imageExtent.depth = region.size.depth;
+
+	_device->textureUploader().stage(shared_from_this(), width * height * depth * 4 * sizeof(float), copyInfo, [=](uint8_t* destination) {
+		for (size_t image = 0; image < depth; ++image) {
+			for (size_t row = 0; row < height; ++row) {
+				const auto* source = static_cast<const uint8_t*>(bytes) + image * imageStride + row * bytesPerRow;
+				for (size_t column = 0; column < width; ++column) {
+					float texel[4];
+					ExtendedRange::unpackTexel(format, source + column * texelBytes, texel);
+					std::memcpy(destination, texel, sizeof(texel));
+					destination += sizeof(texel);
+				}
+			}
+		}
+	});
 };
 
 void Indium::ConcreteTexture::getBytes(Indium::Region region, size_t mipmapLevel, void* bytes, size_t bytesPerRow) {
@@ -1382,7 +1444,12 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 
 	size_t rows = (region.size.height + block.height - 1) / block.height;
 	auto byteSize = bytesPerImage == 0 ? (rows * bytesPerRow) : (region.size.depth * bytesPerImage);
-	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(byteSize, ResourceOptions::StorageModeShared));
+	// An extended-range image holds shader values, four floats a texel, which are converted to the codes of the
+	// caller's bytes once they are read.
+	const bool extendedRange = pixelFormatIsExtendedRange(_descriptor.pixelFormat);
+	const size_t imageDepth = std::max<size_t>(region.size.depth, 1);
+	const size_t floatBytes = extendedRange ? region.size.width * region.size.height * imageDepth * 4 * sizeof(float) : 0;
+	auto tmpBuf = std::dynamic_pointer_cast<PrivateBuffer>(_device->newBuffer(extendedRange ? std::max<size_t>(floatBytes, 1) : byteSize, ResourceOptions::StorageModeShared));
 
 	_device->textureUploader().flush();
 
@@ -1428,7 +1495,7 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 	// now encode the copy
 	VkBufferImageCopy copyInfo {};
 	copyInfo.bufferOffset = 0;
-	auto pitch = bufferTexelPitch(accessFormat, bytesPerRow, bytesPerImage);
+	auto pitch = extendedRange ? BufferTexelPitch { 0, 0 } : bufferTexelPitch(accessFormat, bytesPerRow, bytesPerImage);
 	copyInfo.bufferRowLength = pitch.rowLength;
 	copyInfo.bufferImageHeight = pitch.imageHeight;
 	copyInfo.imageSubresource.aspectMask = aspect;
@@ -1481,6 +1548,23 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 
 	DynamicVK::vkFreeCommandBuffers(_device->device(), _device->oneshotCommandPool(), 1, &cmdBuf);
 	oneshotLock.unlock();
+
+	if (extendedRange) {
+		const size_t imageStride = bytesPerImage != 0 ? bytesPerImage : region.size.height * bytesPerRow;
+		const auto* floats = static_cast<const uint8_t*>(tmpBuf->contents());
+		for (size_t image = 0; image < imageDepth; ++image) {
+			for (size_t row = 0; row < region.size.height; ++row) {
+				auto* destination = static_cast<uint8_t*>(bytes) + image * imageStride + row * bytesPerRow;
+				for (size_t column = 0; column < region.size.width; ++column) {
+					float texel[4];
+					std::memcpy(texel, floats, sizeof(texel));
+					floats += sizeof(texel);
+					ExtendedRange::packTexel(_descriptor.pixelFormat, texel, destination + column * bytesPerPixel);
+				}
+			}
+		}
+		return;
+	}
 
 	memcpy(bytes, tmpBuf->contents(), byteSize);
 };

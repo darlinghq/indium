@@ -7,6 +7,7 @@
 
 #include <indium/device.hpp>
 #include <indium/types.private.hpp>
+#include <indium/extended-range-kernel.private.hpp>
 #include <indium/render-pass-key.private.hpp>
 #include <indium/memory-pool.private.hpp>
 
@@ -100,6 +101,9 @@ namespace Indium {
 		std::shared_ptr<ComputePipelineState> _visibilityResolvePipeline;
 		std::atomic<bool> _bufferShadowTextures { false };
 		bool _nativeA8Unorm = false;
+		bool _extendedRange = false;
+		std::mutex _extendedRangeMutex;
+		std::unique_ptr<ExtendedRangeKernel> _extendedRangeKernel;
 
 	public:
 		PrivateDevice(VkPhysicalDevice physicalDevice);
@@ -296,8 +300,21 @@ namespace Indium {
 			if (pixelFormat == PixelFormat::A8Unorm && _nativeA8Unorm) {
 				return VK_FORMAT_A8_UNORM_KHR;
 			}
+			if (pixelFormatIsExtendedRange(pixelFormat)) {
+				return _extendedRange ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_UNDEFINED;
+			}
 			return pixelFormatToVkFormat(pixelFormat);
 		};
+
+		/**
+		 * Whether the extended-range formats (BGRA10_XR and the others) can be used on this device: they are
+		 * float images of shader values, which need an image format that can be sampled with filtering, rendered
+		 * to with blending and written by a shader.
+		 */
+		bool extendedRangeEnabled() const { return _extendedRange; }
+
+		/** The compute pass over the images of extended-range textures, made when first asked for. */
+		ExtendedRangeKernel& extendedRangeKernel();
 
 		/** What a shader sees of the stored channels of `pixelFormat` on this device. */
 		bool needsImplicitSwizzle(PixelFormat pixelFormat) const {
