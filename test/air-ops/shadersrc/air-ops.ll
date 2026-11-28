@@ -332,6 +332,70 @@ search.done:
   ret void
 }
 
+; out[id * 9 + k]: trunc to i1 from a byte, a word and a vector of bytes (all lanes of the thread's four
+; bytes of v), and freeze of a loaded value, of undef and of poison
+define void @trunc_freeze(ptr addrspace(1) noalias nocapture %out, ptr addrspace(1) noalias nocapture readonly %a, ptr addrspace(1) noalias nocapture readonly %v, i32 %id) local_unnamed_addr #0 {
+entry:
+  %idx = zext i32 %id to i64
+  %pa = getelementptr inbounds i32, ptr addrspace(1) %a, i64 %idx
+  %va = load i32, ptr addrspace(1) %pa, align 4
+  %pv = getelementptr inbounds <4 x i8>, ptr addrspace(1) %v, i64 %idx
+  %vv = load <4 x i8>, ptr addrspace(1) %pv, align 4
+  %byte = trunc i32 %va to i8
+  %base = mul i32 %id, 9
+
+  %b0 = trunc i8 %byte to i1
+  %r0 = zext i1 %b0 to i32
+  %b1 = trunc i32 %va to i1
+  %r1 = select i1 %b1, i32 7, i32 3
+  %bv = trunc <4 x i8> %vv to <4 x i1>
+  %zv = zext <4 x i1> %bv to <4 x i32>
+  %r2 = extractelement <4 x i32> %zv, i64 0
+  %r3 = extractelement <4 x i32> %zv, i64 1
+  %r4 = extractelement <4 x i32> %zv, i64 2
+  %r5 = extractelement <4 x i32> %zv, i64 3
+  %r6 = freeze i32 %va
+  %r7 = freeze i32 undef
+  %r8 = freeze i32 poison
+
+  %x0 = zext i32 %base to i64
+  %p0 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x0
+  store i32 %r0, ptr addrspace(1) %p0, align 4
+  %i1 = add i32 %base, 1
+  %x1 = zext i32 %i1 to i64
+  %p1 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x1
+  store i32 %r1, ptr addrspace(1) %p1, align 4
+  %i2 = add i32 %base, 2
+  %x2 = zext i32 %i2 to i64
+  %p2 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x2
+  store i32 %r2, ptr addrspace(1) %p2, align 4
+  %i3 = add i32 %base, 3
+  %x3 = zext i32 %i3 to i64
+  %p3 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x3
+  store i32 %r3, ptr addrspace(1) %p3, align 4
+  %i4 = add i32 %base, 4
+  %x4 = zext i32 %i4 to i64
+  %p4 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x4
+  store i32 %r4, ptr addrspace(1) %p4, align 4
+  %i5 = add i32 %base, 5
+  %x5 = zext i32 %i5 to i64
+  %p5 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x5
+  store i32 %r5, ptr addrspace(1) %p5, align 4
+  %i6 = add i32 %base, 6
+  %x6 = zext i32 %i6 to i64
+  %p6 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x6
+  store i32 %r6, ptr addrspace(1) %p6, align 4
+  %i7 = add i32 %base, 7
+  %x7 = zext i32 %i7 to i64
+  %p7 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x7
+  store i32 %r7, ptr addrspace(1) %p7, align 4
+  %i8 = add i32 %base, 8
+  %x8 = zext i32 %i8 to i64
+  %p8 = getelementptr inbounds i32, ptr addrspace(1) %out, i64 %x8
+  store i32 %r8, ptr addrspace(1) %p8, align 4
+  ret void
+}
+
 declare i32 @air.min.s.i32(i32, i32)
 declare i32 @air.max.u.i32(i32, i32)
 declare i32 @air.abs.s.i32(i32)
@@ -351,7 +415,7 @@ attributes #0 = { norecurse nounwind }
 !llvm.module.flags = !{!0}
 !air.version = !{!1}
 !air.language_version = !{!2}
-!air.kernel = !{!3, !10, !15, !18}
+!air.kernel = !{!3, !10, !15, !18, !21}
 
 !0 = !{i32 1, !"wchar_size", i32 4}
 !1 = !{i32 2, i32 2, i32 0}
@@ -378,3 +442,7 @@ attributes #0 = { norecurse nounwind }
 !18 = !{ptr @control_flow, !4, !19}
 !19 = !{!6, !20, !9}
 !20 = !{i32 1, !"air.buffer", !"air.location_index", i32 1, i32 1, !"air.read", !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"uint", !"air.arg_name", !"ns"}
+
+!21 = !{ptr @trunc_freeze, !4, !22}
+!22 = !{!6, !7, !23, !9}
+!23 = !{i32 2, !"air.buffer", !"air.location_index", i32 2, i32 1, !"air.read", !"air.arg_type_size", i32 4, !"air.arg_type_align_size", i32 4, !"air.arg_type_name", !"uchar4", !"air.arg_name", !"v"}

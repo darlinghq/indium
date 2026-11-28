@@ -176,6 +176,30 @@ static bool testControlFlow(Indium::Device* device) {
 	return compare("control_flow", slots, run<int32_t>(device, "control_flow", want.size(), { ns }), want);
 }
 
+// trunc to i1 keeps the low bit, so 2 is false and 3 is true. A frozen undef or poison must read as one
+// value; Iridium makes it zero.
+static bool testTruncFreeze(Indium::Device* device) {
+	constexpr size_t slots = 9;
+	std::vector<int32_t> a { 0, 1, 2, 3, 0xFE, 0xFF, 0x102, -1 };
+	// four bytes per thread, lane 0 in the lowest byte
+	std::vector<int32_t> v { 0x03020100, static_cast<int32_t>(0xFFFE0302), static_cast<int32_t>(0x81800100), 0x7F10FF02,
+		0x01010101, static_cast<int32_t>(0xFEFEFEFE), 0x02030203, static_cast<int32_t>(0xFF000000) };
+
+	std::vector<int32_t> want;
+	for (size_t i = 0; i < threadCount; ++i) {
+		want.push_back(a[i] & 1);
+		want.push_back((a[i] & 1) ? 7 : 3);
+		for (size_t lane = 0; lane < 4; ++lane) {
+			want.push_back((static_cast<uint32_t>(v[i]) >> (8 * lane)) & 1);
+		}
+		want.push_back(a[i]);
+		want.push_back(0);
+		want.push_back(0);
+	}
+
+	return compare("trunc_freeze", slots, run<int32_t>(device, "trunc_freeze", want.size(), { a, v }), want);
+}
+
 // A buffer the kernel reads but the caller never bound must not fault the GPU. Metal leaves such a
 // read undefined; Indium reads zeros, so every count is 0 and so is every result.
 static bool testUnboundBuffer(Indium::Device* device) {
@@ -307,6 +331,7 @@ int main(int argc, char** argv) {
 		ok = testFloatOps(device.get()) && ok;
 		ok = testTableLookup(device.get()) && ok;
 		ok = testControlFlow(device.get()) && ok;
+		ok = testTruncFreeze(device.get()) && ok;
 		ok = testReflection(device.get()) && ok;
 		ok = testUnboundBuffer(device.get()) && ok;
 		ok = testManyDispatches(device.get()) && ok;
