@@ -4070,15 +4070,27 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 								srcID = builder.encodeBitcast(sPtrType, srcID);
 								builder.setResultType(srcID, sPtrType);
 							}
+							// The words are addressed by integer arithmetic, as a getelementptr is: OpPtrAccessChain needs an
+							// ArrayStride decoration on the pointer type, which these types do not have, and without it every
+							// word lands on the first one.
+							auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
+							auto srcAddress = builder.encodeConvertPtrToU(uint64Type, srcID);
+							auto dstAddress = builder.encodeConvertPtrToU(uint64Type, dstID);
 							for (uint64_t idx = 0; idx < bytes / 4; ++idx) {
-								auto sPtr = idx == 0 ? srcID : builder.encodeAccessChain(sPtrType, srcID, { builder.declareConstantScalar<int32_t>(idx) }, true);
-								auto dPtr = idx == 0 ? dstID : builder.encodeAccessChain(dPtrType, dstID, { builder.declareConstantScalar<int32_t>(idx) }, true);
+								auto sPtr = srcID;
+								auto dPtr = dstID;
+								if (idx != 0) {
+									auto step = builder.declareConstantScalar<uint64_t>(idx * 4);
+									sPtr = builder.encodeConvertUToPtr(sPtrType, builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, srcAddress, step));
+									dPtr = builder.encodeConvertUToPtr(dPtrType, builder.encodeArithBinop(SPIRV::Opcode::IAdd, uint64Type, dstAddress, step));
+								}
 								auto val = builder.encodeLoad(u32Type, sPtr, 4);
 								builder.encodeStore(dPtr, val, 4);
 							}
 							break;
 						}
-						if (dstTypeOpt->targetType == srcTypeOpt->targetType) {
+						auto elementTypeOpt = builder.reverseLookupType(dstTypeOpt->targetType);
+						if (dstTypeOpt->targetType == srcTypeOpt->targetType && elementTypeOpt && elementTypeOpt->size == bytes) {
 							auto val = builder.encodeLoad(dstTypeOpt->targetType, srcID);
 							builder.encodeStore(dstID, val);
 							break;
