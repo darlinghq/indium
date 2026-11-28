@@ -1846,6 +1846,11 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 				auto zeroBits = choose(odd, builder.encodeArithBinop(Opcode::BitwiseXor, floatBits, signOfX, signMask), signOfX, floatBits);
 				resID = choose(integral, builder.encodeBitcast(floatType, zeroBits), resID, floatType);
 			}
+			// The functions of an infinity are NaN. The arithmetic above gives NaN for it too (inf - inf), but Vulkan does not
+			// require a shader to preserve infinities and NaNs without SignedZeroInfNanPreserve, and some drivers then fold
+			// that to a number, so select the NaN by the bits of x instead.
+			auto isInfinity = builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseAnd, floatBits, builder.encodeBitcast(floatBits, x), integerConstantOfType(builder, floatBits, 0x7fffffff)), integerConstantOfType(builder, floatBits, 0x7f800000) });
+			resID = choose(isInfinity, builder.encodeBitcast(floatType, integerConstantOfType(builder, floatBits, 0x7fc00000)), resID, floatType);
 			if (width == 16) {
 				resID = builder.encodeFConvert(type, resID);
 			}
