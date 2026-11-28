@@ -142,7 +142,7 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroup
 void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(Size threadgroupsPerGrid, Size threadsPerThreadgroup, const std::optional<Size>& gridSize) {
 	auto buf = _privateCommandBuffer.lock();
 
-	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths, gridSize);
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths, gridSize, _stageInRegion);
 	_savedPipelines.push_back(pipeline);
 
 	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -170,7 +170,7 @@ void Indium::PrivateComputeCommandEncoder::dispatchThreadgroups(const std::share
 
 	auto buf = _privateCommandBuffer.lock();
 
-	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths);
+	auto pipeline = _pso->createPipeline(threadsPerThreadgroup, _threadgroupMemoryLengths, std::nullopt, _stageInRegion);
 	_savedPipelines.push_back(pipeline);
 
 	DynamicVK::vkCmdBindPipeline(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -228,7 +228,8 @@ void Indium::PrivateComputeCommandEncoder::setImageblockSize(size_t width, size_
 };
 
 void Indium::PrivateComputeCommandEncoder::setStageInRegion(Region region) {
-	throw std::runtime_error("TODO");
+	// the kernels read it from the specialization constants of the pipelines the dispatches create
+	_stageInRegion = region;
 };
 
 Indium::DispatchType Indium::PrivateComputeCommandEncoder::dispatchType() {

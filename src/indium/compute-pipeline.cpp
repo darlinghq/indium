@@ -93,7 +93,7 @@ Indium::PrivateComputePipelineState::~PrivateComputePipelineState() {
 	}
 };
 
-VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerThreadgroup, const std::unordered_map<size_t, size_t>& threadgroupMemoryLengths, const std::optional<Size>& gridSize) {
+VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerThreadgroup, const std::unordered_map<size_t, size_t>& threadgroupMemoryLengths, const std::optional<Size>& gridSize, const Region& stageInRegion) {
 	// The device's pipeline cache makes repeating a creation cheap, within the process and across runs.
 	// Keeping the most recent pipeline for an unchanged threadgroup size would save even that lookup.
 
@@ -139,6 +139,19 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 		mapEntries.push_back(entry);
 		// Vulkan cannot declare an array of zero elements
 		specializationData.push_back(static_cast<uint32_t>(std::clamp<size_t>(elements, 1, UINT32_MAX)));
+	}
+
+	if (auto ids = func->functionInfo().stageInRegionSpecializationIDs) {
+		const size_t values[6] = { stageInRegion.origin.x, stageInRegion.origin.y, stageInRegion.origin.z, stageInRegion.size.width, stageInRegion.size.height, stageInRegion.size.depth };
+		for (size_t i = 0; i < 6; ++i) {
+			VkSpecializationMapEntry entry {};
+			entry.constantID = (*ids)[i];
+			entry.offset = specializationData.size() * sizeof(uint32_t);
+			entry.size = sizeof(uint32_t);
+			mapEntries.push_back(entry);
+			// the kernel reads 32-bit values
+			specializationData.push_back(static_cast<uint32_t>(std::min<size_t>(values[i], UINT32_MAX)));
+		}
 	}
 
 	if (auto functionSpecialization = func->specializationInfo()) {

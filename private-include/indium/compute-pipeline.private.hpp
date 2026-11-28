@@ -26,8 +26,9 @@ namespace Indium {
 		// `threadgroupMemoryLengths`, by index; an argument without one gets a single element.
 		//
 		// With `gridSize`, the function's grid size constants (FunctionReflection::gridSizeSpecializationIDs) are
-		// set to it, so the kernel skips the threads beyond it. The function must have them.
-		VkPipeline createPipeline(Size threadsPerThreadgroup, const std::unordered_map<size_t, size_t>& threadgroupMemoryLengths, const std::optional<Size>& gridSize = std::nullopt);
+		// set to it, so the kernel skips the threads beyond it. The function must have them. A function that reads the
+		// stage-in region gets `stageInRegion`.
+		VkPipeline createPipeline(Size threadsPerThreadgroup, const std::unordered_map<size_t, size_t>& threadgroupMemoryLengths, const std::optional<Size>& gridSize = std::nullopt, const Region& stageInRegion = {});
 
 		/** Whether the function can be dispatched over a grid that is not a multiple of the threadgroup size. */
 		bool supportsPartialThreadgroups() const;

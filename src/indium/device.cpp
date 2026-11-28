@@ -125,6 +125,8 @@ namespace {
 				functionInfo.arguments.push_back(argumentInfoFromIridium(argument));
 			}
 
+			functionInfo.stageInRegionSpecializationIDs = info.stageInRegionSpecializationIDs;
+
 			for (const auto& constant: info.functionConstants) {
 				Indium::FunctionConstantInfo converted;
 				converted.name = constant.name;

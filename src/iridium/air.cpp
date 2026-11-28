@@ -2826,6 +2826,8 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 // firstFunctionConstantSpecializationID + N, and its "defined" flag the SpecId one range further.
 static constexpr uint32_t firstFunctionConstantSpecializationID = 3;
 static constexpr size_t maxFunctionConstantIndex = 65535;
+// The stage-in region of a kernel, the origin and then the size, follows the function constants.
+static constexpr uint32_t firstStageInRegionSpecializationID = firstFunctionConstantSpecializationID + 2 * (maxFunctionConstantIndex + 1);
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
@@ -3445,7 +3447,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
-				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
+				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid"
+				|| kind == "air.stage_in_grid_origin" || kind == "air.stage_in_grid_size") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
 			SPIRV::ResultID load;
 			if (kind == "air.thread_position_in_grid") {
@@ -3456,6 +3459,20 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				load = computeInput(SPIRV::BuiltinID::WorkgroupId, uvec3Type);
 			} else if (kind == "air.threadgroups_per_grid") {
 				load = computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type);
+			} else if (kind == "air.stage_in_grid_origin" || kind == "air.stage_in_grid_size") {
+				// the stage-in region the encoder was given (MSL's grid_origin and grid_size) is specialization constants
+				// the dispatch sets
+				std::array<uint32_t, 6> ids;
+				for (uint32_t id = 0; id < ids.size(); ++id) {
+					ids[id] = firstStageInRegionSpecializationID + id;
+				}
+				funcInfo.stageInRegionSpecializationIDs = ids;
+				auto first = kind == "air.stage_in_grid_origin" ? 0 : 3;
+				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, {
+					builder.declareConstantScalar<uint32_t>(0, ids[first]),
+					builder.declareConstantScalar<uint32_t>(0, ids[first + 1]),
+					builder.declareConstantScalar<uint32_t>(0, ids[first + 2]),
+				});
 			} else {
 				// the threadgroup size is the specialization constants the dispatch sets
 				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, { computeLocalSizeX, computeLocalSizeY, computeLocalSizeZ });
