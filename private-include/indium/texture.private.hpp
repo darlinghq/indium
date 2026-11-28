@@ -314,6 +314,8 @@ namespace Indium {
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
 		bool _shadow = false;
+		// The memory of the image is an imported DMA-BUF, which other users of the buffer read and write directly.
+		bool _imported = false;
 		HazardTrackingMode _hazardTrackingMode = HazardTrackingMode::HazardTrackingModeTracked;
 		HazardRange _hazardRange;
 		VkDeviceSize _requiredSize = 0;

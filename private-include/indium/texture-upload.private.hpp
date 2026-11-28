@@ -55,6 +55,12 @@ namespace Indium {
 		/** `flushLocked()` for a caller that does not hold the graphics queue mutex. */
 		void flush();
 
+		/**
+		 * `flush()`, then waits until every upload submitted so far has finished on the GPU, so that the bytes of the
+		 * pending copies are in the images when it returns. For a texture whose memory other users read directly.
+		 */
+		void flushAndWait();
+
 		/** Whether copies are waiting for a submission. */
 		bool hasPending() const { return _pendingCount.load(std::memory_order_relaxed) != 0; }
 

@@ -115,6 +115,16 @@ void Indium::TextureUploader::flush() {
 	flushLocked();
 };
 
+void Indium::TextureUploader::flushAndWait() {
+	flush();
+	std::vector<std::shared_ptr<void>> graveyard;
+	{
+		std::scoped_lock lock(_mutex);
+		reapLocked(true, graveyard);
+	}
+	graveyard.clear();
+};
+
 void Indium::TextureUploader::flushLocked() {
 	if (!hasPending()) {
 		return;

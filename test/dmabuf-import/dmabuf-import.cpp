@@ -35,8 +35,9 @@ void report(bool ok, const char* what) {
 
 constexpr size_t width = 61, height = 23;
 constexpr size_t bytesPerRow = 256;
-constexpr size_t offset = 4096;
-constexpr size_t bufferSize = offset + 7 * 4096;
+// where the image starts in the buffer; some drivers only import an image that starts at 0 (see main)
+size_t offset = 4096;
+constexpr size_t bufferSize = 4096 + 7 * 4096;
 
 uint32_t pattern(size_t x, size_t y, uint32_t salt) {
 	return static_cast<uint32_t>(x | (y << 8) | (((x * 7 + y * 13 + salt) & 0xff) << 16)) | 0xff000000u;
@@ -121,15 +122,25 @@ int main() {
 			return failures ? 1 : 0;
 		}
 
-		for (size_t y = 0; y < height; ++y) {
-			for (size_t x = 0; x < width; ++x) {
-				word(buffer, x, y) = pattern(x, y, 1);
+		auto fill = [&]() {
+			for (size_t y = 0; y < height; ++y) {
+				for (size_t x = 0; x < width; ++x) {
+					word(buffer, x, y) = pattern(x, y, 1);
+				}
 			}
-		}
+		};
+		fill();
 
 		// a pooled texture before the import, so that the import is not the pool's first user
 		auto before = pooledTexture(device);
 		auto texture = device->newTextureWithDMABuf(descriptor(), buffer.dmabuf, offset, bytesPerRow);
+		if (!texture) {
+			// refused rather than misread: the rest of the checks run with an image at the start of the buffer
+			std::printf("INFO the device does not import an image at offset %zu, using 0\n", offset);
+			offset = 0;
+			fill();
+			texture = device->newTextureWithDMABuf(descriptor(), buffer.dmabuf, offset, bytesPerRow);
+		}
 		report(texture != nullptr, "newTextureWithDMABuf() imports a linear RGBA8 buffer");
 		report(privateDevice->logicalDeviceCreated(), "newTextureWithDMABuf() creates the Vulkan device");
 		if (texture) {
@@ -157,8 +168,17 @@ int main() {
 				}
 			}
 			report(matches, "writes to the texture reach the buffer");
-			report(*reinterpret_cast<uint32_t*>(buffer.bytes + offset - 4) == 0 && word(buffer, width, 0) == 0,
+			report((offset < 4 || *reinterpret_cast<uint32_t*>(buffer.bytes + offset - 4) == 0) && word(buffer, width, 0) == 0,
 				"bytes outside the image are left alone");
+
+			// replaceRegion has finished when it returns, so a CPU write made after it is not undone by it
+			// arriving late
+			word(buffer, 0, 0) = pattern(0, 0, 3);
+			word(buffer, width - 1, height - 1) = pattern(width - 1, height - 1, 3);
+			std::vector<uint32_t> after(width * height);
+			texture->getBytes(region, 0, after.data(), width * 4);
+			report(after[0] == pattern(0, 0, 3) && after[width * height - 1] == pattern(width - 1, height - 1, 3)
+				&& after[1] == pattern(1, 0, 2), "a CPU write after replaceRegion is seen by the texture");
 		}
 
 		// creation and destruction in mixed order: the imported memory is freed on its own, the
