@@ -1847,6 +1847,79 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 	return false;
 }
 
+// The LLVM arithmetic intrinsics with an overflow check, llvm.<s|u><add|sub|mul>.with.overflow.<type>: a
+// structure of the wrapped result and whether the operation overflowed. Returns false when `name` is not one of them.
+static bool translateOverflowIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+
+	auto parts = splitAirName(name);
+	if (parts.size() != 5 || parts[0] != "llvm" || parts[2] != "with" || parts[3] != "overflow") {
+		return false;
+	}
+	auto operation = parts[1];
+	if (operation.size() != 4 || (operation[0] != 's' && operation[0] != 'u')) {
+		return false;
+	}
+	bool isSigned = operation[0] == 's';
+	operation.remove_prefix(1);
+	if (operation != "add" && operation != "sub" && operation != "mul") {
+		return false;
+	}
+
+	auto members = builder.reverseLookupType(type)->structureMembers;
+	auto valueType = members[0].id;
+	auto overflowType = members[1].id;
+	auto valueInfo = *builder.reverseLookupType(valueType);
+	auto scalarInfo = valueInfo.backingType == Type::BackingType::Vector ? *builder.reverseLookupType(valueInfo.targetType) : valueInfo;
+	if (scalarInfo.backingType != Type::BackingType::Integer) {
+		// i1, a SPIR-V boolean
+		return false;
+	}
+	auto width = scalarInfo.scalarWidth;
+	auto lhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0));
+	auto rhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1));
+	auto zero = integerConstantOfType(builder, valueType, 0);
+
+	ResultID value;
+	ResultID overflow;
+	if (operation == "mul") {
+		// the double-width product: it fits when the high half is zero (unsigned) or the sign extension of the low half (signed)
+		auto operandType = isSigned ? valueType : integerTypeWithSign(builder, valueType, false);
+		auto operandInfo = *builder.reverseLookupType(operandType);
+		auto typed = [&](ResultID id) { return operandType == valueType ? id : builder.encodeBitcast(operandType, id); };
+		LayoutFreeScope layoutFree(true);
+		auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { operandType, 0, {} }, Type::Member { operandType, operandInfo.size, {} } }, valueInfo.size * 2, valueInfo.alignment));
+		auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { typed(lhs), typed(rhs) });
+		auto low = builder.encodeCompositeExtract(operandType, product, { 0 });
+		auto high = builder.encodeCompositeExtract(operandType, product, { 1 });
+		value = operandType == valueType ? low : builder.encodeBitcast(valueType, low);
+		auto expected = isSigned ? builder.encodeArithBinop(Opcode::ShiftRightArithmetic, valueType, value, integerConstantOfType(builder, valueType, width - 1)) : zero;
+		overflow = builder.encodeOp(Opcode::INotEqual, overflowType, { operandType == valueType ? high : builder.encodeBitcast(valueType, high), expected });
+	} else if (operation == "add") {
+		value = builder.encodeArithBinop(Opcode::IAdd, valueType, lhs, rhs);
+		if (isSigned) {
+			// the operands have the same sign, and the sum the other one
+			auto both = builder.encodeArithBinop(Opcode::BitwiseAnd, valueType, builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, value), builder.encodeArithBinop(Opcode::BitwiseXor, valueType, rhs, value));
+			overflow = builder.encodeOp(Opcode::SLessThan, overflowType, { both, zero });
+		} else {
+			// the sum wrapped around
+			overflow = builder.encodeOp(Opcode::ULessThan, overflowType, { value, lhs });
+		}
+	} else {
+		value = builder.encodeArithBinop(Opcode::ISub, valueType, lhs, rhs);
+		if (isSigned) {
+			// the operands have different signs, and the difference that of the subtrahend
+			auto both = builder.encodeArithBinop(Opcode::BitwiseAnd, valueType, builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, rhs), builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, value));
+			overflow = builder.encodeOp(Opcode::SLessThan, overflowType, { both, zero });
+		} else {
+			overflow = builder.encodeOp(Opcode::ULessThan, overflowType, { lhs, rhs });
+		}
+	}
+
+	resID = builder.encodeOp(Opcode::CompositeConstruct, type, { value, overflow });
+	return true;
+}
+
 // Converts a texel from the type an image is accessed with to the type the shader uses: half textures
 // are accessed as float ones (see the texture argument declarations), and the sign of integer texels can
 // differ.
@@ -4236,6 +4309,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 						resID = builder.encodeFMax(type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
 					} else if (translateAirIntrinsic(builder, inst, name, type, resID)) {
+						// handled
+					} else if (translateOverflowIntrinsic(builder, inst, name, type, resID)) {
 						// handled
 					} else {
 						 throw std::runtime_error(std::string("Unsupported function call (name = ") + std::string(name) + ")");
