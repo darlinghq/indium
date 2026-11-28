@@ -153,7 +153,7 @@ namespace Indium {
 					continue;
 				}
 				auto texture = std::dynamic_pointer_cast<PrivateTexture>(resources.textures[binding.index]);
-				if (!texture) {
+				if (!texture || !textureFitsBinding(info, binding, *texture)) {
 					continue;
 				}
 				if (texture->hazardTrackingMode() == HazardTrackingMode::HazardTrackingModeUntracked) {
@@ -360,6 +360,10 @@ namespace Indium {
 					std::shared_ptr<PrivateTexture> privateTexture;
 					if (bindingInfo.index < functionResources.textures.size()) {
 						privateTexture = std::dynamic_pointer_cast<PrivateTexture>(functionResources.textures[bindingInfo.index]);
+					}
+					// a texture of another type than the binding's is for another argument at its index, and this one is unbound
+					if (privateTexture && !textureFitsBinding(funcInfo, bindingInfo, *privateTexture)) {
+						privateTexture = nullptr;
 					}
 					// without nullDescriptor, an unbound texture can only be left unwritten
 					if (!privateTexture && !privateDevice->nullDescriptorEnabled()) {
