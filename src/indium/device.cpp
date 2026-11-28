@@ -1350,8 +1350,18 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 		std::unordered_set<size_t> usedInternalIndices;
 
 		for (const auto& binding: functionReflection.bindings) {
-			if (static_cast<size_t>(binding.type) > static_cast<size_t>(BindingType::VertexInput)) {
+			if (static_cast<size_t>(binding.type) > static_cast<size_t>(BindingType::InputAttachment)) {
 				return fail("function '" + name + "' has a binding of an unknown type");
+			}
+
+			if (binding.type == BindingType::InputAttachment) {
+				if (functionReflection.functionType != FunctionType::Fragment) {
+					return fail("function '" + name + "' is not a fragment function and has an input attachment binding");
+				}
+				// Metal has eight color attachments; the render pass cannot hold more
+				if (binding.index >= 8) {
+					return fail("function '" + name + "' reads color attachment " + std::to_string(binding.index) + ", and there are eight");
+				}
 			}
 
 			if (static_cast<size_t>(binding.textureAccessType) > static_cast<size_t>(TextureAccessType::Fetch)) {
@@ -1367,7 +1377,7 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 				}
 			}
 
-			if (binding.type == BindingType::Texture || binding.type == BindingType::Sampler) {
+			if (binding.type == BindingType::Texture || binding.type == BindingType::Sampler || binding.type == BindingType::InputAttachment) {
 				auto inserted = usedInternalIndices.insert(binding.internalIndex);
 
 				if (!inserted.second) {

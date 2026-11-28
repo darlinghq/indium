@@ -1,0 +1,70 @@
+; The same two functions as invert_fs and fullscreen_vs of framebuffer-fetch.metal, written by hand to show the
+; construct on its own: a fragment entry point reads a SubpassData image (OpImageRead) whose InputAttachmentIndex
+; is the color attachment index, at descriptor set 1 (the fragment stage's set), binding 0.
+               OpCapability Shader
+               OpCapability InputAttachment
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Vertex %vs "fullscreen_vs" %vertex_index %position
+               OpEntryPoint Fragment %fs "invert_fs" %attachment %color
+               OpExecutionMode %fs OriginUpperLeft
+               OpDecorate %vertex_index BuiltIn VertexIndex
+               OpDecorate %position BuiltIn Position
+               OpDecorate %attachment DescriptorSet 1
+               OpDecorate %attachment Binding 0
+               OpDecorate %attachment InputAttachmentIndex 0
+               OpDecorate %color Location 0
+       %void = OpTypeVoid
+     %voidfn = OpTypeFunction %void
+        %int = OpTypeInt 32 1
+      %float = OpTypeFloat 32
+    %v2float = OpTypeVector %float 2
+    %v3float = OpTypeVector %float 3
+    %v4float = OpTypeVector %float 4
+      %v2int = OpTypeVector %int 2
+      %int_1 = OpConstant %int 1
+      %int_2 = OpConstant %int 2
+    %float_0 = OpConstant %float 0
+    %float_1 = OpConstant %float 1
+    %float_2 = OpConstant %float 2
+      %ones2 = OpConstantComposite %v2float %float_1 %float_1
+      %ones3 = OpConstantComposite %v3float %float_1 %float_1 %float_1
+      %zero2 = OpConstantNull %v2int
+ %ptr_in_int = OpTypePointer Input %int
+%ptr_out_v4 = OpTypePointer Output %v4float
+%vertex_index = OpVariable %ptr_in_int Input
+   %position = OpVariable %ptr_out_v4 Output
+      %image = OpTypeImage %float SubpassData 0 0 0 2 Unknown
+  %ptr_image = OpTypePointer UniformConstant %image
+ %attachment = OpVariable %ptr_image UniformConstant
+      %color = OpVariable %ptr_out_v4 Output
+         %vs = OpFunction %void None %voidfn
+    %vs_body = OpLabel
+         %id = OpLoad %int %vertex_index
+    %shifted = OpShiftLeftLogical %int %id %int_1
+          %x = OpBitwiseAnd %int %shifted %int_2
+          %y = OpBitwiseAnd %int %id %int_2
+         %fx = OpConvertSToF %float %x
+         %fy = OpConvertSToF %float %y
+     %corner = OpCompositeConstruct %v2float %fx %fy
+     %scaled = OpVectorTimesScalar %v2float %corner %float_2
+        %ndc = OpFSub %v2float %scaled %ones2
+       %ndcx = OpCompositeExtract %float %ndc 0
+       %ndcy = OpCompositeExtract %float %ndc 1
+        %pos = OpCompositeConstruct %v4float %ndcx %ndcy %float_0 %float_1
+               OpStore %position %pos
+               OpReturn
+               OpFunctionEnd
+         %fs = OpFunction %void None %voidfn
+    %fs_body = OpLabel
+        %img = OpLoad %image %attachment
+      %texel = OpImageRead %v4float %img %zero2
+        %rgb = OpVectorShuffle %v3float %texel %texel 0 1 2
+        %inv = OpFSub %v3float %ones3 %rgb
+          %a = OpCompositeExtract %float %texel 3
+         %r0 = OpCompositeExtract %float %inv 0
+         %r1 = OpCompositeExtract %float %inv 1
+         %r2 = OpCompositeExtract %float %inv 2
+        %out = OpCompositeConstruct %v4float %r0 %r1 %r2 %a
+               OpStore %color %out
+               OpReturn
+               OpFunctionEnd

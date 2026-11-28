@@ -29,6 +29,16 @@ namespace Indium {
 		 */
 		virtual void sampleCounters(const std::shared_ptr<CounterSampleBuffer>& sampleBuffer, size_t sampleIndex, bool barrier) = 0;
 
+		/**
+		 * Sets the pipeline the following draws use.
+		 *
+		 * A pipeline whose fragment function reads color attachments (framebuffer fetch, `[[color(n)]]`; reflection
+		 * `BindingType::InputAttachment`) reads the attachments of this pass. The first time such a pipeline is set,
+		 * the pass continues in one whose subpass can read them, keeping everything drawn so far. Every attachment
+		 * the function reads has to be a single-sample color render target of the pass, or std::runtime_error is
+		 * thrown and the pipeline is not set. Draws of one pass see each other's writes; primitives of a single
+		 * draw that overlap read each other's writes in no defined order.
+		 */
 		virtual void setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) = 0;
 		virtual void setFrontFacingWinding(Winding frontFaceWinding) = 0;
 		virtual void setCullMode(CullMode cullMode) = 0;

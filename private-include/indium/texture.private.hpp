@@ -91,6 +91,13 @@ namespace Indium {
 		virtual bool imageIsMutableFormat() { return true; }
 
 		/**
+		 * Whether the image was created with VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, so that a render pass can
+		 * read it as an input attachment (framebuffer fetch). Only a single-sample color texture that may be
+		 * a render target has it; a texture that does not own its image says no.
+		 */
+		virtual bool canBeInputAttachment() { return false; }
+
+		/**
 		 * The view to bind in a descriptor. Descriptors may only name a single aspect, so for a
 		 * combined depth/stencil texture this is a depth-only view; otherwise it is `imageView()`.
 		 */
@@ -222,6 +229,7 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() override;
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
+		virtual bool canBeInputAttachment() override;
 		virtual HazardRange hazardRange() override { return _original->hazardRange(); }
 		virtual HazardTrackingMode hazardTrackingMode() const override { return _original->hazardTrackingMode(); }
 
@@ -324,6 +332,7 @@ namespace Indium {
 		size_t _backingOffset = 0;
 		size_t _backingBytesPerRow = 0;
 		bool _mutableFormat = false;
+		bool _inputAttachment = false;
 		bool _shadow = false;
 		// The memory of the image is an imported DMA-BUF, which other users of the buffer read and write directly.
 		bool _imported = false;
@@ -394,6 +403,7 @@ namespace Indium {
 		virtual VkImageLayout imageLayout() override;
 		virtual VkFormat imageFormat() override;
 		virtual bool imageIsMutableFormat() override;
+		virtual bool canBeInputAttachment() override;
 		virtual size_t vulkanArrayLength() const override;
 		virtual HazardRange hazardRange() override { return _hazardRange.valid() ? _hazardRange : HazardRange::image(_image); }
 		virtual HazardTrackingMode hazardTrackingMode() const override { return _hazardTrackingMode; }

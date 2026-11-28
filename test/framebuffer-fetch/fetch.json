@@ -1,0 +1,57 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "fullscreen_vs",
+			"stage": "vertex",
+			"local_size": [1, 1, 1],
+			"bindings": [
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "invert_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "InputAttachment", "metal_index": 0, "descriptor": { "set": 1, "binding": 0 }, "input_attachment_index": 0, "scalar": "float", "name": "c" }
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "copy_from_1_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "InputAttachment", "metal_index": 1, "descriptor": { "set": 1, "binding": 0 }, "input_attachment_index": 1, "scalar": "float", "name": "source" }
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "constant_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "add_one_uint_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "InputAttachment", "metal_index": 0, "descriptor": { "set": 1, "binding": 0 }, "input_attachment_index": 0, "scalar": "uint", "name": "c" }
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "invert_1_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+				{ "kind": "InputAttachment", "metal_index": 1, "descriptor": { "set": 1, "binding": 0 }, "input_attachment_index": 1, "scalar": "float", "name": "c" }
+			],
+			"embedded_samplers": []
+		}
+	]
+}

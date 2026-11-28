@@ -227,13 +227,14 @@ namespace Indium {
 		return true;
 	}
 
-	static constexpr std::array<VkDescriptorPoolSize, 6> poolSizes {
+	static constexpr std::array<VkDescriptorPoolSize, 7> poolSizes {
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_SAMPLER, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 512 },
 		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 512 },
+		VkDescriptorPoolSize { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 512 },
 	};
 
 	/**
@@ -294,7 +295,7 @@ namespace Indium {
 	};
 
 	template<size_t setCount>
-	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, DescriptorPoolChain& pools, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers, ScratchArena& scratch) {
+	std::array<VkDescriptorSet, setCount> createDescriptorSets(std::array<VkDescriptorSetLayout, setCount>& setLayouts, DescriptorPoolChain& pools, std::shared_ptr<PrivateDevice> privateDevice, const std::array<std::reference_wrapper<const FunctionResources>, setCount>& funcResources, const std::array<std::reference_wrapper<const FunctionInfo>, setCount>& functionInfos, std::vector<std::shared_ptr<Buffer>>& keepAliveBuffers, ScratchArena& scratch, const std::vector<std::shared_ptr<Texture>>* inputAttachments = nullptr) {
 		std::array<VkDescriptorSet, setCount> descriptorSets {};
 
 		pools.allocate(setLayouts.data(), descriptorSets.size(), descriptorSets.data());
@@ -405,6 +406,29 @@ namespace Indium {
 						info.imageLayout = privateTexture ? privateTexture->imageLayout() : VK_IMAGE_LAYOUT_GENERAL;
 						descSet.pImageInfo = &info;
 					}
+				} else if (bindingInfo.type == BindingType::InputAttachment) {
+					// the texture is the render pass's color attachment, set up by the encoder
+					std::shared_ptr<PrivateTexture> privateTexture;
+					if (inputAttachments && bindingInfo.index < inputAttachments->size()) {
+						privateTexture = std::dynamic_pointer_cast<PrivateTexture>((*inputAttachments)[bindingInfo.index]);
+					}
+					if (!privateTexture) {
+						continue;
+					}
+
+					auto& info = imageInfos.emplace_front();
+					info.imageView = privateTexture->imageView();
+					// the layout the subpass's input attachment reference has
+					info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+					auto& descSet = writeDescSet.emplace_back();
+					descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+					descSet.dstSet = descriptorSets[i];
+					descSet.dstBinding = bindingInfo.internalIndex;
+					descSet.dstArrayElement = 0;
+					descSet.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+					descSet.descriptorCount = 1;
+					descSet.pImageInfo = &info;
 				} else if (bindingInfo.type == BindingType::Sampler) {
 					bool embeddedSampler = false;
 

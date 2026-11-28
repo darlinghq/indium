@@ -116,6 +116,30 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		_readWriteTextures.push_back(depthStencilTexture);
 	}
 
+	_depthStencilTexture = depthStencilTexture;
+	_firstTexture = firstTexture;
+	_clearValues = clearValues;
+	beginRenderPass(false, false);
+
+	if (auto visibilityBuffer = std::dynamic_pointer_cast<PrivateBuffer>(descriptor.visibilityResultBuffer); visibilityBuffer && VisibilityResults::supported(_privateDevice)) {
+		_visibilityResults = std::make_unique<VisibilityResults>(_privateDevice, visibilityBuffer);
+	}
+
+	applyDefaultState();
+};
+
+void Indium::PrivateRenderCommandEncoder::beginRenderPass(bool withInputAttachments, bool resume) {
+	auto buf = _privateCommandBuffer.lock();
+	const auto& descriptor = _descriptor;
+	auto vkDevice = _privateDevice->device();
+	auto vkCmdBuf = buf->commandBuffer();
+	const auto& depthStencilTexture = _depthStencilTexture;
+	const auto& firstTexture = _firstTexture;
+	const auto& clearValues = _clearValues;
+	auto resolvesColor = [](const auto& color) {
+		return color.texture && (color.storeAction == StoreAction::MultisampleResolve || color.storeAction == StoreAction::StoreAndMultisampleResolve);
+	};
+
 	std::vector<VkAttachmentDescription> renderPassAttachments;
 	std::vector<VkSubpassDescription> subpasses;
 	std::vector<VkSubpassDependency> dependencies;
@@ -130,7 +154,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 			continue;
 		}
 		auto privateTexture = std::dynamic_pointer_cast<PrivateTexture>(color.texture);
-		bool clear = loadActionToVkAttachmentLoadOp(color.loadAction, true) == VK_ATTACHMENT_LOAD_OP_CLEAR;
+		bool clear = !resume && loadActionToVkAttachmentLoadOp(color.loadAction, true) == VK_ATTACHMENT_LOAD_OP_CLEAR;
 		VkAttachmentDescription desc {};
 		desc.format = _privateDevice->textureVkFormat(color.texture->pixelFormat());
 		desc.samples = sampleCountToVk(color.texture->sampleCount());
@@ -153,8 +177,8 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		auto clears = [](const auto& attachment) {
 			return attachment && loadActionToVkAttachmentLoadOp(attachment->loadAction, false) == VK_ATTACHMENT_LOAD_OP_CLEAR;
 		};
-		bool clearDepth = clears(descriptor.depthAttachment);
-		bool clearStencil = clears(descriptor.stencilAttachment);
+		bool clearDepth = !resume && clears(descriptor.depthAttachment);
+		bool clearStencil = !resume && clears(descriptor.stencilAttachment);
 
 		VkAttachmentDescription desc {};
 		desc.format = pixelFormatToVkFormat(format);
@@ -169,6 +193,10 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	}
 
 	std::vector<VkAttachmentReference> colorAttachments;
+	// framebuffer fetch: the color attachments a fragment function reads, by color attachment index. Only a pass
+	// that a pipeline reading one is set in has them (see enableInputAttachments()); the others have no input
+	// attachment references, and no dependency for them.
+	std::vector<VkAttachmentReference> inputAttachments;
 	VkAttachmentReference depthStencilAttachment {};
 
 	size_t index = 0;
@@ -177,6 +205,13 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		ref.attachment = color.texture ? index++ : VK_ATTACHMENT_UNUSED;
 		ref.layout = VK_IMAGE_LAYOUT_GENERAL;
 		colorAttachments.push_back(ref);
+
+		VkAttachmentReference inputRef { VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_GENERAL };
+		if (withInputAttachments && color.texture && color.texture->sampleCount() == 1 &&
+			std::dynamic_pointer_cast<PrivateTexture>(color.texture)->canBeInputAttachment()) {
+			inputRef.attachment = ref.attachment;
+		}
+		inputAttachments.push_back(inputRef);
 	}
 
 	if (depthStencilTexture) {
@@ -216,6 +251,11 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		external.dstStageMask = external.srcStageMask;
 		external.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		external.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		if (withInputAttachments) {
+			// what an earlier pass wrote to the attachments is also read by the fragment shaders as input attachments
+			external.dstStageMask |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+			external.dstAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+		}
 	}
 
 	// memoryBarrier() records pipeline barriers inside the pass, which Vulkan only allows when they
@@ -232,6 +272,11 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		fragment.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
 			VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		fragment.dstAccessMask = fragment.srcAccessMask;
+		if (withInputAttachments) {
+			// the barrier before a draw that reads an input attachment (updateBindings()): color writes to input reads
+			fragment.srcAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+			fragment.dstAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+		}
 		fragment.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
 		auto& vertex = dependencies.emplace_back();
@@ -250,6 +295,7 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		resolveAttachments.back().attachment == VK_ATTACHMENT_UNUSED) {
 		colorAttachments.pop_back();
 		resolveAttachments.pop_back();
+		inputAttachments.pop_back();
 	}
 
 	auto& subpassDesc = subpasses.emplace_back();
@@ -257,6 +303,10 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	subpassDesc.colorAttachmentCount = colorAttachments.size();
 	subpassDesc.pColorAttachments = colorAttachments.data();
 	subpassDesc.pResolveAttachments = resolveAttachments.data();
+	if (withInputAttachments) {
+		subpassDesc.inputAttachmentCount = inputAttachments.size();
+		subpassDesc.pInputAttachments = inputAttachments.data();
+	}
 	subpassDesc.pDepthStencilAttachment = depthStencilTexture ? &depthStencilAttachment : nullptr;
 
 	VkRenderPassCreateInfo renderPassInfo {};
@@ -268,6 +318,9 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassInfo.dependencyCount = dependencies.size();
 	renderPassInfo.pDependencies = dependencies.data();
 
+	if (_renderPass && !_renderPassDeviceOwned) {
+		_retiredRenderPasses.push_back(_renderPass);
+	}
 	_renderPass = _privateDevice->acquireRenderPass(renderPassInfo, _renderPassDeviceOwned);
 
 	std::vector<VkImageView> framebufferAttachments;
@@ -293,6 +346,12 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	size_t rtLayers = firstTexture ? std::dynamic_pointer_cast<PrivateTexture>(firstTexture)->vulkanArrayLength()
 		: std::max<size_t>(descriptor.renderTargetArrayLength, 1);
 
+	if (_framebuffer) {
+		// the pass this one replaces may still be recorded against it
+		_retiredFramebuffers.push_back(_framebuffer);
+		_framebuffer = VK_NULL_HANDLE;
+	}
+
 	VkFramebufferCreateInfo framebufferInfo {};
 	framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
 	framebufferInfo.renderPass = _renderPass;
@@ -316,20 +375,19 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 	renderPassBeginInfo.pClearValues = clearValues.data();
 	// Vulkan cannot tell the vertex and fragment stages apart at the edges of a pass, so both start samples are taken
 	// when the pass begins and both end samples when it ends.
-	for (const auto& [index, attachment]: descriptor.sampleBufferAttachments) {
-		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfVertexSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-		PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfFragmentSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+	if (!resume) {
+		for (const auto& [index, attachment]: descriptor.sampleBufferAttachments) {
+			PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfVertexSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+			PrivateCounterSampleBuffer::record(attachment.sampleBuffer, vkCmdBuf, attachment.startOfFragmentSampleIndex, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+		}
 	}
 	DynamicVK::vkCmdBeginRenderPass(vkCmdBuf, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-	if (auto visibilityBuffer = std::dynamic_pointer_cast<PrivateBuffer>(descriptor.visibilityResultBuffer); visibilityBuffer && VisibilityResults::supported(_privateDevice)) {
-		_visibilityResults = std::make_unique<VisibilityResults>(_privateDevice, visibilityBuffer);
-	}
-
 	_defaultWidth = rtWidth;
 	_defaultHeight = rtHeight;
-	applyDefaultState();
+	_inputAttachmentPass = withInputAttachments;
+
 };
+
 
 void Indium::PrivateRenderCommandEncoder::applyDefaultState() {
 	auto buf = _privateCommandBuffer.lock();
@@ -366,17 +424,85 @@ Indium::PrivateRenderCommandEncoder::~PrivateRenderCommandEncoder() {
 	if (_framebuffer) {
 		DynamicVK::vkDestroyFramebuffer(_privateDevice->device(), _framebuffer, nullptr);
 	}
+	for (auto framebuffer: _retiredFramebuffers) {
+		DynamicVK::vkDestroyFramebuffer(_privateDevice->device(), framebuffer, nullptr);
+	}
+	for (auto renderPass: _retiredRenderPasses) {
+		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), renderPass, nullptr);
+	}
 	if (_renderPass && !_renderPassDeviceOwned) {
 		DynamicVK::vkDestroyRenderPass(_privateDevice->device(), _renderPass, nullptr);
 	}
 };
 
+void Indium::PrivateRenderCommandEncoder::enableInputAttachments(const FunctionInfo& fragment) {
+	for (const auto& binding: fragment.bindings) {
+		if (binding.type != BindingType::InputAttachment) {
+			continue;
+		}
+		// the pass has to hold what the function reads, in a form Vulkan can read back: a single-sample image made with the usage
+		if (binding.index >= _descriptor.colorAttachments.size() || !_descriptor.colorAttachments[binding.index].texture) {
+			throw std::runtime_error("The fragment function reads color attachment " + std::to_string(binding.index) + ", which the render pass does not have");
+		}
+		const auto& texture = _descriptor.colorAttachments[binding.index].texture;
+		if (texture->sampleCount() != 1) {
+			throw std::runtime_error("The fragment function reads color attachment " + std::to_string(binding.index) + ", which is multisampled; framebuffer fetch needs a single-sample attachment");
+		}
+		if (!std::dynamic_pointer_cast<PrivateTexture>(texture)->canBeInputAttachment()) {
+			throw std::runtime_error("The fragment function reads color attachment " + std::to_string(binding.index) + ", which cannot be read as an input attachment: it is not a color render target texture of this device");
+		}
+	}
+
+	if (_inputAttachmentPass) {
+		return;
+	}
+
+	// Vulkan reads an attachment as an input only if the subpass names it, so the pass is ended and the rest of
+	// the encoder's commands go into one that does. It keeps what the first pass drew (every attachment is
+	// loaded, not cleared, and was stored) and the state the commands set carries over.
+	auto buf = _privateCommandBuffer.lock();
+	auto vkCmdBuf = buf->commandBuffer();
+	if (_visibilityResults) {
+		_visibilityResults->end(vkCmdBuf);
+	}
+	if (_timer) {
+		_timer->end(vkCmdBuf);
+		_timer.reset();
+	}
+	DynamicVK::vkCmdEndRenderPass(vkCmdBuf);
+	beginRenderPass(true, true);
+	if (_visibilityResults && _visibilityMode != VisibilityResultMode::Disabled) {
+		_visibilityResults->setMode(vkCmdBuf, _visibilityMode, _visibilityOffset);
+	}
+};
+
+bool Indium::PrivateRenderCommandEncoder::readsInputAttachments() const {
+	if (!_privatePSO) {
+		return false;
+	}
+	const auto& bindings = _privatePSO->fragmentFunctionInfo().bindings;
+	return std::any_of(bindings.begin(), bindings.end(), [](const BindingDescriptor& binding) {
+		return binding.type == BindingType::InputAttachment;
+	});
+};
+
 void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shared_ptr<RenderPipelineState>& renderPipelineState) {
 	if (!_renderPass) return;
 	auto buf = _privateCommandBuffer.lock();
-	_privatePSO = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
+	auto pipeline = std::dynamic_pointer_cast<PrivateRenderPipelineState>(renderPipelineState);
+	if (pipeline) {
+		// before the pipeline is made: it is made for the render pass it is first used in
+		bool reads = false;
+		for (const auto& binding: pipeline->fragmentFunctionInfo().bindings) {
+			reads = reads || binding.type == BindingType::InputAttachment;
+		}
+		if (reads) {
+			enableInputAttachments(pipeline->fragmentFunctionInfo());
+		}
+	}
+	_privatePSO = pipeline;
 	if (_privatePSO) {
-		_privatePSO->recreatePipeline(_renderPass, false);
+		_privatePSO->recreatePipeline(_renderPass, false, _inputAttachmentPass);
 		if (_privateDevice->pipelineTimingEnabled()) {
 			// the draws up to the next pipeline change or the end of the pass are timed as this pipeline's
 			if (!_timer) {
@@ -485,7 +611,23 @@ bool Indium::PrivateRenderCommandEncoder::updateBindings() {
 
 	auto buf = _privateCommandBuffer.lock();
 
-	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers, _scratch);
+	std::vector<std::shared_ptr<Texture>> colorTextures;
+	if (readsInputAttachments()) {
+		// The color writes of the earlier draws of the pass have to be visible to this draw's reads of them; the pass has the
+		// self-dependency for it. Draws are the unit of that order: primitives of one draw that overlap read each other's
+		// writes in no defined order, which VK_EXT_rasterization_order_attachment_access would give.
+		VkMemoryBarrier barrier {};
+		barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+		DynamicVK::vkCmdPipelineBarrier(buf->commandBuffer(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_DEPENDENCY_BY_REGION_BIT, 1, &barrier, 0, nullptr, 0, nullptr);
+		for (const auto& color: _descriptor.colorAttachments) {
+			colorTextures.push_back(color.texture);
+		}
+	}
+
+	std::array<VkDescriptorSet, 2> descriptorSets = createDescriptorSets(_privatePSO->descriptorSetLayouts().layouts, _descriptorPools, _privateDevice, { _functionResources[0], _functionResources[1] }, { _privatePSO->vertexFunctionInfo(), _privatePSO->fragmentFunctionInfo() }, _keepAliveBuffers, _scratch, &colorTextures);
 
 	DynamicVK::vkCmdBindDescriptorSets(buf->commandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS, _privatePSO->pipelineLayout(), 0, descriptorSets.size(), descriptorSets.data(), 0, nullptr);
 
@@ -626,7 +768,7 @@ void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBu
 		default:
 			throw BadEnumValue();
 	}
-	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp);
+	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp, _inputAttachmentPass);
 	DynamicVK::vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 	DynamicVK::vkCmdSetPrimitiveTopology(commandBuffer, primitiveTypeToVkPrimitiveTopology(primitiveType));
@@ -1125,6 +1267,8 @@ void Indium::PrivateRenderCommandEncoder::setVisibilityResultMode(VisibilityResu
 	if (!_renderPass) return;
 	// without a visibility result buffer there is nowhere to write the results to
 	if (_visibilityResults) {
+		_visibilityMode = mode;
+		_visibilityOffset = offset;
 		_visibilityResults->setMode(_privateCommandBuffer.lock()->commandBuffer(), mode, offset);
 	}
 };

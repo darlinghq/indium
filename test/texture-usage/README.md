@@ -22,3 +22,6 @@ the complete combination; unsupported combinations fail rather than silently
 remove required operations. Transfer usage remains required for existing
 getBytes/replaceRegion operations. Native draw fixtures must declare RenderTarget
 usage instead of relying on the default ShaderRead descriptor.
+
+A single-sample color render target also has the input attachment usage, so that a fragment function can read it
+back (framebuffer fetch); test/framebuffer-fetch checks the rest of what that costs.
