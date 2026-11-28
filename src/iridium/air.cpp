@@ -2672,6 +2672,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 		}
 		return builder.encodeLoad(valueType, it->second);
 	};
+	// a 32-bit built-in as the integer type of a parameter, which may be narrower or wider. OpUConvert's result is
+	// unsigned, while the parameter's type, like every integer type from LLVM, is signed.
+	auto asParameterType = [&](SPIRV::ResultID value, SPIRV::ResultID type) {
+		if (builder.reverseLookupType(type)->scalarWidth != 32) {
+			value = builder.encodeUConvert(type, value);
+		}
+		return builder.lookupResultType(value) == type ? value : builder.encodeBitcast(type, value);
+	};
 
 	auto firstLabelID = builder.beginFunction(funcID.id);
 
@@ -3224,32 +3232,50 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_simdgroup" || kind == "air.threads_per_simdgroup" || kind == "air.simdgroup_index_in_threadgroup"
-				|| kind == "air.simdgroups_per_threadgroup") {
-			// the subgroup of the invocation, as the number the parameter's integer type holds
+				|| kind == "air.simdgroups_per_threadgroup" || kind == "air.dispatch_simdgroups_per_threadgroup") {
+			// the subgroup of the invocation, as the number the parameter's integer type holds. A threadgroup has the
+			// size given at dispatch (see air.threads_per_threadgroup), so the dispatch_ variant is the same.
 			builder.requireCapability(SPIRV::Capability::GroupNonUniform);
 			auto builtin = kind == "air.thread_index_in_simdgroup" ? SPIRV::BuiltinID::SubgroupLocalInvocationId
 				: (kind == "air.threads_per_simdgroup" ? SPIRV::BuiltinID::SubgroupSize
 				: (kind == "air.simdgroup_index_in_threadgroup" ? SPIRV::BuiltinID::SubgroupId : SPIRV::BuiltinID::NumSubgroups));
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			auto load = computeInput(builtin, u32Type);
-			if (type != u32Type) {
-				// a 32-bit integer of the other signedness, or a narrower or wider one
-				auto parameterType = *builder.reverseLookupType(type);
-				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			auto load = asParameterType(computeInput(builtin, u32Type), type);
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, type);
+		} else if (kind == "air.thread_index_in_quadgroup" || kind == "air.quadgroup_index_in_threadgroup" || kind == "air.quadgroups_per_threadgroup"
+				|| kind == "air.dispatch_quadgroups_per_threadgroup") {
+			// the quad-groups are the groups of four consecutive lanes of a subgroup, and there are as many in a
+			// threadgroup as its threads fill
+			SPIRV::ResultID load;
+			auto two = builder.declareConstantScalar<uint32_t>(2);
+			if (kind == "air.thread_index_in_quadgroup" || kind == "air.quadgroup_index_in_threadgroup") {
+				builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+				auto lane = computeInput(SPIRV::BuiltinID::SubgroupLocalInvocationId, u32Type);
+				if (kind == "air.thread_index_in_quadgroup") {
+					load = builder.encodeArithBinop(SPIRV::Opcode::BitwiseAnd, u32Type, lane, builder.declareConstantScalar<uint32_t>(3));
+				} else {
+					auto quadgroupsPerSubgroup = builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, computeInput(SPIRV::BuiltinID::SubgroupSize, u32Type), two);
+					auto firstQuadgroup = builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, computeInput(SPIRV::BuiltinID::SubgroupId, u32Type), quadgroupsPerSubgroup);
+					load = builder.encodeArithBinop(SPIRV::Opcode::IAdd, u32Type, firstQuadgroup, builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, lane, two));
+				}
+			} else {
+				// the threadgroup size is the specialization constants the dispatch sets (see air.threads_per_threadgroup)
+				auto threads = builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, computeLocalSizeX, computeLocalSizeY), computeLocalSizeZ);
+				load = builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, builder.encodeArithBinop(SPIRV::Opcode::IAdd, u32Type, threads, builder.declareConstantScalar<uint32_t>(3)), two);
 			}
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			load = asParameterType(load, type);
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
-			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			if (type != u32Type) {
-				auto parameterType = *builder.reverseLookupType(type);
-				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
-			}
+			auto load = asParameterType(computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type), type);
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
-				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
+				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.dispatch_threads_per_threadgroup"
+				|| kind == "air.threads_per_grid") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
 			SPIRV::ResultID load;
 			if (kind == "air.thread_position_in_grid") {
@@ -3261,7 +3287,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			} else if (kind == "air.threadgroups_per_grid") {
 				load = computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type);
 			} else {
-				// the threadgroup size is the specialization constants the dispatch sets
+				// the threadgroup size is the specialization constants the dispatch sets. A threadgroup that the edge of the
+				// grid cuts has that size too, so the size given at dispatch is the same.
 				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, { computeLocalSizeX, computeLocalSizeY, computeLocalSizeZ });
 				if (kind == "air.threads_per_grid") {
 					load = builder.encodeArithBinop(SPIRV::Opcode::IMul, uvec3Type, load, computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type));
