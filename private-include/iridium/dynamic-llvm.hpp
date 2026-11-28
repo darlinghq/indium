@@ -94,6 +94,7 @@ namespace Iridium {
 			_macro(LLVMGetSection) \
 			_macro(LLVMGetFirstInstruction) \
 			_macro(LLVMGetFirstNamedMetadata) \
+			_macro(LLVMGetFirstUse) \
 			_macro(LLVMGetIncomingBlock) \
 			_macro(LLVMGetIncomingValue) \
 			_macro(LLVMGetIndices) \
@@ -111,6 +112,7 @@ namespace Iridium {
 			_macro(LLVMGetNamedMetadataOperands) \
 			_macro(LLVMGetNextBasicBlock) \
 			_macro(LLVMGetNextInstruction) \
+			_macro(LLVMGetNextUse) \
 			_macro(LLVMGetNumContainedTypes) \
 			_macro(LLVMGetNumIndices) \
 			_macro(LLVMGetNumMaskElements) \
@@ -126,6 +128,7 @@ namespace Iridium {
 			_macro(LLVMGetTypeByName) \
 			_macro(LLVMGetTypeKind) \
 			_macro(LLVMGetUndefMaskElem) \
+			_macro(LLVMGetUser) \
 			_macro(LLVMGetValueKind) \
 			_macro(LLVMGetValueName2) \
 			_macro(LLVMGetVectorSize) \
