@@ -100,6 +100,25 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 	_privateDevice(device),
 	_functionInfos(functionInfos)
 {
+	// a device without VK_EXT_shader_stencil_export may not be given a module that declares StencilExportEXT; it is
+	// given one without, and the functions that write the stencil reference are refused when a pipeline is made of them
+	std::vector<uint32_t> withoutStencilExport;
+	if (!(_privateDevice->features() & PrivateDevice::Feature::ShaderStencilExport)) {
+		const auto* words = reinterpret_cast<const uint32_t*>(data);
+		withoutStencilExport.assign(words, words + dataLength / sizeof(uint32_t));
+		std::unordered_set<std::string> writers;
+		if (spirvWithoutStencilExport(withoutStencilExport, writers)) {
+			data = reinterpret_cast<const char*>(withoutStencilExport.data());
+			dataLength = withoutStencilExport.size() * sizeof(uint32_t);
+			for (const auto& name: writers) {
+				auto info = _functionInfos.find(name);
+				if (info != _functionInfos.end()) {
+					info->second.writesStencilUnsupported = true;
+				}
+			}
+		}
+	}
+
 	// the varyings of a fragment function may have to be renumbered for a vertex function (fragmentModuleLinkedTo)
 	for (const auto& [name, funcInfo]: _functionInfos) {
 		if (funcInfo.functionType == FunctionType::Fragment) {

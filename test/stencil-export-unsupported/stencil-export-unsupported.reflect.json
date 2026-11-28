@@ -1,0 +1,29 @@
+{
+	"reflection_version": 2,
+	"entry_points": [
+		{
+			"name": "fullscreen_vs",
+			"stage": "vertex",
+			"local_size": [1, 1, 1],
+			"bindings": [
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "color_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+			],
+			"embedded_samplers": []
+		},
+		{
+			"name": "stencil_fs",
+			"stage": "fragment",
+			"local_size": [1, 1, 1],
+			"bindings": [
+			],
+			"embedded_samplers": []
+		}
+	]
+}
