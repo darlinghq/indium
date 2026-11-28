@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 
 #include <map>
+#include <set>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -72,6 +73,15 @@ namespace Indium {
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
 		// see FunctionReflection::maxTotalThreadsPerThreadgroup
 		size_t maxTotalThreadsPerThreadgroup = 0;
+		// The internalIndex of each sampler binding the function samples a depth comparison through (sample_compare,
+		// gather_compare). PrivateLibrary works these out from the module; only these are bound with the sampler
+		// state's compare function enabled (PrivateSamplerState::comparisonSampler). A sampler the function also
+		// reads through without comparing is bound as one all the same, since one descriptor cannot be both, and
+		// what those reads return is then undefined in Vulkan.
+		std::set<size_t> comparisonSamplerBindings;
+		// Set when PrivateLibrary could not follow every comparison of the function back to its sampler. Each sampler
+		// state whose compare function is not Never is then bound as its comparison sampler, at every binding.
+		bool comparisonSamplersUntraced = false;
 		// The function writes the stencil reference ([[stencil]]) and the device cannot: it has no
 		// VK_EXT_shader_stencil_export. A render pipeline with it as its fragment function is refused.
 		bool writesStencilUnsupported = false;

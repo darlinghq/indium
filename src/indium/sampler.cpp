@@ -29,11 +29,12 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 	info.mipLodBias = 0; // not sure where to get this from
 	info.anisotropyEnable = (maxAnisotropy > 1) ? VK_TRUE : VK_FALSE;
 	info.maxAnisotropy = maxAnisotropy;
-	// Metal applies the compare function only to comparison sampling (sample_compare on a depth
-	// texture), which Iridium now emits as OpImageSample*Dref*; those need a comparison sampler.
-	// Never, the default, is what a sampler for ordinary reads has, and those must not get one.
-	// Vulkan does not allow comparison with unnormalized coordinates.
-	info.compareEnable = (descriptor.normalizedCoordinates && descriptor.compareFunction != CompareFunction::Never) ? VK_TRUE : VK_FALSE;
+	// Metal applies the compare function only to comparison sampling (sample_compare and gather_compare on a depth
+	// texture, OpImage*Dref* in SPIR-V), and ignores it for every other read, whatever it is set to. Vulkan applies
+	// a comparison sampler's to every read, and what one returns for a read that is not a Dref is undefined (lavapipe
+	// returns the comparison). So this sampler compares nothing, and comparisonSampler() is the one bound where the
+	// shader compares.
+	info.compareEnable = VK_FALSE;
 	info.compareOp = compareFunctionToVkCompareOp(descriptor.compareFunction);
 	if (!descriptor.normalizedCoordinates) {
 		// required by Vulkan for unnormalized coordinates
@@ -56,10 +57,30 @@ Indium::PrivateSamplerState::PrivateSamplerState(std::shared_ptr<PrivateDevice> 
 		// TODO
 		abort();
 	}
+	_createInfo = info;
 };
 
 Indium::PrivateSamplerState::~PrivateSamplerState() {
+	if (_comparisonSampler != VK_NULL_HANDLE) {
+		DynamicVK::vkDestroySampler(_privateDevice->device(), _comparisonSampler, nullptr);
+	}
 	DynamicVK::vkDestroySampler(_privateDevice->device(), _sampler, nullptr);
+};
+
+VkSampler Indium::PrivateSamplerState::comparisonSampler() {
+	// Vulkan does not allow comparison with unnormalized coordinates
+	if (!_descriptor.normalizedCoordinates) {
+		return _sampler;
+	}
+	std::call_once(_comparisonOnce, [this]() {
+		VkSamplerCreateInfo info = _createInfo;
+		info.compareEnable = VK_TRUE;
+		if (DynamicVK::vkCreateSampler(_privateDevice->device(), &info, nullptr, &_comparisonSampler) != VK_SUCCESS) {
+			// the same failure as creating the sampler in the constructor, which has no way to report it either
+			abort();
+		}
+	});
+	return _comparisonSampler;
 };
 
 std::shared_ptr<Indium::Device> Indium::PrivateSamplerState::device() {
