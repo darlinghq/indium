@@ -1340,10 +1340,10 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 
 static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned);
 
-// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<i32|f32>, which work on the threads of a
+// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<type>, which work on the threads of a
 // subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
-// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Only 32-bit
-// integers and floats are supported.
+// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Reductions
+// and scans support 32-bit integers and floats; broadcasts and shuffles also 8 and 16-bit integers and halfs.
 static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.simd_";
@@ -1365,6 +1365,9 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	bool isSigned = parts.size() == 3 && parts[1] == "s";
 	auto typeName = parts.size() > 1 ? parts.back() : std::string_view();
 	bool isFloat = typeName == "f32";
+	// broadcasts and shuffles only move values, so narrower ones are moved as 32-bit integers, which every
+	// device can shuffle (8 and 16-bit types need shaderSubgroupExtendedTypes)
+	bool narrow = typeName == "i8" || typeName == "i16" || typeName == "f16";
 
 	// the last operand of a call is the callee
 	unsigned arguments = DynamicLLVM::LLVMGetNumOperands(inst) - 1;
@@ -1376,10 +1379,26 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	};
 	auto scopeID = builder.declareConstantScalar<uint32_t>(3);
 	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
-	// the value operand in the type the call returns (integers have no sign in LLVM, and SPIR-V wants both the same)
+	// the type the group operation works on, and the value operand in it (integers have no sign in LLVM, and SPIR-V
+	// wants both the same)
+	auto operationType = narrow ? u32Type : resultType;
 	auto typed = [&](unsigned i) {
 		auto id = argument(i);
+		if (narrow) {
+			if (typeName == "f16") {
+				id = builder.encodeBitcast(builder.declareType(Type(Type::IntegerTag {}, 16, false)), id);
+			}
+			return builder.encodeUConvert(u32Type, id);
+		}
 		return builder.lookupResultType(id) == resultType ? id : builder.encodeBitcast(resultType, id);
+	};
+	// a result in operationType, in the type the call returns
+	auto untyped = [&](ResultID id) {
+		if (!narrow) {
+			return id;
+		}
+		auto width = typeName == "i8" ? 8 : 16;
+		return builder.encodeBitcast(resultType, builder.encodeUConvert(builder.declareType(Type(Type::IntegerTag {}, width, false)), id));
 	};
 	// the lane operand is a 16-bit integer
 	auto lane = [&](unsigned i) {
@@ -1407,7 +1426,8 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		return true;
 	}
 
-	if (typeName != "i32" && typeName != "f32") {
+	bool movesValues = operation.substr(0, 9) == "broadcast" || operation.substr(0, 7) == "shuffle";
+	if (typeName != "i32" && typeName != "f32" && !(narrow && movesValues)) {
 		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
 	}
 
@@ -1457,7 +1477,7 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	// broadcasts and shuffles of the first operand
 	if (operation == "broadcast_first") {
 		builder.requireCapability(Capability::GroupNonUniformBallot);
-		resID = builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, resultType, { scopeID, typed(0) });
+		resID = untyped(builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, operationType, { scopeID, typed(0) }));
 		return true;
 	}
 	if (operation == "broadcast") {
@@ -1465,11 +1485,12 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		auto laneValue = DynamicLLVM::LLVMGetOperand(inst, 1);
 		if (arguments > 1 && DynamicLLVM::LLVMIsAConstantInt(laneValue)) {
 			builder.requireCapability(Capability::GroupNonUniformBallot);
-			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, resultType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
+			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, operationType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
 		} else {
 			builder.requireCapability(Capability::GroupNonUniformShuffle);
-			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, resultType, { scopeID, value, lane(1) });
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, lane(1) });
 		}
+		resID = untyped(resID);
 		return true;
 	}
 	bool shuffle = operation == "shuffle";
@@ -1479,7 +1500,7 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	if (shuffle || xorShuffle || down || up) {
 		builder.requireCapability(down || up ? Capability::GroupNonUniformShuffleRelative : Capability::GroupNonUniformShuffle);
 		auto opcodeForShuffle = shuffle ? Opcode::GroupNonUniformShuffle : (xorShuffle ? Opcode::GroupNonUniformShuffleXor : (down ? Opcode::GroupNonUniformShuffleDown : Opcode::GroupNonUniformShuffleUp));
-		resID = builder.encodeOp(opcodeForShuffle, resultType, { scopeID, typed(0), lane(1) });
+		resID = untyped(builder.encodeOp(opcodeForShuffle, operationType, { scopeID, typed(0), lane(1) }));
 		return true;
 	}
 
