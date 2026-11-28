@@ -85,6 +85,8 @@ namespace Indium {
 		// The function writes the stencil reference ([[stencil]]) and the device cannot: it has no
 		// VK_EXT_shader_stencil_export. A render pipeline with it as its fragment function is refused.
 		bool writesStencilUnsupported = false;
+		// the SpecIds of the stage-in region's origin and size (x, y, z each), for a kernel that reads them
+		std::optional<std::array<uint32_t, 6>> stageInRegionSpecializationIDs;
 	};
 
 	/**
@@ -140,6 +142,8 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY(const FunctionInfo&, f, F,unctionInfo);
 
 	private:
+		void addSpecialization(uint32_t id, FunctionConstantType type, uint64_t bits);
+
 		std::vector<VkSpecializationMapEntry> _specializationEntries;
 		std::vector<uint32_t> _specializationData;
 		VkSpecializationInfo _specializationInfo {};
@@ -163,6 +167,7 @@ namespace Indium {
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) override;
 		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Device> device() override;
+		virtual std::vector<std::string> functionNames() const override;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 

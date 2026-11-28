@@ -272,6 +272,12 @@ int main(int argc, char** argv) {
 		reflection = Indium::LibraryReflection();
 
 		if (lib) {
+			// the functions are the ones the reflection describes
+			if (lib->functionNames() != std::vector<std::string> { "add_arrays" }) {
+				std::cerr << "functionNames ERROR: the library does not list exactly add_arrays" << std::endl;
+				ok = false;
+			}
+
 			auto func = lib->newFunction("add_arrays");
 
 			if (!func) {
@@ -416,7 +422,23 @@ int main(int argc, char** argv) {
 			}
 		};
 
+		{
+			// A library with no functions has no module, and has no function to make.
+			std::string message = "unset";
+			auto empty = device->newLibrary(nullptr, 0, Indium::LibraryReflection(), &message);
+			if (!empty || !message.empty()) {
+				std::cerr << "Empty library ERROR: a library with no functions and no module was refused: " << message << std::endl;
+				ok = false;
+			} else if (empty->newFunction("add_arrays")) {
+				std::cerr << "Empty library ERROR: a library with no functions made a function" << std::endl;
+				ok = false;
+			} else {
+				std::cout << "Accepted a library with no functions and no module" << std::endl;
+			}
+		}
+
 		expectRejected("a null module", nullptr, 0, good);
+		expectRejected("a null module with a length", nullptr, add_mslc_spv_len, Indium::LibraryReflection());
 		expectRejected("a module shorter than a SPIR-V header", add_mslc_spv, 8, good);
 		expectRejected("a module that is not a whole number of words", add_mslc_spv, add_mslc_spv_len - 1, good);
 		expectRejected("a module that is not SPIR-V", "MTLBxxxx not a module", 20, good);
