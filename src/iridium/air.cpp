@@ -1344,7 +1344,9 @@ static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& bui
 // subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
 // of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Reductions
 // and scans support 32-bit integers and floats; broadcasts and shuffles also 8 and 16-bit integers and halfs.
-static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
+// `subgroupInput(builtin)` loads one of the 32-bit built-ins of the subgroup.
+template <typename SubgroupInput>
+static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, SubgroupInput&& subgroupInput, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.simd_";
 	if (name.substr(0, prefix.size()) != prefix) {
@@ -1405,6 +1407,19 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		auto id = argument(i);
 		auto type = builder.reverseLookupType(builder.lookupResultType(id));
 		return type && type->backingType == Type::BackingType::Integer && type->scalarWidth == 32 ? id : builder.encodeUConvert(u32Type, id);
+	};
+	auto boolType = builder.declareType(Type(Type::BooleanTag {}));
+	auto u32 = [&](uint32_t value) { return builder.declareConstantScalar<uint32_t>(value); };
+	// for the lanes in groups of `width` lanes, a power of two: the lane `delta` lanes down (or up) in the caller's
+	// group, wrapping around, and whether it is in the group without wrapping around
+	auto withinGroup = [&](ResultID width, ResultID delta, bool down) {
+		auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+		auto mask = builder.encodeArithBinop(Opcode::ISub, u32Type, width, u32(1));
+		auto position = builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, mask);
+		auto moved = builder.encodeArithBinop(down ? Opcode::IAdd : Opcode::ISub, u32Type, position, delta);
+		auto source = builder.encodeArithBinop(Opcode::IAdd, u32Type, builder.encodeArithBinop(Opcode::ISub, u32Type, self, position), builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, moved, mask));
+		auto inside = down ? builder.encodeOp(Opcode::ULessThan, boolType, { moved, width }) : builder.encodeOp(Opcode::UGreaterThanEqual, boolType, { position, delta });
+		return std::make_pair(source, inside);
 	};
 
 	if (operation == "all" || operation == "any") {
@@ -1500,7 +1515,37 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	if (shuffle || xorShuffle || down || up) {
 		builder.requireCapability(down || up ? Capability::GroupNonUniformShuffleRelative : Capability::GroupNonUniformShuffle);
 		auto opcodeForShuffle = shuffle ? Opcode::GroupNonUniformShuffle : (xorShuffle ? Opcode::GroupNonUniformShuffleXor : (down ? Opcode::GroupNonUniformShuffleDown : Opcode::GroupNonUniformShuffleUp));
-		resID = untyped(builder.encodeOp(opcodeForShuffle, operationType, { scopeID, typed(0), lane(1) }));
+		auto value = typed(0);
+		auto delta = lane(1);
+		resID = builder.encodeOp(opcodeForShuffle, operationType, { scopeID, value, delta });
+		if (down || up) {
+			// the lanes with no lane delta lanes down (or up) in the subgroup keep their value, where SPIR-V leaves the
+			// result undefined
+			auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+			auto inside = down
+				? builder.encodeOp(Opcode::ULessThan, boolType, { builder.encodeArithBinop(Opcode::IAdd, u32Type, self, delta), subgroupInput(BuiltinID::SubgroupSize) })
+				: builder.encodeOp(Opcode::UGreaterThanEqual, boolType, { self, delta });
+			resID = builder.encodeOp(Opcode::Select, operationType, { inside, resID, value });
+		}
+		resID = untyped(resID);
+		return true;
+	}
+	bool fillDown = operation == "shuffle_and_fill_down";
+	bool fillUp = operation == "shuffle_and_fill_up";
+	if (fillDown || fillUp) {
+		// (data, filling, delta, modulo): the subgroup is split into vectors of modulo lanes, a power of two. Each lane
+		// reads data from the lane delta lanes down (or up) in its vector, and the lanes past the end of the vector read
+		// filling from the lane that many lanes past its other end instead.
+		builder.requireCapability(Capability::GroupNonUniformShuffle);
+		auto data = typed(0);
+		auto filling = typed(1);
+		auto delta = lane(2);
+		auto [source, inside] = withinGroup(lane(3), delta, fillDown);
+		resID = untyped(builder.encodeOp(Opcode::Select, operationType, {
+			inside,
+			builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, data, source }),
+			builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, filling, source }),
+		}));
 		return true;
 	}
 
@@ -4211,7 +4256,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							builder.declareConstantScalar<uint32_t>(3),
 							builder.declareConstantScalar<uint32_t>(semantics),
 						});
-					} else if (translateAirSimd(builder, inst, name, type, resID)) {
+					} else if (translateAirSimd(builder, inst, name, type, [&](SPIRV::BuiltinID builtin) {
+						builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+						return computeInput(builtin, u32Type);
+					}, resID)) {
 						// handled
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {
 						// handled
