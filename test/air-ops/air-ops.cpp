@@ -8,6 +8,7 @@
 #include <indium/indium.hpp>
 #include <indium/dynamic-vk.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -261,10 +262,17 @@ static bool testManyDispatches(Indium::Device* device) {
 	return many && concurrent;
 }
 
-// The library reports each kernel's buffer arguments as air-ops.metal declares them, and a pipeline
+// The library lists its kernels and reports each kernel's buffer arguments as air-ops.metal declares them, and a pipeline
 // asking for that reflection can be created.
 static bool testReflection(Indium::Device* device) {
 	auto library = device->newLibrary(air_ops_metallib, air_ops_metallib_len);
+	auto kernels = library->functionNames();
+	std::sort(kernels.begin(), kernels.end());
+	if (kernels != std::vector<std::string> { "control_flow", "float_ops", "int_ops", "table_lookup" }) {
+		std::cerr << "reflection: the library does not list its four kernels" << std::endl;
+		return false;
+	}
+
 	auto function = library->newFunction("int_ops");
 	bool ok = function->functionType() == Indium::FunctionType::Kernel;
 
