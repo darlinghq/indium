@@ -508,6 +508,7 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	_descriptor(descriptor)
 {
 	_storageMode = static_cast<StorageMode>((static_cast<size_t>(_descriptor.resourceOptions) >> 4) & 0xf);
+	_imported = import != nullptr;
 	// a texture over a buffer's memory is ordered the way the buffer is, a heap's texture the way its heap is
 	if (backing) {
 		_hazardTrackingMode = backing->buffer->hazardTrackingMode();
@@ -1282,6 +1283,9 @@ void Indium::ConcreteTexture::uploadRegion(Indium::Region region, size_t mipmapL
 
 	if (pixelFormatIsExtendedRange(_descriptor.pixelFormat)) {
 		uploadExtendedRange(region, mipmapLevel, slice, bytes, bytesPerRow, bytesPerImage);
+		if (_imported) {
+			_device->textureUploader().flushAndWait();
+		}
 		return;
 	}
 
@@ -1339,6 +1343,12 @@ void Indium::ConcreteTexture::uploadRegion(Indium::Region region, size_t mipmapL
 	}
 
 	_device->textureUploader().stage(shared_from_this(), byteSize, copyInfo, fill);
+	if (_imported) {
+		// The buffer is also read by the CPU and by other processes, which see its memory and not the work this
+		// device has yet to do: Metal's replaceRegion on such a texture is a CPU write that is in the memory when it
+		// returns, and a later write by another user must not be overwritten by this one arriving late.
+		_device->textureUploader().flushAndWait();
+	}
 };
 
 // The bytes of an extended-range texture are codes (see extended-range.private.hpp), which the image does not
@@ -1566,7 +1576,22 @@ void Indium::ConcreteTexture::downloadRegion(Indium::Region region, size_t mipma
 		return;
 	}
 
-	memcpy(bytes, tmpBuf->contents(), byteSize);
+	// Only the bytes of the rows are written: what lies between the end of a row and the start of the next one (and
+	// after the last row) belongs to the caller, and its buffer may end with the last row.
+	const size_t rowBytes = (region.size.width + block.width - 1) / block.width * block.bytes;
+	const size_t imageStride = bytesPerImage != 0 ? bytesPerImage : rows * bytesPerRow;
+	const auto* tmpBytes = static_cast<const uint8_t*>(tmpBuf->contents());
+	// the staging buffer holds as many images as the caller's image stride says (one without it)
+	const size_t images = bytesPerImage != 0 ? imageDepth : 1;
+	for (size_t image = 0; image < images; ++image) {
+		if (rowBytes == bytesPerRow) {
+			std::memcpy(static_cast<uint8_t*>(bytes) + image * imageStride, tmpBytes + image * imageStride, rowBytes * rows);
+			continue;
+		}
+		for (size_t row = 0; row < rows; ++row) {
+			std::memcpy(static_cast<uint8_t*>(bytes) + image * imageStride + row * bytesPerRow, tmpBytes + image * imageStride + row * bytesPerRow, rowBytes);
+		}
+	}
 };
 
 std::shared_ptr<Indium::Heap> Indium::ConcreteTexture::heap() {
