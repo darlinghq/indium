@@ -1,0 +1,26 @@
+; A fragment shader that writes the stencil reference, decorated Invariant, and declares a private pointer to the same
+; type only after the stencil variable: the rewritten variable may not use that later pointer type.
+               OpCapability Shader
+               OpCapability StencilExportEXT
+               OpExtension "SPV_EXT_shader_stencil_export"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %stencil %counter
+               OpExecutionMode %main OriginUpperLeft
+               OpExecutionMode %main StencilRefReplacingEXT
+               OpDecorate %stencil BuiltIn FragStencilRefEXT
+               OpDecorate %stencil Invariant
+       %void = OpTypeVoid
+     %voidfn = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_7 = OpConstant %uint 7
+ %out_uint_p = OpTypePointer Output %uint
+    %stencil = OpVariable %out_uint_p Output
+%priv_uint_p = OpTypePointer Private %uint
+    %counter = OpVariable %priv_uint_p Private
+       %main = OpFunction %void None %voidfn
+      %entry = OpLabel
+               OpStore %counter %uint_7
+      %value = OpLoad %uint %counter
+               OpStore %stencil %value
+               OpReturn
+               OpFunctionEnd

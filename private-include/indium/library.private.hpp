@@ -10,6 +10,7 @@
 #include <map>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -71,7 +72,24 @@ namespace Indium {
 		std::vector<ThreadgroupArgumentInfo> threadgroupArguments;
 		// see FunctionReflection::maxTotalThreadsPerThreadgroup
 		size_t maxTotalThreadsPerThreadgroup = 0;
+		// The function writes the stencil reference ([[stencil]]) and the device cannot: it has no
+		// VK_EXT_shader_stencil_export. A render pipeline with it as its fragment function is refused.
+		bool writesStencilUnsupported = false;
 	};
+
+	/**
+	 * Rewrites a module that declares the StencilExportEXT capability for a device without VK_EXT_shader_stencil_export,
+	 * which may not be given such a module at all: the capability, the extension, the StencilRefReplacingEXT execution
+	 * modes and the stencil reference variables' decorations are removed, and the variables become private variables,
+	 * which the functions that write them still may but which go nowhere. The names of the entry points that
+	 * use such a variable are added to `writers`, as they cannot be what they are on this device.
+	 *
+	 * Returns false and leaves `words` as they are for a module that does not declare the capability, or one whose
+	 * stencil reference this cannot make private: a member of an output block, or a variable that a function uses other
+	 * than by loading, storing or copying memory (such as through an access chain). Such a module is given to the
+	 * device as it is, as it was before this rewrite existed.
+	 */
+	bool spirvWithoutStencilExport(std::vector<uint32_t>& words, std::unordered_set<std::string>& writers);
 
 	/**
 	 * Whether `texture` can be what the function reads or writes at the texture binding `binding`. Metal lets several

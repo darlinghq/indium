@@ -28,6 +28,9 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 	if (!_vertexFunction) {
 		throw std::runtime_error("Vertex function cannot be null in render pipeline");
 	}
+	if (_fragmentFunction && _fragmentFunction->functionInfo().writesStencilUnsupported) {
+		throw std::runtime_error("The fragment function writes the stencil reference, which this device cannot do (it has no VK_EXT_shader_stencil_export)");
+	}
 
 	_descriptorSetLayouts.processFunction(_vertexFunction, 0);
 	_descriptorSetLayouts.processFunction(_fragmentFunction, 1);

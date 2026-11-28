@@ -1,0 +1,21 @@
+; A fragment shader that writes the stencil reference through a copy of the variable's pointer, which keeps the output
+; pointer type: the module cannot be rewritten and is left as it is.
+               OpCapability Shader
+               OpCapability StencilExportEXT
+               OpExtension "SPV_EXT_shader_stencil_export"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %stencil
+               OpExecutionMode %main OriginUpperLeft
+               OpDecorate %stencil BuiltIn FragStencilRefEXT
+       %void = OpTypeVoid
+     %voidfn = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+     %uint_7 = OpConstant %uint 7
+ %out_uint_p = OpTypePointer Output %uint
+    %stencil = OpVariable %out_uint_p Output
+       %main = OpFunction %void None %voidfn
+      %entry = OpLabel
+       %copy = OpCopyObject %out_uint_p %stencil
+               OpStore %copy %uint_7
+               OpReturn
+               OpFunctionEnd
