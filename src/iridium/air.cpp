@@ -1181,6 +1181,15 @@ static bool tryStoreLogicalReinterpreted(Iridium::SPIRV::Builder& builder, Iridi
 	return true;
 }
 
+// The SPIR-V memory semantics of a barrier or fence that orders the memory the AIR flags (mem_flags) name: acquire and
+// release of uniform (device 1), workgroup (threadgroup 2) and image (texture 4) memory. Vulkan doesn't allow ordering
+// without such a memory class, so the semantics are none (0) when there is none, e.g. for an execution barrier.
+static uint32_t barrierSemantics(uint64_t memFlags) {
+	// AcquireRelease 0x8, UniformMemory 0x40, WorkgroupMemory 0x100, ImageMemory 0x800
+	uint32_t storage = ((memFlags & 1) ? 0x40 : 0) | ((memFlags & 2) ? 0x100 : 0) | ((memFlags & 4) ? 0x800 : 0);
+	return storage ? 0x8 | storage : 0;
+}
+
 // Translates the AIR atomic functions of 32-bit and 64-bit integers and of 32-bit floats,
 // air.atomic.<global|local>.<operation>[.<s|u>].<i32|i64|f32>, whose arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
 // false when `name` is not one of them. The order is relaxed unless the module asks for more. The functions that update
@@ -4261,11 +4270,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("threadgroup barrier without constant memory flags");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
-						// SPIR-V memory semantics: AcquireRelease 0x8, UniformMemory 0x40, WorkgroupMemory 0x100, ImageMemory 0x800
-						uint32_t semantics = 0x8;
-						semantics |= (memFlags & 1) ? 0x40 : 0;
-						semantics |= (memFlags & 2) ? 0x100 : 0;
-						semantics |= (memFlags & 4) ? 0x800 : 0;
+						uint32_t semantics = barrierSemantics(memFlags);
 						// scopes: Device 1, Workgroup 2
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(2),
@@ -4284,22 +4289,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("atomic fence with a flags, order or scope that is not constant");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// AIR's scopes: thread 0, threadgroup 1, device 2, simdgroup 4; SPIR-V's: Device 1, Workgroup 2, Subgroup 3
 						auto airScope = DynamicLLVM::LLVMConstIntGetZExtValue(scope);
-						if (airScope != 1 && airScope != 2) {
-							throw ImpossibleResultID("atomic fence with a scope other than threadgroup or device");
+						if (airScope != 0 && airScope != 1 && airScope != 2 && airScope != 4) {
+							throw ImpossibleResultID("atomic fence with an unknown scope " + std::to_string(airScope));
 						}
-						// the same memory classes as a threadgroup barrier (see air.wg.barrier); a relaxed fence orders nothing
-						uint32_t semantics = DynamicLLVM::LLVMConstIntGetZExtValue(order) == 0 ? 0 : 0x8;
-						if (semantics) {
-							semantics |= (memFlags & 1) ? 0x40 : 0;
-							semantics |= (memFlags & 2) ? 0x100 : 0;
-							semantics |= (memFlags & 4) ? 0x800 : 0;
+						// a relaxed fence orders nothing, and neither does one of no memory Vulkan has or one for the thread alone,
+						// whose accesses are in order anyway
+						uint32_t semantics = barrierSemantics(memFlags);
+						if (DynamicLLVM::LLVMConstIntGetZExtValue(order) != 0 && airScope != 0 && semantics != 0) {
+							if (airScope == 4) {
+								// Vulkan allows the subgroup scope with subgroup operations only
+								builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+							}
+							builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
+								builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : (airScope == 1 ? 2 : 3)),
+								builder.declareConstantScalar<uint32_t>(semantics),
+							});
 						}
-						// SPIR-V scopes: Device 1, Workgroup 2
-						builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
-							builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
-							builder.declareConstantScalar<uint32_t>(semantics),
-						});
 					} else if (name == "air.simdgroup.barrier") {
 						// simdgroup_barrier(flags, ...): the threads of the subgroup arrive before any continues; the memory
 						// the flags name is made visible to them
@@ -4308,12 +4315,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("simdgroup barrier without constant memory flags");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
-						// the memory classes of a threadgroup barrier (see air.wg.barrier); no flags order no memory
-						uint32_t semantics = memFlags ? 0x8 : 0;
-						semantics |= (memFlags & 1) ? 0x40 : 0;
-						semantics |= (memFlags & 2) ? 0x100 : 0;
-						semantics |= (memFlags & 4) ? 0x800 : 0;
-						// scope: Subgroup 3
+						uint32_t semantics = barrierSemantics(memFlags);
+						// scope: Subgroup 3, which Vulkan allows with subgroup operations only
+						builder.requireCapability(SPIRV::Capability::GroupNonUniform);
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(3),
 							builder.declareConstantScalar<uint32_t>(3),
