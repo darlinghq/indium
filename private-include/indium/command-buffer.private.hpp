@@ -215,5 +215,6 @@ namespace Indium {
 	private:
 		std::condition_variable _scheduledCondvar;
 		bool _scheduledHandlersFinished = false;
+		bool _completedHandlersFinished = false;
 	};
 };

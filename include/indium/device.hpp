@@ -370,6 +370,10 @@ namespace Indium {
 		 */
 		virtual void pollEvents(uint64_t timeoutNanoseconds) = 0;
 		virtual void wakeupEventLoop() = 0;
+
+		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const = 0;
+		virtual uint32_t maxPerStageDescriptorSamplers() const = 0;
+		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const = 0;
 	};
 
 	std::shared_ptr<Device> createSystemDefaultDevice();

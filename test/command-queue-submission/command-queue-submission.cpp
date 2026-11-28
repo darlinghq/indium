@@ -359,15 +359,62 @@ void waitersAndReentrancy() {
 
 	// a completed handler that commits another command buffer and waits for it
 	std::atomic<bool> chained { false };
+	std::atomic<bool> innerHandlerDone { false };
 	auto outer = makeCommands(queue, buffer);
 	outer->addCompletedHandler([&](auto) {
 		auto inner = makeCommands(queue, buffer);
+		bool innerDone = false;
+		inner->addCompletedHandler([&](auto) { innerDone = true; });
 		inner->commit();
 		inner->waitUntilCompleted();
+		innerHandlerDone = innerDone;
 		chained = true;
 	});
 	outer->commit();
-	report(eventually([&]() { return chained.load(); }), "a completed handler can commit a command buffer and wait for it");
+	report(eventually([&]() { return chained.load(); }) && innerHandlerDone.load(), "a completed handler can commit a command buffer and wait for its completion handler");
+
+	// waitUntilCompleted does not return while a completed handler is still running
+	{
+		auto cb = makeCommands(queue, buffer);
+		std::mutex m;
+		std::condition_variable cv;
+		bool inHandler = false;
+		bool allowFinish = false;
+		std::atomic<bool> handlerFinished { false };
+		cb->addCompletedHandler([&](auto) {
+			{
+				std::scoped_lock lock(m);
+				inHandler = true;
+			}
+			cv.notify_all();
+			{
+				std::unique_lock lock(m);
+				cv.wait(lock, [&]() { return allowFinish; });
+			}
+			handlerFinished = true;
+		});
+		cb->commit();
+		std::atomic<bool> waiterReturned { false };
+		bool sawFinished = false;
+		std::thread waiter([&]() {
+			cb->waitUntilCompleted();
+			sawFinished = handlerFinished.load();
+			waiterReturned = true;
+		});
+		{
+			std::unique_lock lock(m);
+			cv.wait(lock, [&]() { return inHandler; });
+		}
+		settle();
+		report(!waiterReturned.load(), "waitUntilCompleted stays blocked while completed handler is running");
+		{
+			std::scoped_lock lock(m);
+			allowFinish = true;
+		}
+		cv.notify_all();
+		waiter.join();
+		report(sawFinished && waiterReturned.load(), "waitUntilCompleted only returns after completed handler finishes");
+	}
 
 	// a scheduled handler that waits for its own command buffer to finish
 	std::atomic<bool> waited { false };

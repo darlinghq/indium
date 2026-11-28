@@ -205,6 +205,9 @@ namespace Indium {
 
 		virtual void pollEvents(uint64_t timeoutNanoseconds) override;
 		virtual void wakeupEventLoop() override;
+		virtual bool supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const override;
+		virtual uint32_t maxPerStageDescriptorSamplers() const override;
+		virtual Size sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const override;
 
 		void waitForSemaphore(VkSemaphore semaphore, uint64_t targetValue, std::function<void()> callback);
 

@@ -31,6 +31,53 @@ Indium::PrivateRenderPipelineState::PrivateRenderPipelineState(std::shared_ptr<P
 
 	_descriptorSetLayouts.processFunction(_vertexFunction, 0);
 	_descriptorSetLayouts.processFunction(_fragmentFunction, 1);
+
+	if (_vertexDescriptor) {
+		// the locations the vertex function reads; a function that lists none (reflection from a
+		// producer that does not report inputs) keeps every described attribute
+		std::optional<std::unordered_set<size_t>> consumedLocations;
+		for (const auto& binding: _vertexFunction->functionInfo().bindings) {
+			if (binding.type == BindingType::VertexInput) {
+				if (!consumedLocations) {
+					consumedLocations.emplace();
+				}
+				consumedLocations->insert(binding.index);
+			}
+		}
+
+		auto plan = planVertexInput(*_vertexDescriptor, consumedLocations, PrivateDevice::fallbackBufferSize);
+
+		for (size_t vulkanIndex = 0; vulkanIndex < plan.bindings.size(); ++vulkanIndex) {
+			const auto& binding = plan.bindings[vulkanIndex];
+
+			VkVertexInputBindingDescription bindingDesc {};
+			bindingDesc.binding = vulkanIndex;
+			bindingDesc.stride = binding.stride;
+			bindingDesc.inputRate = binding.perInstance ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+			_vertexBindingDescs.push_back(bindingDesc);
+
+			_vertexInputBindings.push_back(binding.metalIndex);
+			_vertexInputFallbackSafe.push_back(binding.fallbackSafe);
+		}
+
+		for (const auto& attribute: plan.attributes) {
+			VkVertexInputAttributeDescription attrDesc {};
+			attrDesc.location = attribute.location;
+			attrDesc.binding = attribute.binding;
+			attrDesc.format = vertexFormatToVkFormat(attribute.format);
+			attrDesc.offset = attribute.offset;
+			_vertexAttrDescs.push_back(attrDesc);
+		}
+	}
+
+	VkPipelineLayoutCreateInfo layoutCreateInfo {};
+	layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	layoutCreateInfo.setLayoutCount = _descriptorSetLayouts.layouts.size();
+	layoutCreateInfo.pSetLayouts = _descriptorSetLayouts.layouts.data();
+
+	if (DynamicVK::vkCreatePipelineLayout(_privateDevice->device(), &layoutCreateInfo, nullptr, &_pipelineLayout) != VK_SUCCESS) {
+		abort();
+	}
 };
 
 // Everything vkCreateGraphicsPipelines takes by pointer lives here, so that it outlives recreatePipeline() and a
@@ -43,8 +90,6 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 	std::vector<VkSpecializationMapEntry> fragmentSpecializationEntries;
 	std::vector<uint32_t> fragmentSpecializationData;
 	VkSpecializationInfo fragmentSpecialization {};
-	std::vector<VkVertexInputBindingDescription> vertexBindingDescs;
-	std::vector<VkVertexInputAttributeDescription> vertexAttrDescs;
 	VkPipelineVertexInputStateCreateInfo vertexInputState {};
 	VkPipelineInputAssemblyStateCreateInfo inputAssemblyState {};
 	VkPipelineTessellationStateCreateInfo tesselationState {};
@@ -76,7 +121,8 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 };
 
 Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
-	destroyVariants();
+	std::unique_lock lock(_mutex);
+	destroyVariantsLocked();
 
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
@@ -92,12 +138,14 @@ Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 };
 
 void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibleRenderPass, bool force) {
+	std::unique_lock lock(_mutex);
+
 	if (!force && _pipelines[0]) {
 		// assumes that the current pipeline is compatible with the given render pass
 		return;
 	}
 
-	destroyVariants();
+	destroyVariantsLocked();
 
 	if (_pipelines[0]) {
 		for (auto& pipeline: _pipelines) {
@@ -106,19 +154,15 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		}
 	}
 
-	if (_pipelineLayout) {
-		DynamicVK::vkDestroyPipelineLayout(_privateDevice->device(), _pipelineLayout, nullptr);
-		_pipelineLayout = VK_NULL_HANDLE;
-	}
+	auto recipe = std::make_shared<PipelineRecipe>();
 
-	_recipe = std::make_shared<PipelineRecipe>();
-	auto& recipe = *_recipe;
-
-	auto& vertexFunctionName = recipe.vertexFunctionName;
-	auto& fragmentFunctionName = recipe.fragmentFunctionName;
+	auto& vertexFunctionName = recipe->vertexFunctionName;
+	auto& fragmentFunctionName = recipe->fragmentFunctionName;
 	vertexFunctionName = _vertexFunction->name();
-	fragmentFunctionName = _fragmentFunction->name();
-	auto& stages = recipe.stages;
+	if (_fragmentFunction) {
+		fragmentFunctionName = _fragmentFunction->name();
+	}
+	auto& stages = recipe->stages;
 
 	VkPipelineShaderStageCreateInfo shaderStage {};
 	shaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -129,126 +173,83 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	shaderStage.pSpecializationInfo = _vertexFunction->specializationInfo();
 	stages.push_back(shaderStage);
 
-	shaderStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	// QUIRK: the source color of a blend into an extended-range attachment is clamped to the range of the format (codes 0 to
-	// 1023, alpha 0 to 1) before it is blended, so the fragment function clamps its outputs for those attachments. Other
-	// formats are not clamped. Not documented. Evidence: black-box observation on macOS 27.0.1 arm64 (tier 2).
-	// Test: the blend check of test/extended-range-formats.
-	std::vector<OutputClamp> clamps;
-	for (size_t i = 0; i < _colorAttachments.size(); ++i) {
-		const auto& attachment = _colorAttachments[i];
-		if (attachment.blendingEnabled && pixelFormatIsExtendedRange(attachment.pixelFormat)) {
-			bool srgb = ExtendedRange::isSRGB(attachment.pixelFormat);
-			float low = ExtendedRange::decodeColor(0, srgb), high = ExtendedRange::decodeColor(ExtendedRange::maxRenderedCode, srgb);
-			clamps.push_back({ static_cast<uint32_t>(i), { low, low, low, 0.0f }, { high, high, high, 1.0f } });
-		}
-	}
-	shaderStage.module = _fragmentFunction->library()->fragmentModuleLinkedTo(fragmentFunctionName, _vertexFunction->functionInfo().stageInterface, clamps);
-	if (shaderStage.module == VK_NULL_HANDLE) {
-		shaderStage.module = _fragmentFunction->library()->shaderModule();
-	}
-	shaderStage.pName = fragmentFunctionName.c_str();
-	shaderStage.pSpecializationInfo = _fragmentFunction->specializationInfo();
-	if (auto id = _fragmentFunction->functionInfo().numSamplesSpecializationID) {
-		auto& entries = recipe.fragmentSpecializationEntries;
-		auto& data = recipe.fragmentSpecializationData;
-		if (auto functionSpecialization = shaderStage.pSpecializationInfo) {
-			entries.assign(functionSpecialization->pMapEntries, functionSpecialization->pMapEntries + functionSpecialization->mapEntryCount);
-			auto words = static_cast<const uint32_t*>(functionSpecialization->pData);
-			data.assign(words, words + functionSpecialization->dataSize / sizeof(uint32_t));
-		}
-		VkSpecializationMapEntry entry {};
-		entry.constantID = *id;
-		entry.offset = data.size() * sizeof(uint32_t);
-		entry.size = sizeof(uint32_t);
-		entries.push_back(entry);
-		// a VkSampleCountFlagBits value is the count it stands for
-		data.push_back(static_cast<uint32_t>(_rasterSampleCount));
-		auto& specialization = recipe.fragmentSpecialization;
-		specialization.mapEntryCount = entries.size();
-		specialization.pMapEntries = entries.data();
-		specialization.dataSize = data.size() * sizeof(uint32_t);
-		specialization.pData = data.data();
-		shaderStage.pSpecializationInfo = &specialization;
-	}
-	stages.push_back(shaderStage);
-
-	auto& vertexInputState = recipe.vertexInputState;
-	vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-	auto& vertexBindingDescs = recipe.vertexBindingDescs;
-	auto& vertexAttrDescs = recipe.vertexAttrDescs;
-
-	_vertexInputBindings.clear();
-	_vertexInputFallbackSafe.clear();
-
-	if (_vertexDescriptor) {
-		// the locations the vertex function reads; a function that lists none (reflection from a
-		// producer that does not report inputs) keeps every described attribute
-		std::optional<std::unordered_set<size_t>> consumedLocations;
-		for (const auto& binding: _vertexFunction->functionInfo().bindings) {
-			if (binding.type == BindingType::VertexInput) {
-				if (!consumedLocations) {
-					consumedLocations.emplace();
-				}
-				consumedLocations->insert(binding.index);
+	if (_fragmentFunction) {
+		shaderStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		// QUIRK: the source color of a blend into an extended-range attachment is clamped to the range of the format (codes 0 to
+		// 1023, alpha 0 to 1) before it is blended, so the fragment function clamps its outputs for those attachments. Other
+		// formats are not clamped. Not documented. Evidence: black-box observation on macOS 27.0.1 arm64 (tier 2).
+		// Test: the blend check of test/extended-range-formats.
+		std::vector<OutputClamp> clamps;
+		for (size_t i = 0; i < _colorAttachments.size(); ++i) {
+			const auto& attachment = _colorAttachments[i];
+			if (attachment.blendingEnabled && pixelFormatIsExtendedRange(attachment.pixelFormat)) {
+				bool srgb = ExtendedRange::isSRGB(attachment.pixelFormat);
+				float low = ExtendedRange::decodeColor(0, srgb), high = ExtendedRange::decodeColor(ExtendedRange::maxRenderedCode, srgb);
+				clamps.push_back({ static_cast<uint32_t>(i), { low, low, low, 0.0f }, { high, high, high, 1.0f } });
 			}
 		}
-
-		auto plan = planVertexInput(*_vertexDescriptor, consumedLocations, PrivateDevice::fallbackBufferSize);
-
-		for (size_t vulkanIndex = 0; vulkanIndex < plan.bindings.size(); ++vulkanIndex) {
-			const auto& binding = plan.bindings[vulkanIndex];
-
-			VkVertexInputBindingDescription bindingDesc {};
-			bindingDesc.binding = vulkanIndex;
-			bindingDesc.stride = binding.stride;
-			bindingDesc.inputRate = binding.perInstance ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
-			vertexBindingDescs.push_back(bindingDesc);
-
-			_vertexInputBindings.push_back(binding.metalIndex);
-			_vertexInputFallbackSafe.push_back(binding.fallbackSafe);
+		shaderStage.module = _fragmentFunction->library()->fragmentModuleLinkedTo(fragmentFunctionName, _vertexFunction->functionInfo().stageInterface, clamps);
+		if (shaderStage.module == VK_NULL_HANDLE) {
+			shaderStage.module = _fragmentFunction->library()->shaderModule();
 		}
-
-		for (const auto& attribute: plan.attributes) {
-			VkVertexInputAttributeDescription attrDesc {};
-			attrDesc.location = attribute.location;
-			attrDesc.binding = attribute.binding;
-			attrDesc.format = vertexFormatToVkFormat(attribute.format);
-			attrDesc.offset = attribute.offset;
-			vertexAttrDescs.push_back(attrDesc);
+		shaderStage.pName = fragmentFunctionName.c_str();
+		shaderStage.pSpecializationInfo = _fragmentFunction->specializationInfo();
+		if (auto id = _fragmentFunction->functionInfo().numSamplesSpecializationID) {
+			auto& entries = recipe->fragmentSpecializationEntries;
+			auto& data = recipe->fragmentSpecializationData;
+			if (auto functionSpecialization = shaderStage.pSpecializationInfo) {
+				entries.assign(functionSpecialization->pMapEntries, functionSpecialization->pMapEntries + functionSpecialization->mapEntryCount);
+				auto words = static_cast<const uint32_t*>(functionSpecialization->pData);
+				data.assign(words, words + functionSpecialization->dataSize / sizeof(uint32_t));
+			}
+			VkSpecializationMapEntry entry {};
+			entry.constantID = *id;
+			entry.offset = data.size() * sizeof(uint32_t);
+			entry.size = sizeof(uint32_t);
+			entries.push_back(entry);
+			// a VkSampleCountFlagBits value is the count it stands for
+			data.push_back(static_cast<uint32_t>(_rasterSampleCount));
+			auto& specialization = recipe->fragmentSpecialization;
+			specialization.mapEntryCount = entries.size();
+			specialization.pMapEntries = entries.data();
+			specialization.dataSize = data.size() * sizeof(uint32_t);
+			specialization.pData = data.data();
+			shaderStage.pSpecializationInfo = &specialization;
 		}
+		stages.push_back(shaderStage);
 	}
 
-	vertexInputState.vertexBindingDescriptionCount = vertexBindingDescs.size();
-	vertexInputState.pVertexBindingDescriptions = vertexBindingDescs.data();
-	vertexInputState.vertexAttributeDescriptionCount = vertexAttrDescs.size();
-	vertexInputState.pVertexAttributeDescriptions = vertexAttrDescs.data();
+	auto& vertexInputState = recipe->vertexInputState;
+	vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertexInputState.vertexBindingDescriptionCount = _vertexBindingDescs.size();
+	vertexInputState.pVertexBindingDescriptions = _vertexBindingDescs.data();
+	vertexInputState.vertexAttributeDescriptionCount = _vertexAttrDescs.size();
+	vertexInputState.pVertexAttributeDescriptions = _vertexAttrDescs.data();
 
-	auto& inputAssemblyState = recipe.inputAssemblyState;
+	auto& inputAssemblyState = recipe->inputAssemblyState;
 	inputAssemblyState.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 
-	auto& tesselationState = recipe.tesselationState;
+	auto& tesselationState = recipe->tesselationState;
 	tesselationState.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
 
-	auto& viewportState = recipe.viewportState;
+	auto& viewportState = recipe->viewportState;
 	viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 
-	auto& rasterizationState = recipe.rasterizationState;
+	auto& rasterizationState = recipe->rasterizationState;
 	rasterizationState.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	// polygonMode and depthClampEnable are set per pipeline in PipelineRecipe::create(): they have no core
 	// dynamic state, so a fill mode or depth clip mode other than the default is a variant of these pipelines
 	rasterizationState.lineWidth = 1.0f;
 
-	auto& multisampleState = recipe.multisampleState;
+	auto& multisampleState = recipe->multisampleState;
 	multisampleState.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
 	multisampleState.rasterizationSamples = _rasterSampleCount;
 	multisampleState.minSampleShading = 1.0f;
 
-	auto& depthStencilState = recipe.depthStencilState;
+	auto& depthStencilState = recipe->depthStencilState;
 	depthStencilState.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
 
-	auto& colorBlendStates = recipe.colorBlendStates;
+	auto& colorBlendStates = recipe->colorBlendStates;
 	for (const auto& colorInfo: _colorAttachments) {
 		VkPipelineColorBlendAttachmentState tmp;
 		tmp.blendEnable = colorInfo.blendingEnabled;
@@ -271,12 +272,12 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	for (size_t slot = _colorAttachments.size(); slot > 0 && _colorAttachments[slot - 1].pixelFormat == PixelFormat::Invalid; --slot) {
 		colorBlendStates.pop_back();
 	}
-	auto& colorBlendState = recipe.colorBlendState;
+	auto& colorBlendState = recipe->colorBlendState;
 	colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlendState.attachmentCount = colorBlendStates.size();
 	colorBlendState.pAttachments = colorBlendStates.data();
 
-	auto& dynamicStates = recipe.dynamicStates;
+	auto& dynamicStates = recipe->dynamicStates;
 	dynamicStates = {
 		VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT,
 		VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT,
@@ -301,26 +302,12 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		VK_DYNAMIC_STATE_BLEND_CONSTANTS,
 		VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE,
 	};
-	auto& dynamicState = recipe.dynamicState;
+	auto& dynamicState = recipe->dynamicState;
 	dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamicState.dynamicStateCount = dynamicStates.size();
 	dynamicState.pDynamicStates = dynamicStates.data();
 
-	std::vector<VkPushConstantRange> pushConstantRanges;
-
-	VkPipelineLayoutCreateInfo layoutCreateInfo {};
-	layoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	layoutCreateInfo.setLayoutCount = _descriptorSetLayouts.layouts.size();
-	layoutCreateInfo.pSetLayouts = _descriptorSetLayouts.layouts.data();
-	layoutCreateInfo.pushConstantRangeCount = pushConstantRanges.size();
-	layoutCreateInfo.pPushConstantRanges = pushConstantRanges.data();
-
-	if (DynamicVK::vkCreatePipelineLayout(_privateDevice->device(), &layoutCreateInfo, nullptr, &_pipelineLayout) != VK_SUCCESS) {
-		// TODO
-		abort();
-	}
-
-	auto& pipelineCreateInfo = recipe.pipelineCreateInfo;
+	auto& pipelineCreateInfo = recipe->pipelineCreateInfo;
 	pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineCreateInfo.stageCount = stages.size();
 	pipelineCreateInfo.pStages = stages.data();
@@ -341,13 +328,17 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 	// (one for each topology class) rather than 5 (one for each primitive topology).
 
 	// the default fill mode and depth clip mode: the other combinations are created when a draw needs them
-	for (size_t topologyClass = 0; topologyClass < _pipelines.size(); ++topologyClass) {
-		_pipelines[topologyClass] = recipe.create(*_privateDevice, topologyClass, false, false);
-		if (_pipelines[topologyClass] == VK_NULL_HANDLE) {
+	PipelineArray pipelines {};
+	for (size_t topologyClass = 0; topologyClass < pipelines.size(); ++topologyClass) {
+		pipelines[topologyClass] = recipe->create(*_privateDevice, topologyClass, false, false);
+		if (pipelines[topologyClass] == VK_NULL_HANDLE) {
 			// the default pipelines are the ones every draw can use, so there is nothing to fall back to
 			abort();
 		}
 	}
+
+	_recipe = std::move(recipe);
+	_pipelines = pipelines;
 };
 
 std::string Indium::PrivateRenderPipelineState::timingName() const {
@@ -359,11 +350,14 @@ const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::vertexFunctionIn
 };
 
 const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::fragmentFunctionInfo() {
+	if (!_fragmentFunction) {
+		static const FunctionInfo empty {};
+		return empty;
+	}
 	return _fragmentFunction->functionInfo();
 };
 
-void Indium::PrivateRenderPipelineState::destroyVariants() {
-	std::unique_lock lock(_variantMutex);
+void Indium::PrivateRenderPipelineState::destroyVariantsLocked() {
 	for (auto& [key, pipeline]: _variants) {
 		if (pipeline != VK_NULL_HANDLE) {
 			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
@@ -373,6 +367,8 @@ void Indium::PrivateRenderPipelineState::destroyVariants() {
 };
 
 VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass, bool lines, bool clamp) {
+	std::unique_lock lock(_mutex);
+
 	// a mode the device cannot do is ignored, and so are the ones that mean nothing for the topology
 	lines = lines && topologyClass == 2 && _privateDevice->fillModeNonSolidEnabled();
 	clamp = clamp && _privateDevice->depthClampEnabled();
@@ -383,7 +379,6 @@ VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass,
 
 	uint32_t key = static_cast<uint32_t>(topologyClass) | (lines ? 4u : 0u) | (clamp ? 8u : 0u);
 
-	std::unique_lock lock(_variantMutex);
 	auto found = _variants.find(key);
 	if (found != _variants.end()) {
 		return found->second != VK_NULL_HANDLE ? found->second : _pipelines[topologyClass];
