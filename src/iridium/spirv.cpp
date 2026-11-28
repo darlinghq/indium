@@ -498,16 +498,24 @@ void Iridium::SPIRV::Builder::referenceGlobalVariable(ResultID id) {
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeUConvert(ResultID typeID, ResultID operand) {
-	auto result = reserveResultID();
+	// OpUConvert's result type must be unsigned, so convert to the unsigned type of the same width and
+	// reinterpret that as the requested type
 	auto type = *reverseLookupType(typeID);
-	type.integerIsSigned = false;
-	typeID = declareType(type);
+	if (type.backingType == Type::BackingType::Vector) {
+		auto component = *reverseLookupType(type.targetType);
+		component.integerIsSigned = false;
+		type = Type(Type::VectorTag {}, type.entryCount, declareType(component));
+	} else {
+		type.integerIsSigned = false;
+	}
+	auto unsignedTypeID = declareType(type);
+	auto result = reserveResultID();
 	auto tmp = beginInstruction(Opcode::UConvert, *_currentFunctionWriter);
-	_currentFunctionWriter->writeIntegerLE<uint32_t>(typeID);
+	_currentFunctionWriter->writeIntegerLE<uint32_t>(unsignedTypeID);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(result);
 	_currentFunctionWriter->writeIntegerLE<uint32_t>(operand);
 	endInstruction(std::move(tmp));
-	return result;
+	return unsignedTypeID == typeID ? result : encodeBitcast(typeID, result);
 };
 
 Iridium::SPIRV::ResultID Iridium::SPIRV::Builder::encodeAccessChain(ResultID resultTypeID, ResultID base, std::vector<ResultID> indices, bool asPointer) {

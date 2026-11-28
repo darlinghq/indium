@@ -231,7 +231,31 @@ static size_t allocationSize(const Iridium::SPIRV::Type& type) {
 	return (type.size + type.alignment - 1) & ~(type.alignment - 1);
 }
 
-static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& builder, LLVMTypeRef llvmType) {
+// The type of every pointer into device or constant memory: buffer arguments, getelementptr results and addresses
+// loaded from memory. Nothing reads the pointee: a getelementptr computes its byte offset from its own source element
+// type, and loads, stores and atomics re-type the pointer to what they access. So a buffer whose element type the
+// module doesn't declare (a struct named only in air.arg_type_name) needs no type, and an address loaded from memory
+// gets the same type as the argument it may have come from.
+static Iridium::SPIRV::ResultID physicalPointerType(Iridium::SPIRV::Builder& builder) {
+	using namespace Iridium::SPIRV;
+	auto word = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+	return builder.declareType(Type(Type::PointerTag {}, StorageClass::PhysicalStorageBuffer, word, 8));
+}
+
+// Vulkan requires an access through a physical pointer to be aligned to the largest scalar it reads or writes, which
+// for an address is all of its 8 bytes. A smaller alignment in the module is refused rather than assumed to be wrong;
+// a larger one is reported as 8.
+static unsigned addressAlignment(unsigned alignment) {
+	if (alignment < 8) {
+		throw ImpossibleResultID("device memory access of an address with alignment " + std::to_string(alignment) + "; addresses need 8");
+	}
+	return 8;
+}
+
+// `physical` is set for a type laid out in device or constant memory, where a device or constant pointer is an address
+// and becomes a physicalPointerType. Elsewhere a bare pointer type can't be lowered: it could name a variable, a
+// texture or a sampler (textures are addrspace(1) and samplers addrspace(2) as well).
+static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& builder, LLVMTypeRef llvmType, bool physical = false) {
 	using namespace Iridium::SPIRV;
 
 	auto kind = DynamicLLVM::LLVMGetTypeKind(llvmType);
@@ -283,7 +307,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 				// see which member has the greatest alignment
 				for (size_t i = 0; i < len; ++i) {
 					auto typeAtIndex = DynamicLLVM::LLVMStructGetTypeAtIndex(llvmType, i);
-					auto type = llvmTypeToSPIRVType(builder, typeAtIndex);
+					auto type = llvmTypeToSPIRVType(builder, typeAtIndex, physical);
 					auto typeInst = *builder.reverseLookupType(type);
 					if (typeInst.alignment > structAlignment) {
 						structAlignment = typeInst.alignment;
@@ -297,7 +321,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 			size_t offset = 0;
 			for (size_t i = 0; i < len; ++i) {
 				auto typeAtIndex = DynamicLLVM::LLVMStructGetTypeAtIndex(llvmType, i);
-				auto type = llvmTypeToSPIRVType(builder, typeAtIndex);
+				auto type = llvmTypeToSPIRVType(builder, typeAtIndex, physical);
 				auto typeInst = *builder.reverseLookupType(type);
 				auto alignmentToUse = (typeInst.alignment < structAlignment) ? typeInst.alignment : structAlignment;
 				// align the offset
@@ -314,13 +338,10 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 		} break;
 
 		case LLVMPointerTypeKind: {
-			// AIR is compiled with opaque pointers, so LLVMGetElementType on a
-			// "ptr" returns garbage rather than null, and recursing into it
-			// dereferenced that garbage. The pointee type now only exists in
-			// the AIR argument descriptors (air.arg_type_name), which callers
-			// resolve themselves; a bare pointer type here carries no pointee
-			// we could recover, so fail explicitly instead.
 			auto addrSpace = DynamicLLVM::LLVMGetPointerAddressSpace(llvmType);
+			if (physical && (addrSpace == 1 || addrSpace == 2)) {
+				return physicalPointerType(builder);
+			}
 			throw ImpossibleResultID("cannot resolve pointee of opaque pointer (addrspace "
 				+ std::to_string((unsigned)addrSpace) + "); derive it from AIR argument metadata");
 		} break;
@@ -331,7 +352,7 @@ static Iridium::SPIRV::ResultID llvmTypeToSPIRVType(Iridium::SPIRV::Builder& bui
 		} break;
 
 		case LLVMArrayTypeKind: {
-			auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType));
+			auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetElementType(llvmType), physical);
 			auto typeInst = *builder.reverseLookupType(type);
 			auto elmCount = DynamicLLVM::LLVMGetArrayLength(llvmType);
 			size_t stride = (typeInst.size + typeInst.alignment - 1) & ~(typeInst.alignment - 1);
@@ -511,7 +532,7 @@ static bool isFloatWidthConversion(std::string_view name) {
 		&& toVector == fromVector && toScalar != fromScalar;
 }
 
-// A buffer argument's air.arg_type_name is a scalar, a vector, or the name of a
+// An argument's air.arg_type_name is a scalar, a vector, or the name of a
 // struct declared in the module ("Uniforms", "AAPLVertex"). Struct names are
 // resolved against the module, since the opaque pointer parameter no longer
 // carries the type. LLVM prefixes named struct types with "struct.".
@@ -537,8 +558,7 @@ static Iridium::SPIRV::ResultID spirvTypeForAIRTypeName(Iridium::SPIRV::Builder&
 			auto columnInst = *builder.reverseLookupType(column);
 			return builder.declareType(Type(Type::ArrayTag {}, column, count, allocationSize(columnInst) * count, columnInst.alignment));
 		}
-		// packed_T names the same vector as T: the buffer's layout comes from the
-		// LLVM types its accesses use (see the packed_T3 guard in analyze).
+		// packed_T names the same vector as T
 		return builder.declareType(Type(Type::VectorTag {}, count, scalarID));
 	}
 
@@ -888,28 +908,30 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 	bool logical = isLogicalStorageClass(origType.pointerStorageClass);
 	LayoutFreeScope layoutFree(logical);
 
-	auto pointeeType = llvmTypeToSPIRVType(builder, currentType);
+	bool physical = origType.pointerStorageClass == SPIRV::StorageClass::PhysicalStorageBuffer;
 
 	// ensure the resulting pointer storage class is the same as the input pointer storage class
-	auto resultType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, origType.pointerStorageClass, pointeeType, 8));
+	auto resultType = physical
+		? physicalPointerType(builder)
+		: builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, origType.pointerStorageClass, llvmTypeToSPIRVType(builder, currentType), 8));
 
 	auto uint64Type = builder.declareType(SPIRV::Type(SPIRV::Type::IntegerTag {}, 64, false));
 
 	SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
 
-	if (origType.pointerStorageClass == SPIRV::StorageClass::PhysicalStorageBuffer) {
+	if (physical) {
 		// A physical pointer carries no layout to index through, and the
 		// instruction's source element type need not be the pointee the
 		// pointer was declared with (a buffer of float4x4 can be addressed
 		// as floats or float4s). Compute the byte offset from the source
-		// element type's own layout and form the typed pointer directly.
-		auto sourceType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetGEPSourceElementType(inst)));
+		// element type's own layout.
+		auto sourceType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMGetGEPSourceElementType(inst), true));
 		auto offset = builder.encodeArithBinop(SPIRV::Opcode::IMul, uint64Type, indices[0], builder.declareConstantScalar<uint64_t>(allocationSize(sourceType)));
 		auto layoutType = DynamicLLVM::LLVMGetGEPSourceElementType(inst);
 
 		for (size_t i = 2; i < operandCount; ++i) {
 			auto llindex = DynamicLLVM::LLVMGetOperand(inst, i);
-			auto layout = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, layoutType));
+			auto layout = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, layoutType, true));
 			SPIRV::ResultID step = SPIRV::ResultIDInvalid;
 
 			switch (DynamicLLVM::LLVMGetTypeKind(layoutType)) {
@@ -925,7 +947,7 @@ static Iridium::SPIRV::ResultID llvmGEPToResultID(Iridium::SPIRV::Builder& build
 				case LLVMArrayTypeKind:
 				case LLVMVectorTypeKind: {
 					auto elementType = DynamicLLVM::LLVMGetElementType(layoutType);
-					auto element = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, elementType));
+					auto element = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, elementType, true));
 					auto stride = DynamicLLVM::LLVMGetTypeKind(layoutType) == LLVMArrayTypeKind
 						? allocationSize(element)
 						: element.size;
@@ -1539,12 +1561,90 @@ static Iridium::SPIRV::ResultID floatConstantOfType(Iridium::SPIRV::Builder& bui
 	}
 }
 
+// Whether an LLVM type is i1 or a vector of i1, which translate to SPIR-V booleans.
+static bool isLLVMBoolean(LLVMTypeRef type) {
+	if (DynamicLLVM::LLVMGetTypeKind(type) == LLVMVectorTypeKind) {
+		type = DynamicLLVM::LLVMGetElementType(type);
+	}
+	return DynamicLLVM::LLVMGetTypeKind(type) == LLVMIntegerTypeKind && DynamicLLVM::LLVMGetIntTypeWidth(type) == 1;
+}
+
 // Emits `opcode` with an unsigned result type, as SPIR-V requires for UConvert, UDiv, UMod and
 // ConvertFToU, and reinterprets the result as `typeID`.
 static Iridium::SPIRV::ResultID encodeUnsignedResultOp(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::Opcode opcode, Iridium::SPIRV::ResultID typeID, const std::vector<uint32_t>& operands) {
 	auto unsignedType = integerTypeWithSign(builder, typeID, false);
 	auto result = builder.encodeOp(opcode, unsignedType, operands);
 	return unsignedType == typeID ? result : builder.encodeBitcast(typeID, result);
+}
+
+// Whether `value` is a bitcast to a vector of more than four components, which Vulkan has no type for. Such a
+// vector, like the `<12 x i8>` view of a `<3 x i32>`, is typically only there to have its elements extracted, so the
+// bitcast is not translated and each extractelement takes its bits from the bitcast's operand (see
+// encodeWideVectorElement).
+static bool isWideVectorBitcast(LLVMValueRef value) {
+	if (DynamicLLVM::LLVMGetValueKind(value) != LLVMInstructionValueKind || DynamicLLVM::LLVMGetInstructionOpcode(value) != LLVMBitCast) {
+		return false;
+	}
+	auto type = DynamicLLVM::LLVMTypeOf(value);
+	return DynamicLLVM::LLVMGetTypeKind(type) == LLVMVectorTypeKind && DynamicLLVM::LLVMGetVectorSize(type) > 4;
+}
+
+// Element `index` of the wide vector that the bitcast `bitcast` produces (see isWideVectorBitcast), of type `type`,
+// taken from the bits of the bitcast's operand: a scalar or vector whose elements are a whole multiple of the
+// result's elements wide. Elements are little-endian, so element i of a <12 x i8> view of a <3 x i32> is byte
+// i % 4 of element i / 4.
+static Iridium::SPIRV::ResultID encodeWideVectorElement(Iridium::SPIRV::Builder& builder, LLVMValueRef bitcast, LLVMValueRef index, Iridium::SPIRV::ResultID type) {
+	using namespace Iridium::SPIRV;
+
+	auto source = DynamicLLVM::LLVMGetOperand(bitcast, 0);
+	auto sourceLLVMType = DynamicLLVM::LLVMTypeOf(source);
+	bool sourceIsVector = DynamicLLVM::LLVMGetTypeKind(sourceLLVMType) == LLVMVectorTypeKind;
+	auto sourceElementType = *builder.reverseLookupType(llvmTypeToSPIRVType(builder, sourceIsVector ? DynamicLLVM::LLVMGetElementType(sourceLLVMType) : sourceLLVMType));
+	auto elementType = *builder.reverseLookupType(type);
+	auto sourceWidth = sourceElementType.scalarWidth;
+	auto width = elementType.scalarWidth;
+	bool scalars = (sourceElementType.backingType == Type::BackingType::Integer || sourceElementType.backingType == Type::BackingType::FloatingPoint)
+		&& (elementType.backingType == Type::BackingType::Integer || elementType.backingType == Type::BackingType::FloatingPoint);
+	if (!scalars || width == 0 || sourceWidth % width != 0) {
+		throw ImpossibleResultID("bitcast to a vector of more than 4 components from elements that are not a multiple of its elements");
+	}
+	auto ratio = sourceWidth / width;
+	auto sourceID = llvmValueToResultID(builder, source);
+	auto sourceElementTypeID = builder.declareType(sourceElementType);
+	auto unsignedSourceType = builder.declareType(Type(Type::IntegerTag {}, sourceWidth, false));
+	auto unsignedType = builder.declareType(Type(Type::IntegerTag {}, width, false));
+
+	// the source element and the bit offset of the result in it
+	ResultID element;
+	ResultID shift;
+	if (DynamicLLVM::LLVMIsAConstantInt(index)) {
+		auto position = DynamicLLVM::LLVMConstIntGetZExtValue(index);
+		if (position >= DynamicLLVM::LLVMGetVectorSize(DynamicLLVM::LLVMTypeOf(bitcast))) {
+			// an index past the end gives poison
+			return builder.declareUndefinedValue(type);
+		}
+		element = sourceIsVector ? builder.encodeCompositeExtract(sourceElementTypeID, sourceID, { static_cast<uint32_t>(position / ratio) }) : sourceID;
+		shift = builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>((position % ratio) * width));
+	} else {
+		auto indexID = llvmValueToResultID(builder, index);
+		ResultID indexType;
+		if (DynamicLLVM::LLVMGetIntTypeWidth(DynamicLLVM::LLVMTypeOf(index)) == 1) {
+			// an i1 index is a SPIR-V boolean
+			indexType = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+			indexID = builder.encodeOp(Opcode::Select, indexType, { indexID, integerConstantOfType(builder, indexType, 1), integerConstantOfType(builder, indexType, 0) });
+		} else {
+			indexType = integerTypeWithSign(builder, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(index)), false);
+			indexID = builder.encodeBitcast(indexType, indexID);
+		}
+		auto ratioID = integerConstantOfType(builder, indexType, ratio);
+		element = sourceIsVector ? builder.encodeVectorExtractDynamic(sourceElementTypeID, sourceID, builder.encodeArithBinop(Opcode::UDiv, indexType, indexID, ratioID)) : sourceID;
+		shift = builder.encodeArithBinop(Opcode::IMul, indexType, builder.encodeArithBinop(Opcode::UMod, indexType, indexID, ratioID), integerConstantOfType(builder, indexType, width));
+	}
+
+	auto bits = builder.encodeBitcast(unsignedSourceType, element);
+	bits = builder.encodeArithBinop(Opcode::ShiftRightLogical, unsignedSourceType, bits, shift);
+	auto result = builder.encodeUConvert(unsignedType, bits);
+	return unsignedType == type ? result : builder.encodeBitcast(type, result);
 }
 
 static std::vector<std::string_view> splitAirName(std::string_view name) {
@@ -1593,6 +1693,70 @@ static bool airTypeTokenIsFloat(std::string_view token) {
 	return !token.empty() && token[0] == 'f';
 }
 
+// popcount, clz, ctz or reverse_bits of `value`, whose type is the unsigned integer scalar or vector type
+// `type`. Vulkan allows OpBitCount and OpBitReverse, and GLSL.std.450 allows FindUMsb and FindILsb, only on
+// 32-bit integers, so a narrower integer is zero-extended to 32 bits and a 64-bit one split into two halves.
+static Iridium::SPIRV::ResultID encodeBitCount(Iridium::SPIRV::Builder& builder, std::string_view fn, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID value) {
+	using namespace Iridium::SPIRV;
+
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	unsigned width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+	auto wordType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, u32Type)) : u32Type;
+	auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+	auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+	auto word = [&](int64_t constant) {
+		return integerConstantOfType(builder, wordType, constant);
+	};
+	auto isZero = [&](ResultID w) {
+		return builder.encodeOp(Opcode::IEqual, boolType, { w, word(0) });
+	};
+
+	// the count for the low `bits` bits of a word, whose other bits are zero
+	auto count = [&](ResultID w, unsigned bits) {
+		if (fn == "popcount") {
+			return builder.encodeOp(Opcode::BitCount, wordType, { w });
+		}
+		if (fn == "reverse_bits") {
+			auto reversed = builder.encodeOp(Opcode::BitReverse, wordType, { w });
+			return bits == 32 ? reversed : builder.encodeArithBinop(Opcode::ShiftRightLogical, wordType, reversed, word(32 - bits));
+		}
+		if (fn == "clz") {
+			// FindUMsb is the index of the highest set bit, -1 for zero: bits - 1 minus that is the number of
+			// leading zeros, and `bits` for zero
+			return builder.encodeArithBinop(Opcode::ISub, wordType, word(bits - 1), builder.encodeGLSLOp(GLSLOpcode::FindUMsb, wordType, { w }));
+		}
+		// FindILsb is the index of the lowest set bit, -1 for zero, where the number of trailing zeros is `bits`
+		return builder.encodeOp(Opcode::Select, wordType, { isZero(w), word(bits), builder.encodeGLSLOp(GLSLOpcode::FindILsb, wordType, { w }) });
+	};
+
+	if (width == 32) {
+		return count(value, 32);
+	}
+	if (width < 32) {
+		return builder.encodeUConvert(type, count(builder.encodeUConvert(wordType, value), width));
+	}
+
+	auto low = builder.encodeUConvert(wordType, value);
+	auto high = builder.encodeUConvert(wordType, builder.encodeArithBinop(Opcode::ShiftRightLogical, type, value, integerConstantOfType(builder, type, 32)));
+	if (fn == "reverse_bits") {
+		// the reversed low half is the high half of the result
+		auto top = builder.encodeArithBinop(Opcode::ShiftLeftLogical, type, builder.encodeUConvert(type, count(low, 32)), integerConstantOfType(builder, type, 32));
+		return builder.encodeArithBinop(Opcode::BitwiseOr, type, top, builder.encodeUConvert(type, count(high, 32)));
+	}
+	ResultID result;
+	if (fn == "popcount") {
+		result = builder.encodeArithBinop(Opcode::IAdd, wordType, count(low, 32), count(high, 32));
+	} else if (fn == "clz") {
+		// the leading zeros of the high half, and all of them and those of the low half when it is zero
+		result = builder.encodeOp(Opcode::Select, wordType, { isZero(high), builder.encodeArithBinop(Opcode::IAdd, wordType, word(32), count(low, 32)), count(high, 32) });
+	} else {
+		result = builder.encodeOp(Opcode::Select, wordType, { isZero(low), builder.encodeArithBinop(Opcode::IAdd, wordType, word(32), count(high, 32)), count(low, 32) });
+	}
+	return builder.encodeUConvert(type, result);
+}
+
 // Translates the AIR math, relational, conversion and derivative intrinsics that map directly onto a
 // SPIR-V or GLSL.std.450 instruction. Returns false when `name` is not one of them.
 static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
@@ -1630,7 +1794,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			{ "sinh", GLSLOpcode::Sinh, 1 }, { "cosh", GLSLOpcode::Cosh, 1 }, { "tanh", GLSLOpcode::Tanh, 1 },
 			{ "asinh", GLSLOpcode::Asinh, 1 }, { "acosh", GLSLOpcode::Acosh, 1 },
 			{ "fabs", GLSLOpcode::FAbs, 1 }, { "floor", GLSLOpcode::Floor, 1 }, { "ceil", GLSLOpcode::Ceil, 1 },
-			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 }, { "round", GLSLOpcode::Round, 1 },
+			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 },
 			{ "trunc", GLSLOpcode::Trunc, 1 }, { "sign", GLSLOpcode::FSign, 1 }, { "fmin", GLSLOpcode::FMin, 2 },
 			{ "fmax", GLSLOpcode::FMax, 2 }, { "fma", GLSLOpcode::Fma, 3 }, { "mix", GLSLOpcode::FMix, 3 },
 			{ "clamp", GLSLOpcode::FClamp, 3 }, { "step", GLSLOpcode::Step, 2 }, { "smoothstep", GLSLOpcode::SmoothStep, 3 },
@@ -1649,6 +1813,20 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			}
 		}
 
+		if (fn == "round") {
+			// MSL rounds halfway cases away from zero, which GLSL.std.450's Round leaves to the implementation: round
+			// towards zero, and away from it if the part cut off, which is exact, is at least a half
+			auto x = operand(0);
+			auto info = *builder.reverseLookupType(type);
+			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+			auto boolType = info.backingType == Type::BackingType::Vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+			auto truncated = builder.encodeGLSLOp(GLSLOpcode::Trunc, type, { x });
+			auto fraction = builder.encodeGLSLOp(GLSLOpcode::FAbs, type, { builder.encodeArithBinop(Opcode::FSub, type, x, truncated) });
+			auto away = builder.encodeOp(Opcode::FOrdGreaterThanEqual, boolType, { fraction, floatConstantOfType(builder, type, 0.5) });
+			auto rounded = builder.encodeArithBinop(Opcode::FAdd, type, truncated, builder.encodeGLSLOp(GLSLOpcode::FSign, type, { x }));
+			resID = builder.encodeOp(Opcode::Select, type, { away, rounded, truncated });
+			return true;
+		}
 		if (fn == "saturate") {
 			resID = builder.encodeGLSLOp(GLSLOpcode::FClamp, type, { operand(0), floatConstantOfType(builder, type, 0), floatConstantOfType(builder, type, 1) });
 			return true;
@@ -1879,11 +2057,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			return unsignedType == type ? value : builder.encodeBitcast(type, value);
 		};
 		auto argument = operand(0);
-		if (fn == "popcount") {
-			resID = builder.encodeOp(Opcode::BitCount, type, { argument });
-		} else if (fn == "reverse_bits") {
-			resID = builder.encodeOp(Opcode::BitReverse, type, { argument });
-		} else if (fn == "rotate") {
+		if (fn == "rotate") {
 			// rotate left by n (modulo the width): the bits shifted out come back in on the right
 			auto mask = integerConstantOfType(builder, type, scalar.scalarWidth - 1);
 			auto width = integerConstantOfType(builder, type, scalar.scalarWidth);
@@ -1896,19 +2070,8 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
 			auto none = builder.encodeOp(Opcode::IEqual, boolType, { left, integerConstantOfType(builder, type, 0) });
 			resID = builder.encodeOp(Opcode::Select, type, { none, argument, resID });
-		} else if (fn == "clz") {
-			// FindUMsb is the index of the highest set bit, -1 for zero: width - 1 minus that is the number of
-			// leading zeros, and the width for zero
-			auto highest = builder.encodeGLSLOp(GLSLOpcode::FindUMsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
-			auto count = builder.encodeArithBinop(Opcode::ISub, unsignedType, integerConstantOfType(builder, unsignedType, scalar.scalarWidth - 1), highest);
-			resID = fromUnsigned(count);
 		} else {
-			// FindILsb is the index of the lowest set bit, -1 for zero, where the number of trailing zeros is the width
-			auto lowest = builder.encodeGLSLOp(GLSLOpcode::FindILsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
-			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
-			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
-			auto isZero = builder.encodeOp(Opcode::IEqual, boolType, { argument, integerConstantOfType(builder, type, 0) });
-			resID = fromUnsigned(builder.encodeOp(Opcode::Select, unsignedType, { isZero, integerConstantOfType(builder, unsignedType, scalar.scalarWidth), lowest }));
+			resID = fromUnsigned(encodeBitCount(builder, fn, unsignedType, builder.encodeBitcast(unsignedType, argument)));
 		}
 		return true;
 	}
@@ -2421,9 +2584,20 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		return llvmValueToResultID(builder, argument(i));
 	};
 
+	auto loadSampler = [&](LLVMValueRef value) {
+		auto samplerPointer = samplerFor(value);
+		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
+		auto pointerType = builder.reverseLookupType(builder.lookupResultType(samplerPointer));
+		if (!pointerType || pointerType->backingType != Type::BackingType::Pointer || pointerType->targetType != samplerType) {
+			throw ImpossibleResultID("sampler operand is not a sampler argument");
+		}
+		return builder.encodeLoad(samplerType, samplerPointer);
+	};
+
 	auto texturePointer = operand(0);
 	auto pointerType = builder.reverseLookupType(builder.lookupResultType(texturePointer));
-	if (!pointerType || pointerType->backingType != Type::BackingType::Pointer) {
+	if (!pointerType || pointerType->backingType != Type::BackingType::Pointer
+		|| builder.reverseLookupType(pointerType->targetType)->backingType != Type::BackingType::Image) {
 		throw ImpossibleResultID("texture operand is not a texture argument");
 	}
 	auto imageTypeID = pointerType->targetType;
@@ -2560,9 +2734,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 			}
 			component = builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(componentValue)));
 		}
-		auto samplerPointer = samplerFor(argument(1));
-		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
-		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
+		auto sampler = loadSampler(argument(1));
 		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
 		auto sampled = builder.encodeSampledImage(sampledType, image, sampler);
 
@@ -2598,9 +2770,7 @@ static bool translateAirTexture(Iridium::SPIRV::Builder& builder, LLVMValueRef i
 		value = builder.encodeOp(Opcode::ImageGather, texelType, arguments);
 	} else if (sample && isReadSampler(argument(1))) {
 		} else if (sample) {
-		auto samplerPointer = samplerFor(argument(1));
-		auto samplerType = builder.declareType(Type(Type::SamplerTag {}));
-		auto sampler = builder.encodeLoad(samplerType, samplerPointer);
+		auto sampler = loadSampler(argument(1));
 		auto sampledType = builder.declareType(Type(Type::SampledImageTag {}, imageTypeID));
 		auto sampled = builder.encodeSampledImage(sampledType, image, sampler);
 
@@ -3237,7 +3407,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					throw ImpossibleResultID("air.buffer descriptor has no air.arg_type_name");
 				}
 				auto typeName = llvmMDStringToStringView(typeNameNode);
-				auto type = spirvTypeForAIRTypeName(builder, _module.get(), typeName);
 				std::string_view base;
 				size_t count = 0;
 				if (typeName.substr(0, 7) == "packed_" && splitMetalTypeName(typeName, base, count) && count == 3) {
@@ -3246,9 +3415,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							std::string(typeName) + " (" + std::to_string(3 * scalar->size) + "-byte elements)");
 					}
 				}
-				auto addrPtrTypeInst = SPIRV::Type(SPIRV::Type::PointerTag {}, SPIRV::StorageClass::PhysicalStorageBuffer, type, 8);
-				auto addrPtrType = builder.declareType(addrPtrTypeInst);
-				bufferMembers.push_back(SPIRV::Type::Member { addrPtrType, 8 * bufferIndex, {} });
+				bufferMembers.push_back(SPIRV::Type::Member { physicalPointerType(builder), 8 * bufferIndex, {} });
 				++bufferIndex;
 			}
 		}
@@ -4174,8 +4341,28 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					builder.setResultType(resID, type);
 				} break;
 
+				case LLVMTrunc: {
+					auto source = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+					auto argument = llvmValueToResultID(builder, source);
+					auto typeInst = *builder.reverseLookupType(type);
+					auto component = typeInst.backingType == SPIRV::Type::BackingType::Vector ? *builder.reverseLookupType(typeInst.targetType) : typeInst;
+
+					SPIRV::ResultID resID;
+					if (component.backingType == SPIRV::Type::BackingType::Boolean) {
+						// i1 is a SPIR-V boolean, which OpUConvert cannot produce: test the low bit
+						auto sourceType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source));
+						auto low = builder.encodeOp(SPIRV::Opcode::BitwiseAnd, sourceType, { argument, integerConstantOfType(builder, sourceType, 1) });
+						resID = builder.encodeOp(SPIRV::Opcode::INotEqual, type, { low, integerConstantOfType(builder, sourceType, 0) });
+					} else {
+						resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument });
+					}
+
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+					builder.setResultType(resID, type);
+				} break;
+
 				case LLVMSExt:
-				case LLVMTrunc:
 				case LLVMFPExt:
 				case LLVMFPToSI:
 				case LLVMFPToUI:
@@ -4185,15 +4372,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto argument = llvmValueToResultID(builder, source);
 					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
 					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+					// AIR's i1 is a SPIR-V boolean, which OpSConvert, OpConvertSToF and OpConvertUToF do not take
+					bool fromBoolean = isLLVMBoolean(DynamicLLVM::LLVMTypeOf(source));
+					auto selectBoolean = [&](SPIRV::ResultID ifTrue, SPIRV::ResultID ifFalse) {
+						return builder.encodeOp(SPIRV::Opcode::Select, type, { argument, ifTrue, ifFalse });
+					};
 
 					switch (opcode) {
-						case LLVMSExt: resID = builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument }); break;
-						case LLVMTrunc: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::UConvert, type, { argument }); break;
+						case LLVMSExt:
+							resID = fromBoolean
+								? selectBoolean(integerConstantOfType(builder, type, -1), integerConstantOfType(builder, type, 0))
+								: builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument });
+							break;
 						case LLVMFPExt: resID = builder.encodeFConvert(type, argument); break;
 						case LLVMFPToSI: resID = builder.encodeOp(SPIRV::Opcode::ConvertFToS, type, { argument }); break;
 						case LLVMFPToUI: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::ConvertFToU, type, { argument }); break;
-						case LLVMSIToFP: resID = builder.encodeOp(SPIRV::Opcode::ConvertSToF, type, { argument }); break;
+						case LLVMSIToFP:
+							resID = fromBoolean
+								? selectBoolean(floatConstantOfType(builder, type, -1), floatConstantOfType(builder, type, 0))
+								: builder.encodeOp(SPIRV::Opcode::ConvertSToF, type, { argument });
+							break;
 						case LLVMUIToFP: {
+							if (fromBoolean) {
+								resID = selectBoolean(floatConstantOfType(builder, type, 1), floatConstantOfType(builder, type, 0));
+								break;
+							}
 							auto unsignedType = integerTypeWithSign(builder, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source)), false);
 							resID = builder.encodeOp(SPIRV::Opcode::ConvertUToF, type, { builder.encodeBitcast(unsignedType, argument) });
 						} break;
@@ -4202,6 +4405,28 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
+				} break;
+
+				case LLVMFreeze: {
+					// A literal undef or poison is OpUndef, which may differ at every use, so freezing one gives
+					// zero (a pointer is refused). Other operands are used as they are, so a value that is only
+					// partly or sometimes undefined (a phi with an undef input) stays that way.
+					auto operand = DynamicLLVM::LLVMGetOperand(inst, 0);
+					auto operandKind = DynamicLLVM::LLVMGetValueKind(operand);
+					SPIRV::ResultID resID;
+					if (operandKind == LLVMUndefValueValueKind || operandKind == LLVMPoisonValueValueKind) {
+						if (DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMTypeOf(operand)) == LLVMPointerTypeKind) {
+							throw ImpossibleResultID("freeze of an undefined pointer");
+						}
+						resID = builder.declareNullValue(llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst)));
+					} else {
+						resID = llvmValueToResultID(builder, operand);
+					}
+					// constants have no recorded type, which users of an instruction's result look up
+					if (builder.lookupResultType(resID) == SPIRV::ResultIDInvalid) {
+						builder.setResultType(resID, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst)));
+					}
+					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 				} break;
 
 				case LLVMAlloca: {
@@ -4245,7 +4470,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto alignment = DynamicLLVM::LLVMGetAlignment(inst);
 					auto ptr = DynamicLLVM::LLVMGetOperand(inst, 0);
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
-					auto type = llvmTypeToSPIRVType(builder, targetType);
 					auto op = llvmValueToResultID(builder, ptr);
 					// A pointer operand's recorded type is what carries the storage
 					// class the re-type below copies, and it does not miss on any
@@ -4263,11 +4487,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						throw ImpossibleResultID("load's pointer operand has no recorded result type");
 					}
 					auto opType = *maybeOpType;
-					// only reachable through the miss just rejected: a pointer type
-					// always carries a pointee, and llvmTypeToSPIRVType refuses to
-					// resolve an opaque one, so targetType is a declared type.
-					auto opDerefType = *builder.reverseLookupType(opType.targetType);
 					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
+					// an address in device or constant memory, see physicalPointerType
+					bool address = opType.pointerStorageClass == SPIRV::StorageClass::PhysicalStorageBuffer
+						&& DynamicLLVM::LLVMGetTypeKind(targetType) == LLVMPointerTypeKind;
+					auto type = llvmTypeToSPIRVType(builder, targetType, address);
+					if (address) {
+						alignment = addressAlignment(alignment);
+					}
 
 					SPIRV::ResultID reinterpretedVal = SPIRV::ResultIDInvalid;
 
@@ -4288,21 +4515,10 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							}
 						}
 						alignment = 0;
-					} else if (opDerefType.backingType == SPIRV::Type::BackingType::RuntimeArray) {
-						// requires an additional index
-						auto accessType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, type, 8));
-						auto access = builder.encodeAccessChain(accessType, op, { builder.declareConstantScalar<int32_t>(0) });
-						builder.setResultType(access, accessType);
-						op = access;
 					} else {
-						// AIR's pointers are opaque, so the operand's declared
-						// pointee is only whatever its producer managed to
-						// recover, and that is not necessarily what is being
-						// loaded: "bitcast ptr %a to ptr" carries no destination
-						// pointee, and a getelementptr names the aggregate it
-						// descends from, not the field it lands on. The load's
-						// own result type is the one place the intended pointee
-						// survives, so re-type the pointer to it.
+						// AIR's pointers are opaque, so the operand's pointee says nothing about what is loaded (a
+						// device pointer's is always uint, see physicalPointerType). The load's own result type is
+						// the one place the intended pointee survives, so re-type the pointer to it.
 						auto loadPtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, type, 8));
 
 						if (loadPtrType != builder.lookupResultType(op)) {
@@ -4327,31 +4543,28 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto val = llvmValueToResultID(builder, llval);
 					auto ptr = llvmValueToResultID(builder, llptr);
 
-					// TODO: also handle runtime arrays properly here
-
-					// The same asymmetry a load has: AIR's pointers are opaque,
-					// so the operand's declared pointee is only whatever its
-					// producer recovered, which need not be what is being
-					// stored through it. A store's own result type is void, so
-					// unlike a load it preserves nothing; the stored value's
-					// type is the equivalent source of truth, so re-type the
-					// pointer to it. Taken from the value's LLVM type rather
-					// than from its recorded SPIR-V result type because a
-					// constant operand never gets one recorded.
-					// the pointer being stored through, so the storage class has to come
-					// from the operand's recorded type. See the LLVMLoad case above for
-					// why that lookup cannot miss, and for why a miss would leave
-					// nothing to inherit: name the operand rather than guess.
+					// As for a load, the pointer is re-typed to what is stored through it: the stored value's type,
+					// taken from its LLVM type because a constant operand never gets a SPIR-V type recorded. The
+					// storage class comes from the operand's recorded type (see the LLVMLoad case).
 					auto maybeOpType = builder.reverseLookupType(builder.lookupResultType(ptr));
 					if (!maybeOpType) {
 						throw ImpossibleResultID("store's pointer operand has no recorded result type");
 					}
 					auto opType = *maybeOpType;
 					bool logical = isLogicalStorageClass(opType.pointerStorageClass);
+					bool address = opType.pointerStorageClass == SPIRV::StorageClass::PhysicalStorageBuffer
+						&& DynamicLLVM::LLVMGetTypeKind(DynamicLLVM::LLVMTypeOf(llval)) == LLVMPointerTypeKind;
 					LayoutFreeScope layoutFree(logical);
-					auto valSpirvType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval));
+					auto valSpirvType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(llval), address);
 					auto storePtrType = builder.declareType(SPIRV::Type(SPIRV::Type::PointerTag {}, opType.pointerStorageClass, valSpirvType, 8));
 					bool stored = false;
+					if (address) {
+						alignment = addressAlignment(alignment);
+					}
+					if (address && builder.lookupResultType(val) != valSpirvType) {
+						// a variable, texture or sampler has no address to store
+						throw ImpossibleResultID("store of a pointer that is not a device or constant address into device memory");
+					}
 
 					if (logical) {
 						// see the LLVMLoad case
@@ -4822,7 +5035,9 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto targetType = DynamicLLVM::LLVMTypeOf(inst);
 					auto type = llvmTypeToSPIRVType(builder, targetType);
 
-					auto resID = builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
+					auto resID = isWideVectorBitcast(vector)
+						? encodeWideVectorElement(builder, vector, index, type)
+						: builder.encodeVectorExtractDynamic(type, llvmValueToResultID(builder, vector), llvmValueToResultID(builder, index));
 
 					builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
 					builder.setResultType(resID, type);
@@ -4871,6 +5086,18 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 					// a vector comparison produces a vector of booleans
 					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
+
+					if (predicate == LLVMRealORD || predicate == LLVMRealUNO) {
+						// OpOrdered and OpUnordered require the Kernel capability, which Vulkan lacks: test for NaNs instead
+						auto lhs = llvmValueToResultID(builder, op1);
+						auto rhs = llvmValueToResultID(builder, op2);
+						auto unordered = builder.encodeOp(SPIRV::Opcode::LogicalOr, type, { builder.encodeOp(SPIRV::Opcode::IsNan, type, { lhs }), builder.encodeOp(SPIRV::Opcode::IsNan, type, { rhs }) });
+						auto resID = predicate == LLVMRealUNO ? unordered : builder.encodeOp(SPIRV::Opcode::LogicalNot, type, { unordered });
+						builder.associateExistingResultID(resID, reinterpret_cast<uintptr_t>(inst));
+						builder.setResultType(resID, type);
+						break;
+					}
+
 					SPIRV::Opcode comparison;
 
 					switch (predicate) {
@@ -4880,8 +5107,6 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 						case LLVMRealOLT: comparison = SPIRV::Opcode::FOrdLessThan; break;
 						case LLVMRealOLE: comparison = SPIRV::Opcode::FOrdLessThanEqual; break;
 						case LLVMRealONE: comparison = SPIRV::Opcode::FOrdNotEqual; break;
-						case LLVMRealORD: comparison = SPIRV::Opcode::Ordered; break;
-						case LLVMRealUNO: comparison = SPIRV::Opcode::Unordered; break;
 						case LLVMRealUEQ: comparison = SPIRV::Opcode::FUnordEqual; break;
 						case LLVMRealUGT: comparison = SPIRV::Opcode::FUnordGreaterThan; break;
 						case LLVMRealUGE: comparison = SPIRV::Opcode::FUnordGreaterThanEqual; break;
@@ -4979,6 +5204,16 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				} break;
 
 				case LLVMBitCast: {
+					if (isWideVectorBitcast(inst)) {
+						for (auto use = DynamicLLVM::LLVMGetFirstUse(inst); use; use = DynamicLLVM::LLVMGetNextUse(use)) {
+							auto user = DynamicLLVM::LLVMGetUser(use);
+							if (DynamicLLVM::LLVMGetValueKind(user) != LLVMInstructionValueKind || DynamicLLVM::LLVMGetInstructionOpcode(user) != LLVMExtractElement) {
+								throw ImpossibleResultID("bitcast to a vector of more than 4 components that is used other than by extractelement");
+							}
+						}
+						break;
+					}
+
 					auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
 					auto argID = llvmValueToResultID(builder, arg);
 					auto origType = builder.lookupResultType(argID);

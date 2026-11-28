@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <cstring>
 
@@ -130,6 +133,10 @@ Indium::PrivateFunction::PrivateFunction(std::shared_ptr<PrivateLibrary> library
 	_name = name;
 };
 
+namespace {
+	std::unordered_map<std::string, std::optional<std::set<uint32_t>>> spirvComparisonSamplers(const uint32_t* words, size_t wordCount);
+};
+
 Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, const char* data, size_t dataLength, std::unordered_map<std::string, FunctionInfo> functionInfos):
 	_privateDevice(device),
 	_functionInfos(functionInfos)
@@ -165,6 +172,29 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 	// a library with no functions has no module (Device::newLibrary)
 	if (dataLength == 0) {
 		return;
+	}
+
+	// which sampler bindings each function compares through (FunctionInfo::comparisonSamplerBindings)
+	bool samplers = std::any_of(_functionInfos.begin(), _functionInfos.end(), [](const auto& entry) {
+		return std::any_of(entry.second.bindings.begin(), entry.second.bindings.end(), [](const BindingDescriptor& binding) {
+			return binding.type == BindingType::Sampler;
+		});
+	});
+	if (samplers) {
+		auto comparisons = spirvComparisonSamplers(reinterpret_cast<const uint32_t*>(data), dataLength / sizeof(uint32_t));
+		for (auto& [name, funcInfo]: _functionInfos) {
+			auto found = comparisons.find(name);
+			for (const auto& binding: funcInfo.bindings) {
+				if (binding.type != BindingType::Sampler) {
+					continue;
+				}
+				if (found == comparisons.end() || !found->second) {
+					funcInfo.comparisonSamplersUntraced = true;
+				} else if (found->second->count(static_cast<uint32_t>(binding.internalIndex)) != 0) {
+					funcInfo.comparisonSamplerBindings.insert(binding.internalIndex);
+				}
+			}
+		}
 	}
 
 	VkShaderModuleCreateInfo createInfo {};
@@ -318,6 +348,184 @@ namespace {
 	constexpr uint32_t spirvDecorationLocation = 30;
 	constexpr uint32_t spirvStorageClassInput = 1;
 	constexpr size_t spirvHeaderWords = 5;
+
+	constexpr uint32_t spirvOpFunction = 54;
+	constexpr uint32_t spirvOpFunctionParameter = 55;
+	constexpr uint32_t spirvOpFunctionEnd = 56;
+	constexpr uint32_t spirvOpFunctionCall = 57;
+	constexpr uint32_t spirvOpLoad = 61;
+	constexpr uint32_t spirvOpAccessChain = 65;
+	constexpr uint32_t spirvOpInBoundsAccessChain = 66;
+	constexpr uint32_t spirvOpCopyObject = 83;
+	constexpr uint32_t spirvOpSampledImage = 86;
+	constexpr uint32_t spirvDecorationBinding = 33;
+
+	// The opcodes that sample or gather with a depth comparison. Each has its sampled image as its third operand.
+	bool spirvIsDrefOp(uint32_t opcode) {
+		switch (opcode) {
+			case 89: // OpImageSampleDrefImplicitLod
+			case 90: // OpImageSampleDrefExplicitLod
+			case 93: // OpImageSampleProjDrefImplicitLod
+			case 94: // OpImageSampleProjDrefExplicitLod
+			case 97: // OpImageDrefGather
+			case 307: // OpImageSparseSampleDrefImplicitLod
+			case 308: // OpImageSparseSampleDrefExplicitLod
+			case 311: // OpImageSparseSampleProjDrefImplicitLod
+			case 312: // OpImageSparseSampleProjDrefExplicitLod
+			case 315: // OpImageSparseDrefGather
+				return true;
+			default:
+				return false;
+		}
+	};
+
+	std::string spirvLiteralString(const std::vector<uint32_t>& words, size_t first, size_t limit, size_t& end);
+
+	// For each entry point of a module, by name, the Binding of every sampler a depth comparison goes through in it or
+	// in a function it calls. A sampler is followed back to its variable through loads, access chains, copies, and
+	// from a function parameter to the arguments the entry point's calls pass for it. std::nullopt for an entry point
+	// with a comparison whose sampler cannot be followed back to a variable that way (through an OpPhi, say).
+	std::unordered_map<std::string, std::optional<std::set<uint32_t>>> spirvComparisonSamplers(const uint32_t* data, size_t wordCount) {
+		std::unordered_map<std::string, std::optional<std::set<uint32_t>>> result;
+		if (wordCount < spirvHeaderWords) {
+			return result;
+		}
+		std::vector<uint32_t> words(data, data + wordCount);
+
+		struct Call {
+			uint32_t callee;
+			std::vector<uint32_t> arguments;
+		};
+		struct FunctionUse {
+			std::vector<uint32_t> comparedImages;
+			std::vector<Call> calls;
+		};
+		std::unordered_map<std::string, uint32_t> entryPoints;
+		std::unordered_map<uint32_t, uint32_t> bindings;
+		std::unordered_map<uint32_t, uint32_t> sources; // the value or pointer an id was loaded or derived from
+		std::unordered_map<uint32_t, uint32_t> sampledSamplers; // OpSampledImage result -> its sampler
+		std::unordered_map<uint32_t, std::pair<uint32_t, size_t>> parameters; // parameter -> its function, position
+		std::unordered_set<uint32_t> variables;
+		std::unordered_map<uint32_t, FunctionUse> functions;
+		uint32_t currentID = 0;
+		size_t parameterCount = 0;
+		FunctionUse* current = nullptr;
+
+		for (size_t at = spirvHeaderWords; at < words.size();) {
+			uint32_t count = words[at] >> 16;
+			uint32_t opcode = words[at] & 0xffff;
+			if (count == 0 || at + count > words.size()) {
+				return {};
+			}
+			if (opcode == spirvOpEntryPoint && count >= 4) {
+				size_t nameEnd = 0;
+				entryPoints[spirvLiteralString(words, at + 3, at + count, nameEnd)] = words[at + 2];
+			} else if (opcode == spirvOpDecorate && count == 4 && words[at + 2] == spirvDecorationBinding) {
+				bindings[words[at + 1]] = words[at + 3];
+			} else if (opcode == spirvOpVariable && count >= 4) {
+				variables.insert(words[at + 2]);
+			} else if (opcode == spirvOpFunction && count >= 3) {
+				currentID = words[at + 2];
+				current = &functions[currentID];
+				parameterCount = 0;
+			} else if (opcode == spirvOpFunctionParameter && count >= 3 && current) {
+				parameters[words[at + 2]] = { currentID, parameterCount++ };
+			} else if (opcode == spirvOpFunctionEnd) {
+				current = nullptr;
+			} else if (opcode == spirvOpFunctionCall && count >= 4 && current) {
+				current->calls.push_back(Call { words[at + 3], std::vector<uint32_t>(words.begin() + at + 4, words.begin() + at + count) });
+			} else if ((opcode == spirvOpLoad || opcode == spirvOpAccessChain || opcode == spirvOpInBoundsAccessChain
+				|| opcode == spirvOpCopyObject) && count >= 4) {
+				sources[words[at + 2]] = words[at + 3];
+			} else if (opcode == spirvOpSampledImage && count == 5) {
+				sampledSamplers[words[at + 2]] = words[at + 4];
+			} else if (spirvIsDrefOp(opcode) && count >= 5 && current) {
+				current->comparedImages.push_back(words[at + 3]);
+			}
+			at += count;
+		}
+
+		for (const auto& [name, entry]: entryPoints) {
+			// the functions this entry point runs
+			std::set<uint32_t> reachable;
+			std::vector<uint32_t> pending { entry };
+			while (!pending.empty()) {
+				uint32_t function = pending.back();
+				pending.pop_back();
+				auto use = functions.find(function);
+				if (!reachable.insert(function).second || use == functions.end()) {
+					continue;
+				}
+				for (const auto& call: use->second.calls) {
+					pending.push_back(call.callee);
+				}
+			}
+
+			// adds the Bindings of the variables `id` can come from in this entry point; false if one path leads elsewhere
+			std::set<uint32_t> samplerBindings;
+			auto trace = [&](uint32_t id) {
+				std::set<uint32_t> seen;
+				std::vector<uint32_t> ids { id };
+				while (!ids.empty()) {
+					uint32_t at = ids.back();
+					ids.pop_back();
+					if (!seen.insert(at).second) {
+						continue;
+					}
+					if (variables.count(at) != 0) {
+						auto binding = bindings.find(at);
+						if (binding == bindings.end()) {
+							return false;
+						}
+						samplerBindings.insert(binding->second);
+					} else if (auto source = sources.find(at); source != sources.end()) {
+						ids.push_back(source->second);
+					} else if (auto parameter = parameters.find(at); parameter != parameters.end()) {
+						auto [callee, position] = parameter->second;
+						for (uint32_t caller: reachable) {
+							auto use = functions.find(caller);
+							if (use == functions.end()) {
+								continue;
+							}
+							for (const auto& call: use->second.calls) {
+								if (call.callee != callee) {
+									continue;
+								}
+								if (position >= call.arguments.size()) {
+									return false;
+								}
+								ids.push_back(call.arguments[position]);
+							}
+						}
+					} else {
+						return false;
+					}
+				}
+				return true;
+			};
+
+			bool traced = true;
+			for (uint32_t function: reachable) {
+				auto use = functions.find(function);
+				if (use == functions.end()) {
+					continue;
+				}
+				for (uint32_t image: use->second.comparedImages) {
+					// the sampled image, through any copies of it, back to the OpSampledImage that made it
+					uint32_t sampled = image;
+					for (int step = 0; step < 16 && sampledSamplers.count(sampled) == 0 && sources.count(sampled) != 0; ++step) {
+						sampled = sources[sampled];
+					}
+					auto sampler = sampledSamplers.find(sampled);
+					if (sampler == sampledSamplers.end() || !trace(sampler->second)) {
+						traced = false;
+					}
+				}
+			}
+			result[name] = traced ? std::optional<std::set<uint32_t>>(std::move(samplerBindings)) : std::nullopt;
+		}
+		return result;
+	};
 
 	// The words of a literal string operand, from `first`, as a std::string; `end` is set past its last word.
 	std::string spirvLiteralString(const std::vector<uint32_t>& words, size_t first, size_t limit, size_t& end) {

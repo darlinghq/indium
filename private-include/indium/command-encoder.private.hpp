@@ -425,7 +425,9 @@ namespace Indium {
 					auto privateSampler = std::dynamic_pointer_cast<PrivateSamplerState>(sampler);
 
 					auto& info = imageInfos.emplace_front();
-					info.sampler = privateSampler->sampler();
+					bool comparison = funcInfo.comparisonSamplerBindings.count(bindingInfo.internalIndex) != 0
+						|| (funcInfo.comparisonSamplersUntraced && privateSampler->hasCompareFunction());
+					info.sampler = comparison ? privateSampler->comparisonSampler() : privateSampler->sampler();
 
 					auto& descSet = writeDescSet.emplace_back();
 					descSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
