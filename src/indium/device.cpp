@@ -600,6 +600,14 @@ void Indium::PrivateDevice::createLogicalDevice() {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo {};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
 	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	// a wakeup that came before the device, while no poll was waiting for it, is counted, so the next poll ends
+	// (wakeupEventLoop() sets the flag under _logicalDeviceMutex, which is held here, and no wakeup is signalled before
+	// the device exists)
+	if (_wakeupBeforeCreation) {
+		_wakeupBeforeCreation = false;
+		_wakeupsSignaled = 1;
+		semaphoreTypeInfo.initialValue = 1;
+	}
 
 	VkSemaphoreCreateInfo semaphoreCreateInfo {};
 	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -614,7 +622,8 @@ void Indium::PrivateDevice::createLogicalDevice() {
 	{
 		std::unique_lock lock(_eventLoopMutex);
 		_eventLoopSemaphores.push_back(wakeupSemaphore);
-		_eventLoopWaitValues.push_back(1);
+		// unused: a poll waits for the wakeup after the ones it has seen (_wakeupsSeen)
+		_eventLoopWaitValues.push_back(0);
 		_eventLoopCallbacks.push_back(nullptr);
 	}
 
@@ -1701,7 +1710,8 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	std::unique_lock lock(_eventLoopMutex);
 
 	const std::vector<VkSemaphore> semaphores = _eventLoopSemaphores;
-	const std::vector<uint64_t> values = _eventLoopWaitValues;
+	std::vector<uint64_t> values = _eventLoopWaitValues;
+	values[0] = _wakeupsSeen + 1;
 	const std::vector<std::function<void()>> callbacks = _eventLoopCallbacks;
 	const uint64_t registrations = _eventLoopRegistrations.load(std::memory_order_seq_cst);
 
@@ -1734,6 +1744,11 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	if (result == VK_TIMEOUT) {
 		// timed out with no semaphores ready
 		return;
+	}
+
+	uint64_t wakeups = 0;
+	if (DynamicVK::vkGetSemaphoreCounterValue(_device, semaphores[0], &wakeups) == VK_SUCCESS && wakeups > _wakeupsSeen) {
+		_wakeupsSeen = wakeups;
 	}
 
 	std::vector<size_t> readyIndices;
@@ -1794,12 +1809,10 @@ void Indium::PrivateDevice::wakeupEventLoop() {
 
 	std::unique_lock lock(_eventLoopMutex);
 
-	auto oldVal = _eventLoopWaitValues[0]++;
-
 	VkSemaphoreSignalInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
 	info.semaphore = _eventLoopSemaphores[0];
-	info.value = oldVal;
+	info.value = ++_wakeupsSignaled;
 	DynamicVK::vkSignalSemaphore(_device, &info);
 };
 

@@ -45,6 +45,13 @@ namespace Indium {
 		std::vector<uint64_t> _eventLoopWaitValues;
 		std::vector<std::function<void()>> _eventLoopCallbacks;
 
+		// The wakeup semaphore counts the wakeups: wakeupEventLoop() signals the count of wakeups so far (under
+		// _eventLoopMutex), and a poll waits for one more than the pollers have seen (only a poller, under
+		// _pollingMutex, reads or changes _wakeupsSeen). A wakeup that comes before a poll has begun to wait so ends
+		// that poll at once, instead of the poll waiting for the wakeup after it.
+		uint64_t _wakeupsSignaled = 0;
+		uint64_t _wakeupsSeen = 0;
+
 		// waitForSemaphore() only needs to wake the event loop when a poller is blocked on a list
 		// that predates the new semaphore. Registrations count additions to the list; a poller
 		// counts itself in blockedPollers before it blocks, then rechecks registrations.
