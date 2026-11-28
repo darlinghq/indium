@@ -243,6 +243,15 @@ Indium::PrivateRenderCommandEncoder::PrivateRenderCommandEncoder(std::shared_ptr
 		vertex.dstAccessMask = vertex.srcAccessMask;
 	}
 
+	// Slots after the last one with a texture are left out: Vulkan counts references past the end as unused
+	// when it compares render passes, and a pipeline's colour blend state has to have as many attachments as
+	// the subpass (PrivateRenderPipelineState leaves out the slots after its last one with a pixel format).
+	while (!colorAttachments.empty() && colorAttachments.back().attachment == VK_ATTACHMENT_UNUSED &&
+		resolveAttachments.back().attachment == VK_ATTACHMENT_UNUSED) {
+		colorAttachments.pop_back();
+		resolveAttachments.pop_back();
+	}
+
 	auto& subpassDesc = subpasses.emplace_back();
 	subpassDesc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	subpassDesc.colorAttachmentCount = colorAttachments.size();

@@ -28,7 +28,8 @@ a clear color and a blend. What the observations showed beyond the documentation
 - a NaN is stored as the code of 0; a value a hair above the middle of two codes is stored as the lower one;
 - the sRGB formats' sampled values are multiples of 2^-13, so those are compared to one such step, and an sRGB conversion
   or a blend may differ by one code between devices;
-- the source color is clamped to the range of the format before it is blended (not done here: blue of the blend case is not checked);
+- the source color is clamped to the range of the format (codes 0 to 1023, alpha 0 to 1) before it is blended; the pipeline does that for
+  these formats when blending is enabled, by clamping the fragment function's outputs;
 - `getBytes` returns the bytes `replaceRegion` was given, including padding bits and alpha codes outside 384 to 894. This
   implementation holds shader values, so it does not (known differences, pinned by the tests as such).
 

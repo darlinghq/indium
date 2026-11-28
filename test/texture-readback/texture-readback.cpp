@@ -180,8 +180,9 @@ int main() {
 			pattern.data(), TEX_W * BPP);
 
 		// A bytesPerRow of two whole texels more than the row needs. The padding
-		// must receive nothing, which is what a correct rowLength produces; a copy
-		// that ignored the pitch would pack the rows and leave the tail unwritten.
+		// must receive nothing (the caller's buffer may end with the last row, and
+		// the bytes between rows are the caller's); a copy that ignored the pitch
+		// would pack the rows, which the comparison of the row bytes catches.
 		const size_t pitch = (TEX_W + 2) * BPP;
 		std::vector<uint8_t> got(TEX_H * pitch, 0xAA);
 		tex->getBytes(Indium::Region::make2D(0, 0, TEX_W, TEX_H), 0, got.data(), pitch);
@@ -192,10 +193,10 @@ int main() {
 				uint8_t g = got[y * pitch + x], w = pattern[y * TEX_W * BPP + x];
 				if (g != w) bad++;
 			}
-			for (size_t i = TEX_W * BPP; i < pitch; i++) if (got[y * pitch + i] == 0xAA) dirtyPad++;
+			for (size_t i = TEX_W * BPP; i < pitch; i++) if (got[y * pitch + i] != 0xAA) dirtyPad++;
 		}
 		expect(bad == 0 && dirtyPad == 0, "getBytes honours a bytesPerRow larger than the row",
-			bad == 0 ? std::to_string(dirtyPad) + " padding bytes left at the fill value"
+			bad == 0 ? std::to_string(dirtyPad) + " padding bytes overwritten"
 			         : std::to_string(bad) + " bytes differ");
 
 		// Control: a packed readback of the same texture is not byte-identical to

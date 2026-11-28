@@ -389,19 +389,6 @@ VkColorSpaceKHR IndiumKit::PrivateLayer::hdrColorSpace(HdrTransferFunction trans
 	return IndiumKit::hdrColorSpace(transfer);
 };
 
-bool IndiumKit::PrivateLayer::surfaceSupportsFormat(VkFormat format, VkColorSpaceKHR colorSpace) {
-	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
-	uint32_t count = 0;
-	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
-	std::vector<VkSurfaceFormatKHR> formats(count);
-	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
-	formats.resize(count);
-
-	return std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
-		return f.format == format && f.colorSpace == colorSpace;
-	});
-};
-
 void IndiumKit::PrivateLayer::applyHdrMetadata(const std::shared_ptr<SwapchainState>& state) {
 	if (!state || state->swapchain == VK_NULL_HANDLE || _hdrMetadata.transfer == HdrTransferFunction::None) {
 		return;
@@ -553,6 +540,110 @@ bool IndiumKit::PrivateLayer::chooseExtendedRangeTarget(Indium::PixelFormat pixe
 			target = { candidate, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, false };
 			return true;
 		}
+	}
+	return false;
+};
+
+static VkColorSpaceKHR vulkanColorSpace(IndiumKit::ColorSpace colorSpace) {
+	switch (colorSpace) {
+		case IndiumKit::ColorSpace::SRGB:                    return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+		case IndiumKit::ColorSpace::ExtendedSRGB:            return VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT;
+		case IndiumKit::ColorSpace::ExtendedLinearSRGB:      return VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
+		case IndiumKit::ColorSpace::ExtendedLinearDisplayP3: return VK_COLOR_SPACE_DISPLAY_P3_LINEAR_EXT;
+		case IndiumKit::ColorSpace::ExtendedLinearITUR2020:  return VK_COLOR_SPACE_BT2020_LINEAR_EXT;
+	}
+	return VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+};
+
+std::vector<VkSurfaceFormatKHR> IndiumKit::PrivateLayer::surfaceFormats() {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	uint32_t count = 0;
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
+	std::vector<VkSurfaceFormatKHR> formats(count);
+	DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
+	formats.resize(count);
+	return formats;
+};
+
+// Decides how the content of the layer reaches the surface (see PresentationTarget):
+//  - an extended-range pixel format always goes through textures of its own (chooseExtendedRangeTarget());
+//  - SDR content, and content with an HDR transfer function, is presented as it is in the color space of the
+//    transfer function, or in sRGB when the surface cannot present that;
+//  - the other color spaces are presented as they are when the surface offers the layer's format in the matching
+//    Vulkan color space. Otherwise values with the sRGB primaries are converted for an 8-bit sRGB surface,
+//    which clamps them to 0 to 1 and applies the curve to linear ones; what has no such conversion is refused,
+//    so that wrong colors are never shown without saying so.
+// Linear light that must not exceed the SDR range (extended dynamic range off) takes the conversion first, too,
+// since the clamp is what keeps values beyond 0 to 1 from the display.
+bool IndiumKit::PrivateLayer::choosePresentationTarget(Indium::PixelFormat pixelFormat, HdrTransferFunction transfer, ColorSpace colorSpace, bool extendedDynamicRange,
+                                                       const std::vector<VkSurfaceFormatKHR>& formats, PresentationTarget& target) {
+	auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
+	auto offers = [&](VkFormat format, VkColorSpaceKHR space) {
+		return std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
+			return f.format == format && f.colorSpace == space;
+		});
+	};
+
+	if (Indium::pixelFormatIsExtendedRange(pixelFormat)) {
+		// the format of the texture the drawables render to is not the swapchain's, and neither an HDR transfer function
+		// nor a color space applies to values that are shown as they are
+		ExtendedRangeTarget extendedRangeTarget {};
+		if (!chooseExtendedRangeTarget(pixelFormat, formats, extendedRangeTarget)) {
+			return false;
+		}
+		target = { extendedRangeTarget.format, extendedRangeTarget.colorSpace, true, extendedRangeTarget.linearLight && !Indium::ExtendedRange::isSRGB(pixelFormat) };
+		return true;
+	}
+
+	VkFormat format = Indium::pixelFormatToVkFormat(pixelFormat);
+	if (transfer != HdrTransferFunction::None || colorSpace == ColorSpace::SRGB) {
+		// A surface that cannot present the requested HDR transfer function still presents the same pixels
+		// as SDR; the metadata is not applied to it (see applyHdrMetadata()).
+		for (VkColorSpaceKHR space: { hdrColorSpace(transfer), VK_COLOR_SPACE_SRGB_NONLINEAR_KHR }) {
+			if (offers(format, space)) {
+				target = { format, space, false, false };
+				return true;
+			}
+		}
+		return false;
+	}
+
+	const VkColorSpaceKHR wanted = vulkanColorSpace(colorSpace);
+	const bool linearSRGB = colorSpace == ColorSpace::ExtendedLinearSRGB;
+	const bool clamped = linearSRGB && !extendedDynamicRange;
+	if (!clamped && offers(format, wanted)) {
+		target = { format, wanted, false, false };
+		return true;
+	}
+
+	if (colorSpace == ColorSpace::ExtendedSRGB || linearSRGB) {
+		// Values with the sRGB primaries are converted by a blit from a texture of the layer's format into an 8-bit
+		// image: an sRGB one applies the curve to linear values, the others leave encoded values as they are.
+		auto features = [&](VkFormat f) {
+			VkFormatProperties properties {};
+			DynamicVK::vkGetPhysicalDeviceFormatProperties(privateDevice->physicalDevice(), f, &properties);
+			return properties.optimalTilingFeatures;
+		};
+		if (format != VK_FORMAT_UNDEFINED && (features(format) & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
+			for (VkFormat candidate: linearSRGB ? std::initializer_list<VkFormat> { VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_R8G8B8A8_SRGB }
+			                                    : std::initializer_list<VkFormat> { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM }) {
+				if (offers(candidate, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) && (features(candidate) & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
+					target = { candidate, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, true, false };
+					return true;
+				}
+			}
+		}
+	}
+
+	// the extended range could not be clamped, but the surface can show the values
+	if (clamped && offers(format, wanted)) {
+		target = { format, wanted, false, false };
+		return true;
+	}
+	// encoded values within 0 to 1 are shown right by an sRGB surface that has the format
+	if (colorSpace == ColorSpace::ExtendedSRGB && offers(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)) {
+		target = { format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, false, false };
+		return true;
 	}
 	return false;
 };
@@ -711,34 +802,13 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 		return std::find(presentModes.begin(), presentModes.end(), mode) != presentModes.end();
 	};
 
-	VkFormat format = Indium::pixelFormatToVkFormat(_pixelFormat);
-	VkColorSpaceKHR colorSpace = hdrColorSpace(_hdrMetadata.transfer);
-	const bool extendedRange = Indium::pixelFormatIsExtendedRange(_pixelFormat);
-	ExtendedRangeTarget extendedRangeTarget {};
-	if (extendedRange) {
-		// the format of the texture the drawables render to is not the swapchain's, and an HDR transfer function
-		// of the metadata does not apply to values that are shown as they are
-		if (!chooseExtendedRangeTarget(_pixelFormat, formats, extendedRangeTarget)) {
-			return nullptr;
-		}
-		format = extendedRangeTarget.format;
-		colorSpace = extendedRangeTarget.colorSpace;
-	}
-	bool formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
-		return f.format == format && f.colorSpace == colorSpace;
-	});
-
-	// A surface that cannot present the requested HDR transfer function still presents the same pixels
-	// as SDR; the metadata is not applied to it (see applyHdrMetadata()).
-	if (!formatSupported && !extendedRange && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-		colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-		formatSupported = std::any_of(formats.begin(), formats.end(), [&](const VkSurfaceFormatKHR& f) {
-			return f.format == format && f.colorSpace == colorSpace;
-		});
-	}
-	if (!formatSupported) {
+	PresentationTarget presentation;
+	if (!choosePresentationTarget(_pixelFormat, _hdrMetadata.transfer, _colorSpace, _extendedDynamicRange, formats, presentation)) {
 		return nullptr;
 	}
+	const VkFormat format = presentation.format;
+	const VkColorSpaceKHR colorSpace = presentation.colorSpace;
+	const bool extendedRange = presentation.intermediate;
 
 	// A surface that has a size of its own (an X11 or Wayland window reports the size it has)
 	// dictates the images' size; one that reports "undefined" takes whatever is asked for.
@@ -858,8 +928,7 @@ std::shared_ptr<IndiumKit::SwapchainState> IndiumKit::PrivateLayer::createSwapch
 	}
 
 	if (extendedRange) {
-		bool decode = extendedRangeTarget.linearLight && !Indium::ExtendedRange::isSRGB(_pixelFormat);
-		if (!createExtendedRangePresentation(state, decode)) {
+		if (!createExtendedRangePresentation(state, presentation.decode)) {
 			return nullptr;
 		}
 	}
@@ -976,44 +1045,47 @@ Indium::PixelFormat IndiumKit::PrivateLayer::pixelFormat() {
 };
 
 bool IndiumKit::PrivateLayer::setPixelFormat(Indium::PixelFormat pixelFormat) {
-	if (Indium::pixelFormatIsExtendedRange(pixelFormat)) {
-		auto privateDevice = std::dynamic_pointer_cast<Indium::PrivateDevice>(_device);
-		uint32_t count = 0;
-		DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, nullptr);
-		std::vector<VkSurfaceFormatKHR> formats(count);
-		DynamicVK::vkGetPhysicalDeviceSurfaceFormatsKHR(privateDevice->physicalDevice(), _surface, &count, formats.data());
-		formats.resize(count);
-		ExtendedRangeTarget target {};
-		if (!chooseExtendedRangeTarget(pixelFormat, formats, target)) {
-			return false;
-		}
-		std::scoped_lock lock(_stateMutex);
-		if (pixelFormat != _pixelFormat) {
-			_pixelFormat = pixelFormat;
-			_outdated = true;
-		}
-		return true;
-	}
-
-	VkFormat format = Indium::pixelFormatToVkFormat(pixelFormat);
 	HdrTransferFunction transfer;
+	ColorSpace colorSpace;
+	bool extendedDynamicRange;
 	{
 		std::scoped_lock lock(_stateMutex);
 		transfer = _hdrMetadata.transfer;
+		colorSpace = _colorSpace;
+		extendedDynamicRange = _extendedDynamicRange;
 	}
 
-	VkColorSpaceKHR colorSpace = hdrColorSpace(transfer);
-	bool supported = surfaceSupportsFormat(format, colorSpace);
-	if (!supported && colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-		supported = surfaceSupportsFormat(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
-	}
-	if (!supported) {
+	PresentationTarget target;
+	if (!choosePresentationTarget(pixelFormat, transfer, colorSpace, extendedDynamicRange, surfaceFormats(), target)) {
 		return false;
 	}
 
 	std::scoped_lock lock(_stateMutex);
 	if (pixelFormat != _pixelFormat) {
 		_pixelFormat = pixelFormat;
+		_outdated = true;
+	}
+	return true;
+};
+
+bool IndiumKit::PrivateLayer::setColorSpace(ColorSpace colorSpace, bool extendedDynamicRange) {
+	Indium::PixelFormat pixelFormat;
+	HdrTransferFunction transfer;
+	{
+		std::scoped_lock lock(_stateMutex);
+		pixelFormat = _pixelFormat;
+		transfer = _hdrMetadata.transfer;
+	}
+
+	PresentationTarget target;
+	if (!choosePresentationTarget(pixelFormat, transfer, colorSpace, extendedDynamicRange, surfaceFormats(), target)) {
+		return false;
+	}
+
+	std::scoped_lock lock(_stateMutex);
+	if (colorSpace != _colorSpace || extendedDynamicRange != _extendedDynamicRange) {
+		_colorSpace = colorSpace;
+		_extendedDynamicRange = extendedDynamicRange;
 		_outdated = true;
 	}
 	return true;
