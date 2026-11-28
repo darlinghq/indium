@@ -5,6 +5,7 @@
 #include <indium/texture.hpp>
 
 #include <algorithm>
+#include <cstring>
 #include <optional>
 #include <set>
 #include <unordered_map>
@@ -40,6 +41,45 @@ const VkSpecializationInfo* Indium::PrivateFunction::specializationInfo() const 
 	return _specializationEntries.empty() ? nullptr : &_specializationInfo;
 };
 
+// A specialization constant of `type` with the value `bits`, stored as a scalar of the type's size (a VkBool32 for
+// a Bool) at the start of whole words, which the compute pipeline appends to its own.
+void Indium::PrivateFunction::addSpecialization(uint32_t id, FunctionConstantType type, uint64_t bits) {
+	size_t size = sizeof(uint32_t);
+	switch (type) {
+		case FunctionConstantType::Char:
+		case FunctionConstantType::UChar:
+			size = sizeof(uint8_t);
+			break;
+		case FunctionConstantType::Short:
+		case FunctionConstantType::UShort:
+		case FunctionConstantType::Half:
+			size = sizeof(uint16_t);
+			break;
+		case FunctionConstantType::Long:
+		case FunctionConstantType::ULong:
+			size = sizeof(uint64_t);
+			break;
+		default:
+			break;
+	}
+
+	VkSpecializationMapEntry entry {};
+	entry.constantID = id;
+	entry.offset = _specializationData.size() * sizeof(uint32_t);
+	entry.size = size;
+	_specializationEntries.push_back(entry);
+
+	_specializationData.resize(_specializationData.size() + (size + sizeof(uint32_t) - 1) / sizeof(uint32_t), 0);
+	auto* destination = reinterpret_cast<uint8_t*>(_specializationData.data()) + entry.offset;
+	uint8_t byte = static_cast<uint8_t>(bits);
+	uint16_t half = static_cast<uint16_t>(bits);
+	uint32_t word = static_cast<uint32_t>(bits);
+	const void* source = size == sizeof(uint8_t) ? static_cast<const void*>(&byte)
+		: size == sizeof(uint16_t) ? static_cast<const void*>(&half)
+		: size == sizeof(uint32_t) ? static_cast<const void*>(&word) : static_cast<const void*>(&bits);
+	memcpy(destination, source, size);
+};
+
 bool Indium::PrivateFunction::specialize(const FunctionConstantValues& values, std::string& errorMessage) {
 	_specializationEntries.clear();
 	_specializationData.clear();
@@ -70,14 +110,8 @@ bool Indium::PrivateFunction::specialize(const FunctionConstantValues& values, s
 			}
 		}
 
-		for (auto [id, data]: { std::pair<uint32_t, uint32_t> { constant.specializationID, value ? value->bits : 0 }, std::pair<uint32_t, uint32_t> { constant.definedSpecializationID, value ? 1 : 0 } }) {
-			VkSpecializationMapEntry entry {};
-			entry.constantID = id;
-			entry.offset = _specializationData.size() * sizeof(uint32_t);
-			entry.size = sizeof(uint32_t);
-			_specializationEntries.push_back(entry);
-			_specializationData.push_back(data);
-		}
+		addSpecialization(constant.specializationID, constant.type, value ? value->bits : 0);
+		addSpecialization(constant.definedSpecializationID, FunctionConstantType::Bool, value ? 1 : 0);
 	}
 
 	_specializationInfo.mapEntryCount = _specializationEntries.size();
@@ -133,6 +167,11 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 			_words.assign(words, words + dataLength / sizeof(uint32_t));
 			break;
 		}
+	}
+
+	// a library with no functions has no module (Device::newLibrary)
+	if (dataLength == 0) {
+		return;
 	}
 
 	// which sampler bindings each function compares through (FunctionInfo::comparisonSamplerBindings)
@@ -863,6 +902,14 @@ VkShaderModule Indium::PrivateLibrary::fragmentModuleLinkedTo(const std::string&
 	}
 	_linkedModules[key] = module;
 	return module;
+};
+
+std::vector<std::string> Indium::PrivateLibrary::functionNames() const {
+	std::vector<std::string> names;
+	for (const auto& [name, info]: _functionInfos) {
+		names.push_back(name);
+	}
+	return names;
 };
 
 std::shared_ptr<Indium::Function> Indium::PrivateLibrary::newFunction(const std::string& name) {

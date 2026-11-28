@@ -10,6 +10,7 @@
 #include <llvm/Config/llvm-config.h>
 #include <algorithm>
 #include <functional>
+#include <cmath>
 
 namespace DynamicLLVM = Iridium::DynamicLLVM;
 
@@ -1203,6 +1204,15 @@ static bool tryStoreLogicalReinterpreted(Iridium::SPIRV::Builder& builder, Iridi
 	return true;
 }
 
+// The SPIR-V memory semantics of a barrier or fence that orders the memory the AIR flags (mem_flags) name: acquire and
+// release of uniform (device 1), workgroup (threadgroup 2) and image (texture 4) memory. Vulkan doesn't allow ordering
+// without such a memory class, so the semantics are none (0) when there is none, e.g. for an execution barrier.
+static uint32_t barrierSemantics(uint64_t memFlags) {
+	// AcquireRelease 0x8, UniformMemory 0x40, WorkgroupMemory 0x100, ImageMemory 0x800
+	uint32_t storage = ((memFlags & 1) ? 0x40 : 0) | ((memFlags & 2) ? 0x100 : 0) | ((memFlags & 4) ? 0x800 : 0);
+	return storage ? 0x8 | storage : 0;
+}
+
 // Translates the AIR atomic functions of 32-bit and 64-bit integers and of 32-bit floats,
 // air.atomic.<global|local>.<operation>[.<s|u>].<i32|i64|f32>, whose arguments are the pointer, the value (not for a load), the memory order, the scope and a volatile flag. Returns
 // false when `name` is not one of them. The order is relaxed unless the module asks for more. The functions that update
@@ -1362,20 +1372,26 @@ static bool translateAirAtomic(Iridium::SPIRV::Builder& builder, LLVMValueRef in
 
 static Iridium::SPIRV::ResultID integerTypeWithSign(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::ResultID typeID, bool isSigned);
 
-// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<i32|f32>, which work on the threads of a
+// Translates the AIR simdgroup functions, air.simd_<operation>[.<s|u>].<type>, which work on the threads of a
 // subgroup that execute together: reductions, prefix scans, broadcasts, shuffles, votes and ballots (the 64-bit mask
-// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Only 32-bit
-// integers and floats are supported.
-static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, Iridium::SPIRV::ResultID& resID) {
+// of the active threads or of those whose predicate holds). Returns false when `name` is not one of them. Reductions
+// and scans support 32-bit integers and floats; broadcasts and shuffles also 8 and 16-bit integers and halfs.
+// Also translates the shuffles, the ballot and the votes of the quad-group functions, air.quad_<operation>[.<s|u>].<type>,
+// which work on the groups of four consecutive lanes of a subgroup. `subgroupInput(builtin)` loads one of the 32-bit
+// built-ins of the subgroup.
+template <typename SubgroupInput>
+static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID resultType, SubgroupInput&& subgroupInput, Iridium::SPIRV::ResultID& resID) {
 	using namespace Iridium::SPIRV;
 	constexpr std::string_view prefix = "air.simd_";
-	if (name.substr(0, prefix.size()) != prefix) {
+	constexpr std::string_view quadPrefix = "air.quad_";
+	bool quad = name.substr(0, quadPrefix.size()) == quadPrefix;
+	if (!quad && name.substr(0, prefix.size()) != prefix) {
 		return false;
 	}
 
 	// <operation>[.<s|u>].<type>
 	std::vector<std::string_view> parts;
-	for (auto rest = name.substr(prefix.size()); !rest.empty();) {
+	for (auto rest = name.substr(quad ? quadPrefix.size() : prefix.size()); !rest.empty();) {
 		auto dot = rest.find('.');
 		parts.push_back(rest.substr(0, dot));
 		rest = dot == rest.npos ? std::string_view() : rest.substr(dot + 1);
@@ -1387,6 +1403,9 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	bool isSigned = parts.size() == 3 && parts[1] == "s";
 	auto typeName = parts.size() > 1 ? parts.back() : std::string_view();
 	bool isFloat = typeName == "f32";
+	// broadcasts and shuffles only move values, so narrower ones are moved as 32-bit integers, which every
+	// device can shuffle (8 and 16-bit types need shaderSubgroupExtendedTypes)
+	bool narrow = typeName == "i8" || typeName == "i16" || typeName == "f16";
 
 	// the last operand of a call is the callee
 	unsigned arguments = DynamicLLVM::LLVMGetNumOperands(inst) - 1;
@@ -1398,10 +1417,26 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	};
 	auto scopeID = builder.declareConstantScalar<uint32_t>(3);
 	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
-	// the value operand in the type the call returns (integers have no sign in LLVM, and SPIR-V wants both the same)
+	// the type the group operation works on, and the value operand in it (integers have no sign in LLVM, and SPIR-V
+	// wants both the same)
+	auto operationType = narrow ? u32Type : resultType;
 	auto typed = [&](unsigned i) {
 		auto id = argument(i);
+		if (narrow) {
+			if (typeName == "f16") {
+				id = builder.encodeBitcast(builder.declareType(Type(Type::IntegerTag {}, 16, false)), id);
+			}
+			return builder.encodeUConvert(u32Type, id);
+		}
 		return builder.lookupResultType(id) == resultType ? id : builder.encodeBitcast(resultType, id);
+	};
+	// a result in operationType, in the type the call returns
+	auto untyped = [&](ResultID id) {
+		if (!narrow) {
+			return id;
+		}
+		auto width = typeName == "i8" ? 8 : 16;
+		return builder.encodeBitcast(resultType, builder.encodeUConvert(builder.declareType(Type(Type::IntegerTag {}, width, false)), id));
 	};
 	// the lane operand is a 16-bit integer
 	auto lane = [&](unsigned i) {
@@ -1409,6 +1444,58 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		auto type = builder.reverseLookupType(builder.lookupResultType(id));
 		return type && type->backingType == Type::BackingType::Integer && type->scalarWidth == 32 ? id : builder.encodeUConvert(u32Type, id);
 	};
+	auto boolType = builder.declareType(Type(Type::BooleanTag {}));
+	auto u32 = [&](uint32_t value) { return builder.declareConstantScalar<uint32_t>(value); };
+	// for the lanes in groups of `width` lanes, a power of two: the lane `delta` lanes down (or up) in the caller's
+	// group, wrapping around, and whether it is in the group without wrapping around
+	auto withinGroup = [&](ResultID width, ResultID delta, bool down) {
+		auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+		auto mask = builder.encodeArithBinop(Opcode::ISub, u32Type, width, u32(1));
+		auto position = builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, mask);
+		auto moved = builder.encodeArithBinop(down ? Opcode::IAdd : Opcode::ISub, u32Type, position, delta);
+		auto source = builder.encodeArithBinop(Opcode::IAdd, u32Type, builder.encodeArithBinop(Opcode::ISub, u32Type, self, position), builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, moved, mask));
+		auto inside = down ? builder.encodeOp(Opcode::ULessThan, boolType, { moved, width }) : builder.encodeOp(Opcode::UGreaterThanEqual, boolType, { position, delta });
+		return std::make_pair(source, inside);
+	};
+
+	if (quad && operation == "ballot") {
+		// the four bits of the quad-group in the subgroup's ballot
+		builder.requireCapability(Capability::GroupNonUniformBallot);
+		auto words = builder.declareType(Type(Type::VectorTag {}, 4, u32Type));
+		auto ballot = builder.encodeOp(Opcode::GroupNonUniformBallot, words, { scopeID, argument(0) });
+		auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+		auto word = builder.encodeVectorExtractDynamic(u32Type, ballot, builder.encodeArithBinop(Opcode::ShiftRightLogical, u32Type, self, u32(5)));
+		auto bits = builder.encodeArithBinop(Opcode::ShiftRightLogical, u32Type, word, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, u32(28)));
+		bits = builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, bits, u32(15));
+		resID = builder.encodeBitcast(resultType, builder.encodeUConvert(resultType, bits));
+		return true;
+	}
+	if (operation == "vote_all" || operation == "vote_any") {
+		// a mask as simd_ballot and quad_ballot return, of 64 and 16 bits: all() holds when the bits of all lanes of the
+		// group are set, any() when the bit of one of them is, whatever the bits past them are
+		auto mask = argument(0);
+		ResultID maskType, lanes;
+		if (quad) {
+			maskType = u32Type;
+			mask = builder.encodeUConvert(u32Type, mask);
+			lanes = u32(15);
+		} else {
+			maskType = builder.declareType(Type(Type::IntegerTag {}, 64, false));
+			mask = builder.encodeBitcast(maskType, mask);
+			auto width = builder.encodeGLSLOp(GLSLOpcode::UMin, u32Type, { subgroupInput(BuiltinID::SubgroupSize), u32(64) });
+			lanes = builder.encodeArithBinop(Opcode::ShiftRightLogical, maskType, builder.declareConstantScalar<uint64_t>(~0ull), builder.encodeArithBinop(Opcode::ISub, u32Type, u32(64), width));
+		}
+		mask = builder.encodeArithBinop(Opcode::BitwiseAnd, maskType, mask, lanes);
+		resID = operation == "vote_all"
+			? builder.encodeOp(Opcode::IEqual, resultType, { mask, lanes })
+			: builder.encodeOp(Opcode::INotEqual, resultType, { mask, builder.declareNullValue(maskType) });
+		return true;
+	}
+
+	bool quadShuffle = operation == "shuffle" || operation == "shuffle_xor" || operation == "shuffle_down" || operation == "shuffle_up";
+	if (quad && !quadShuffle && operation != "shuffle_and_fill_down" && operation != "shuffle_and_fill_up") {
+		throw ImpossibleResultID("unsupported quad-group function " + std::string(name));
+	}
 
 	if (operation == "all" || operation == "any") {
 		builder.requireCapability(Capability::GroupNonUniformVote);
@@ -1429,8 +1516,29 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		return true;
 	}
 
-	if (typeName != "i32" && typeName != "f32") {
+	bool movesValues = operation.substr(0, 9) == "broadcast" || operation.substr(0, 7) == "shuffle";
+	if (typeName != "i32" && typeName != "f32" && !(narrow && movesValues)) {
 		throw ImpossibleResultID("unsupported simdgroup function " + std::string(name));
+	}
+
+	if (quad && quadShuffle) {
+		// the lane operand is the lane in the quad-group, or the distance or mask within it
+		builder.requireCapability(Capability::GroupNonUniformShuffle);
+		auto value = typed(0);
+		auto argumentLane = lane(1);
+		if (operation == "shuffle") {
+			auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+			auto source = builder.encodeArithBinop(Opcode::BitwiseOr, u32Type, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, self, u32(~3u)), builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, argumentLane, u32(3)));
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, source });
+		} else if (operation == "shuffle_xor") {
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffleXor, operationType, { scopeID, value, builder.encodeArithBinop(Opcode::BitwiseAnd, u32Type, argumentLane, u32(3)) });
+		} else {
+			// the lanes with no lane delta lanes down (or up) in the quad-group keep their value
+			auto [source, inside] = withinGroup(u32(4), argumentLane, operation == "shuffle_down");
+			resID = builder.encodeOp(Opcode::Select, operationType, { inside, builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, source }), value });
+		}
+		resID = untyped(resID);
+		return true;
 	}
 
 	// reductions and scans: the operation, and the group operation (reduce 0, inclusive scan 1, exclusive scan 2)
@@ -1479,7 +1587,7 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	// broadcasts and shuffles of the first operand
 	if (operation == "broadcast_first") {
 		builder.requireCapability(Capability::GroupNonUniformBallot);
-		resID = builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, resultType, { scopeID, typed(0) });
+		resID = untyped(builder.encodeOp(Opcode::GroupNonUniformBroadcastFirst, operationType, { scopeID, typed(0) }));
 		return true;
 	}
 	if (operation == "broadcast") {
@@ -1487,11 +1595,12 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 		auto laneValue = DynamicLLVM::LLVMGetOperand(inst, 1);
 		if (arguments > 1 && DynamicLLVM::LLVMIsAConstantInt(laneValue)) {
 			builder.requireCapability(Capability::GroupNonUniformBallot);
-			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, resultType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
+			resID = builder.encodeOp(Opcode::GroupNonUniformBroadcast, operationType, { scopeID, value, builder.declareConstantScalar<uint32_t>(static_cast<uint32_t>(DynamicLLVM::LLVMConstIntGetZExtValue(laneValue))) });
 		} else {
 			builder.requireCapability(Capability::GroupNonUniformShuffle);
-			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, resultType, { scopeID, value, lane(1) });
+			resID = builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, value, lane(1) });
 		}
+		resID = untyped(resID);
 		return true;
 	}
 	bool shuffle = operation == "shuffle";
@@ -1501,7 +1610,37 @@ static bool translateAirSimd(Iridium::SPIRV::Builder& builder, LLVMValueRef inst
 	if (shuffle || xorShuffle || down || up) {
 		builder.requireCapability(down || up ? Capability::GroupNonUniformShuffleRelative : Capability::GroupNonUniformShuffle);
 		auto opcodeForShuffle = shuffle ? Opcode::GroupNonUniformShuffle : (xorShuffle ? Opcode::GroupNonUniformShuffleXor : (down ? Opcode::GroupNonUniformShuffleDown : Opcode::GroupNonUniformShuffleUp));
-		resID = builder.encodeOp(opcodeForShuffle, resultType, { scopeID, typed(0), lane(1) });
+		auto value = typed(0);
+		auto delta = lane(1);
+		resID = builder.encodeOp(opcodeForShuffle, operationType, { scopeID, value, delta });
+		if (down || up) {
+			// the lanes with no lane delta lanes down (or up) in the subgroup keep their value, where SPIR-V leaves the
+			// result undefined
+			auto self = subgroupInput(BuiltinID::SubgroupLocalInvocationId);
+			auto inside = down
+				? builder.encodeOp(Opcode::ULessThan, boolType, { builder.encodeArithBinop(Opcode::IAdd, u32Type, self, delta), subgroupInput(BuiltinID::SubgroupSize) })
+				: builder.encodeOp(Opcode::UGreaterThanEqual, boolType, { self, delta });
+			resID = builder.encodeOp(Opcode::Select, operationType, { inside, resID, value });
+		}
+		resID = untyped(resID);
+		return true;
+	}
+	bool fillDown = operation == "shuffle_and_fill_down";
+	bool fillUp = operation == "shuffle_and_fill_up";
+	if (fillDown || fillUp) {
+		// (data, filling, delta, modulo): the subgroup (or quad-group) is split into vectors of modulo lanes, a power of
+		// two. Each lane reads data from the lane delta lanes down (or up) in its vector, and the lanes past the end of
+		// the vector read filling from the lane that many lanes past its other end instead.
+		builder.requireCapability(Capability::GroupNonUniformShuffle);
+		auto data = typed(0);
+		auto filling = typed(1);
+		auto delta = lane(2);
+		auto [source, inside] = withinGroup(lane(3), delta, fillDown);
+		resID = untyped(builder.encodeOp(Opcode::Select, operationType, {
+			inside,
+			builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, data, source }),
+			builder.encodeOp(Opcode::GroupNonUniformShuffle, operationType, { scopeID, filling, source }),
+		}));
 		return true;
 	}
 
@@ -1659,6 +1798,28 @@ static std::vector<std::string_view> splitAirName(std::string_view name) {
 	return parts;
 }
 
+// llvm.copysign.<type>: the first operand with the sign bit of the second, both taken as bits, so that NaNs and
+// zeros keep or take their signs too
+static bool translateCopysign(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	if (name.substr(0, 14) != "llvm.copysign.") {
+		return false;
+	}
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	auto width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+	auto bitsScalar = builder.declareType(Type(Type::IntegerTag {}, width, false));
+	auto bitsType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, bitsScalar)) : bitsScalar;
+	uint64_t signBit = uint64_t(1) << (width - 1);
+	auto bits = [&](unsigned index) {
+		return builder.encodeBitcast(bitsType, llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, index)));
+	};
+	auto magnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, bits(0), integerConstantOfType(builder, bitsType, static_cast<int64_t>(signBit - 1)));
+	auto sign = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, bits(1), integerConstantOfType(builder, bitsType, static_cast<int64_t>(signBit)));
+	resID = builder.encodeBitcast(type, builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, magnitude, sign));
+	return true;
+}
+
 // "f32", "f16", "v3f32", ...
 static bool airTypeTokenIsFloat(std::string_view token) {
 	if (!token.empty() && token[0] == 'v') {
@@ -1769,6 +1930,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			{ "cos", GLSLOpcode::Cos, 1 }, { "tan", GLSLOpcode::Tan, 1 }, { "asin", GLSLOpcode::Asin, 1 },
 			{ "acos", GLSLOpcode::Acos, 1 }, { "atan", GLSLOpcode::Atan, 1 }, { "atan2", GLSLOpcode::Atan2, 2 },
 			{ "sinh", GLSLOpcode::Sinh, 1 }, { "cosh", GLSLOpcode::Cosh, 1 }, { "tanh", GLSLOpcode::Tanh, 1 },
+			{ "asinh", GLSLOpcode::Asinh, 1 }, { "acosh", GLSLOpcode::Acosh, 1 },
 			{ "fabs", GLSLOpcode::FAbs, 1 }, { "floor", GLSLOpcode::Floor, 1 }, { "ceil", GLSLOpcode::Ceil, 1 },
 			{ "fract", GLSLOpcode::Fract, 1 }, { "rint", GLSLOpcode::RoundEven, 1 },
 			{ "trunc", GLSLOpcode::Trunc, 1 }, { "sign", GLSLOpcode::FSign, 1 }, { "fmin", GLSLOpcode::FMin, 2 },
@@ -1814,6 +1976,200 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "dot") {
 			resID = builder.encodeArithBinop(Opcode::Dot, type, operand(0), operand(1));
+			return true;
+		}
+		if (fn == "exp10") {
+			// GLSL.std.450 has no base-10 functions; MSL defines its fast exp10 and log10 like this
+			resID = builder.encodeGLSLOp(GLSLOpcode::Exp2, type, { builder.encodeArithBinop(Opcode::FMul, type, operand(0), floatConstantOfType(builder, type, 3.321928094887362)) });
+			return true;
+		}
+		if (fn == "log10") {
+			resID = builder.encodeArithBinop(Opcode::FMul, type, builder.encodeGLSLOp(GLSLOpcode::Log2, type, { operand(0) }), floatConstantOfType(builder, type, 0.30102999566398120));
+			return true;
+		}
+		if (fn == "sincos") {
+			// the sine is the result; the cosine is stored where the second operand points, as a store would
+			auto pointer = operand(1);
+			auto pointerType = builder.reverseLookupType(builder.lookupResultType(pointer));
+			if (!pointerType || pointerType->backingType != Type::BackingType::Pointer) {
+				throw ImpossibleResultID("sincos's second operand is not a pointer");
+			}
+			bool logical = isLogicalStorageClass(pointerType->pointerStorageClass);
+			LayoutFreeScope layoutFree(logical);
+			auto storePointerType = builder.declareType(Type(Type::PointerTag {}, pointerType->pointerStorageClass, type, 8));
+			if (storePointerType != builder.lookupResultType(pointer)) {
+				if (logical) {
+					pointer = descendToFirstElement(builder, pointer, builder.reverseLookupType(storePointerType)->targetType);
+					if (storePointerType != builder.lookupResultType(pointer)) {
+						throw ImpossibleResultID("sincos stores its cosine into a local object of another type");
+					}
+				} else {
+					pointer = builder.encodeBitcast(storePointerType, pointer);
+					builder.setResultType(pointer, storePointerType);
+				}
+			}
+			auto alignment = logical ? 0 : builder.reverseLookupType(type)->alignment;
+			builder.encodeStore(pointer, builder.encodeGLSLOp(GLSLOpcode::Cos, type, { operand(0) }), alignment);
+			resID = builder.encodeGLSLOp(GLSLOpcode::Sin, type, { operand(0) });
+			return true;
+		}
+
+		auto info = *builder.reverseLookupType(type);
+		bool vector = info.backingType == Type::BackingType::Vector;
+		auto width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+		auto withLanes = [&](ResultID scalar) {
+			return vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, scalar)) : scalar;
+		};
+		auto boolType = withLanes(builder.declareType(Type(Type::BooleanTag {})));
+		auto choose = [&](ResultID condition, ResultID a, ResultID b, ResultID resultType) {
+			return builder.encodeOp(Opcode::Select, resultType, { condition, a, b });
+		};
+
+		if (fn == "ldexp") {
+			// GLSL.std.450's Ldexp is undefined for exponents beyond those of normal numbers, although e.g.
+			// ldexp(0x1p-20f, 129) is a normal number. Multiply by powers of two built from their exponent bits instead.
+			// Half is scaled as float in one multiplication. For float, an exponent beyond the normal range is split
+			// into three of the same sign, after clamping it to where the result is zero or infinite anyway. The
+			// result is rounded once (unless the driver reassociates the multiplications, which Vulkan allows): by a
+			// single multiplication, or for a small result, by a final one by 2^-64 that the others keep normal.
+			if (width != 16 && width != 32) {
+				return false;
+			}
+			auto floatType = withLanes(builder.declareType(Type(Type::FloatTag {}, 32)));
+			auto x = width == 16 ? builder.encodeFConvert(floatType, operand(0)) : operand(0);
+			auto exponentType = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(DynamicLLVM::LLVMGetOperand(inst, 1)));
+			auto constant = [&](int64_t value) { return integerConstantOfType(builder, exponentType, value); };
+			auto power = [&](ResultID n) {
+				// 2^n, for -126 <= n <= 127
+				auto bits = builder.encodeArithBinop(Opcode::ShiftLeftLogical, exponentType, builder.encodeArithBinop(Opcode::IAdd, exponentType, n, constant(127)), constant(23));
+				return builder.encodeBitcast(floatType, bits);
+			};
+			auto exponent = operand(1);
+			if (width == 16) {
+				// any half scaled by 2^-126 is rounded to zero, and by 2^127 to infinity
+				auto clamped = builder.encodeGLSLOp(GLSLOpcode::SClamp, exponentType, { exponent, constant(-126), constant(127) });
+				resID = builder.encodeFConvert(type, builder.encodeArithBinop(Opcode::FMul, floatType, x, power(clamped)));
+				return true;
+			}
+			auto clamped = builder.encodeGLSLOp(GLSLOpcode::SClamp, exponentType, { exponent, constant(-378), constant(381) });
+			auto normal = builder.encodeOp(Opcode::LogicalAnd, boolType, {
+				builder.encodeOp(Opcode::SGreaterThanEqual, boolType, { clamped, constant(-126) }),
+				builder.encodeOp(Opcode::SLessThanEqual, boolType, { clamped, constant(127) }),
+			});
+			auto tiny = builder.encodeOp(Opcode::SLessThan, boolType, { clamped, constant(-126) });
+			auto scaled = choose(tiny, builder.encodeArithBinop(Opcode::IAdd, exponentType, clamped, constant(64)), clamped, exponentType);
+			auto first = choose(normal, clamped, builder.encodeArithBinop(Opcode::SDiv, exponentType, scaled, constant(3)), exponentType);
+			auto rest = builder.encodeArithBinop(Opcode::ISub, exponentType, scaled, first);
+			rest = choose(normal, constant(0), rest, exponentType);
+			auto second = builder.encodeArithBinop(Opcode::SDiv, exponentType, rest, constant(2));
+			auto third = builder.encodeArithBinop(Opcode::ISub, exponentType, rest, second);
+			auto last = choose(tiny, constant(-64), constant(0), exponentType);
+			for (auto n: { first, second, third, last }) {
+				x = builder.encodeArithBinop(Opcode::FMul, floatType, x, power(n));
+			}
+			resID = x;
+			return true;
+		}
+
+		if (fn == "nextafter") {
+			// the neighbour of x towards y, decided on the bits, since comparisons may flush subnormals: y if they're
+			// equal or both zeros, a NaN if either is one, from a zero the smallest subnormal with the sign of y, and
+			// otherwise x's bits plus one if y is further from zero on the same side, or minus one
+			auto bitsType = withLanes(builder.declareType(Type(Type::IntegerTag {}, width, false)));
+			auto bitsConstant = [&](uint64_t value) { return integerConstantOfType(builder, bitsType, static_cast<int64_t>(value)); };
+			auto signMask = bitsConstant(uint64_t(1) << (width - 1));
+			auto magnitudeMask = bitsConstant((uint64_t(1) << (width - 1)) - 1);
+			auto infinity = bitsConstant(width == 16 ? 0x7c00 : (width == 32 ? 0x7f800000 : 0x7ff0000000000000));
+			auto x = operand(0), y = operand(1);
+			auto xBits = builder.encodeBitcast(bitsType, x), yBits = builder.encodeBitcast(bitsType, y);
+			auto xMagnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, xBits, magnitudeMask);
+			auto yMagnitude = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, yBits, magnitudeMask);
+			auto ySign = builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, yBits, signMask);
+			auto sameSign = builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseAnd, bitsType, xBits, signMask), ySign });
+			auto away = builder.encodeOp(Opcode::LogicalAnd, boolType, { sameSign, builder.encodeOp(Opcode::UGreaterThan, boolType, { yMagnitude, xMagnitude }) });
+			auto one = bitsConstant(1);
+			auto bits = choose(away, builder.encodeArithBinop(Opcode::IAdd, bitsType, xBits, one), builder.encodeArithBinop(Opcode::ISub, bitsType, xBits, one), bitsType);
+			bits = choose(builder.encodeOp(Opcode::IEqual, boolType, { xMagnitude, bitsConstant(0) }), builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, ySign, one), bits, bitsType);
+			auto equal = builder.encodeOp(Opcode::LogicalOr, boolType, {
+				builder.encodeOp(Opcode::IEqual, boolType, { xBits, yBits }),
+				builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseOr, bitsType, xMagnitude, yMagnitude), bitsConstant(0) }),
+			});
+			bits = choose(equal, yBits, bits, bitsType);
+			bits = choose(builder.encodeOp(Opcode::UGreaterThan, boolType, { yMagnitude, infinity }), yBits, bits, bitsType);
+			bits = choose(builder.encodeOp(Opcode::UGreaterThan, boolType, { xMagnitude, infinity }), xBits, bits, bitsType);
+			resID = builder.encodeBitcast(type, bits);
+			return true;
+		}
+
+		if (fn == "atanh") {
+			// GLSL.std.450's Atanh is undefined at ±1, where atanh has its poles
+			auto x = operand(0);
+			auto pole = builder.encodeOp(Opcode::FOrdEqual, boolType, { builder.encodeGLSLOp(GLSLOpcode::FAbs, type, { x }), floatConstantOfType(builder, type, 1) });
+			auto infinity = choose(builder.encodeOp(Opcode::FOrdGreaterThan, boolType, { x, floatConstantOfType(builder, type, 0) }), floatConstantOfType(builder, type, INFINITY), floatConstantOfType(builder, type, -INFINITY), type);
+			resID = choose(pole, infinity, builder.encodeGLSLOp(GLSLOpcode::Atanh, type, { x }), type);
+			return true;
+		}
+
+		if (fn == "sinpi" || fn == "cospi" || fn == "tanpi") {
+			// x = k + r with k = rint(x) and |r| <= 1/2, both exact: sin(πx) = (-1)^k sin(πr), cos(πx) = (-1)^k sin(π(1/2 - |r|))
+			// and tan(πx) = sin(πr) / sin(π(1/2 - |r|)). Reducing x before multiplying by π keeps the relative error small
+			// near the zeros and poles. The results at the integers and half-integers, zeros, ±1 and infinities, are exact, selected
+			// rather than computed, with the signs IEEE 754 gives sinPi, cosPi and tanPi. Half is computed as float.
+			if (width != 16 && width != 32) {
+				return false;
+			}
+			auto floatType = withLanes(builder.declareType(Type(Type::FloatTag {}, 32)));
+			auto floatBits = withLanes(builder.declareType(Type(Type::IntegerTag {}, 32, false)));
+			auto constant = [&](double value) { return floatConstantOfType(builder, floatType, value); };
+			auto x = width == 16 ? builder.encodeFConvert(floatType, operand(0)) : operand(0);
+			auto k = builder.encodeGLSLOp(GLSLOpcode::RoundEven, floatType, { x });
+			auto r = builder.encodeArithBinop(Opcode::FSub, floatType, x, k);
+			auto absR = builder.encodeGLSLOp(GLSLOpcode::FAbs, floatType, { r });
+			auto halfK = builder.encodeArithBinop(Opcode::FMul, floatType, k, constant(0.5));
+			auto odd = builder.encodeOp(Opcode::FOrdNotEqual, boolType, { builder.encodeGLSLOp(GLSLOpcode::Floor, floatType, { halfK }), halfK });
+			auto integral = builder.encodeOp(Opcode::FOrdEqual, boolType, { r, constant(0) });
+			// at the half-integers k is even, and r is ±1/2
+			auto halfIntegral = builder.encodeOp(Opcode::FOrdEqual, boolType, { absR, constant(0.5) });
+			auto positive = builder.encodeOp(Opcode::FOrdGreaterThan, boolType, { r, constant(0) });
+			// sin(a) for |a| <= π/2. Vulkan bounds the error of Sin absolutely, and some drivers' Sin is 0 for
+			// arguments close to it, so below 1/8 a Taylor polynomial gives sin(a) to well within an ulp instead.
+			auto sine = [&](ResultID factor) {
+				auto a = builder.encodeArithBinop(Opcode::FMul, floatType, constant(3.141592653589793), factor);
+				auto square = builder.encodeArithBinop(Opcode::FMul, floatType, a, a);
+				auto series = builder.encodeArithBinop(Opcode::FAdd, floatType, constant(-1.0 / 6), builder.encodeArithBinop(Opcode::FMul, floatType, square, constant(1.0 / 120)));
+				auto small = builder.encodeArithBinop(Opcode::FAdd, floatType, a, builder.encodeArithBinop(Opcode::FMul, floatType, builder.encodeArithBinop(Opcode::FMul, floatType, a, square), series));
+				auto isSmall = builder.encodeOp(Opcode::FOrdLessThan, boolType, { builder.encodeGLSLOp(GLSLOpcode::FAbs, floatType, { a }), constant(0.125) });
+				return choose(isSmall, small, builder.encodeGLSLOp(GLSLOpcode::Sin, floatType, { a }), floatType);
+			};
+			auto sinR = sine(r);
+			auto cosR = sine(builder.encodeArithBinop(Opcode::FSub, floatType, constant(0.5), absR));
+			auto negateIfOdd = [&](ResultID value) {
+				return choose(odd, builder.encodeOp(Opcode::FNegate, floatType, { value }), value, floatType);
+			};
+			// a zero with the sign of x, from its sign bit, since Vulkan doesn't keep the signs of zeros in arithmetic
+			auto signMask = integerConstantOfType(builder, floatBits, 0x80000000);
+			auto signOfX = builder.encodeArithBinop(Opcode::BitwiseAnd, floatBits, builder.encodeBitcast(floatBits, x), signMask);
+
+			if (fn == "sinpi") {
+				resID = choose(halfIntegral, negateIfOdd(choose(positive, constant(1), constant(-1), floatType)), negateIfOdd(sinR), floatType);
+				resID = choose(integral, builder.encodeBitcast(floatType, signOfX), resID, floatType);
+			} else if (fn == "cospi") {
+				resID = choose(halfIntegral, constant(0), negateIfOdd(cosR), floatType);
+				resID = choose(integral, negateIfOdd(constant(1)), resID, floatType);
+			} else {
+				resID = choose(halfIntegral, choose(positive, constant(INFINITY), constant(-INFINITY), floatType), builder.encodeArithBinop(Opcode::FDiv, floatType, sinR, cosR), floatType);
+				// tan(πn) is sin(πn) / cos(πn): a zero with the sign of x, flipped for odd n
+				auto zeroBits = choose(odd, builder.encodeArithBinop(Opcode::BitwiseXor, floatBits, signOfX, signMask), signOfX, floatBits);
+				resID = choose(integral, builder.encodeBitcast(floatType, zeroBits), resID, floatType);
+			}
+			// The functions of an infinity are NaN. The arithmetic above gives NaN for it too (inf - inf), but Vulkan does not
+			// require a shader to preserve infinities and NaNs without SignedZeroInfNanPreserve, and some drivers then fold
+			// that to a number, so select the NaN by the bits of x instead.
+			auto isInfinity = builder.encodeOp(Opcode::IEqual, boolType, { builder.encodeArithBinop(Opcode::BitwiseAnd, floatBits, builder.encodeBitcast(floatBits, x), integerConstantOfType(builder, floatBits, 0x7fffffff)), integerConstantOfType(builder, floatBits, 0x7f800000) });
+			resID = choose(isInfinity, builder.encodeBitcast(floatType, integerConstantOfType(builder, floatBits, 0x7fc00000)), resID, floatType);
+			if (width == 16) {
+				resID = builder.encodeFConvert(type, resID);
+			}
 			return true;
 		}
 		if (fn == "dfdx" || fn == "dfdy" || fn == "fwidth") {
@@ -1869,6 +2225,19 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 		}
 		if (fn == "clamp") {
 			resID = builder.encodeGLSLOp(isSigned ? GLSLOpcode::SClamp : GLSLOpcode::UClamp, type, { operand(0), operand(1), operand(2) });
+			return true;
+		}
+		if (fn == "min3" || fn == "max3" || fn == "median3") {
+			auto min = [&](ResultID a, ResultID b) { return builder.encodeGLSLOp(isSigned ? GLSLOpcode::SMin : GLSLOpcode::UMin, type, { a, b }); };
+			auto max = [&](ResultID a, ResultID b) { return builder.encodeGLSLOp(isSigned ? GLSLOpcode::SMax : GLSLOpcode::UMax, type, { a, b }); };
+			auto x = operand(0), y = operand(1), z = operand(2);
+			if (fn == "min3") {
+				resID = min(x, min(y, z));
+			} else if (fn == "max3") {
+				resID = max(x, max(y, z));
+			} else {
+				resID = max(min(x, y), min(max(x, y), z));
+			}
 			return true;
 		}
 		if (fn == "insert_bits") {
@@ -2010,6 +2379,79 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 	return false;
 }
 
+// The LLVM arithmetic intrinsics with an overflow check, llvm.<s|u><add|sub|mul>.with.overflow.<type>: a
+// structure of the wrapped result and whether the operation overflowed. Returns false when `name` is not one of them.
+static bool translateOverflowIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+
+	auto parts = splitAirName(name);
+	if (parts.size() != 5 || parts[0] != "llvm" || parts[2] != "with" || parts[3] != "overflow") {
+		return false;
+	}
+	auto operation = parts[1];
+	if (operation.size() != 4 || (operation[0] != 's' && operation[0] != 'u')) {
+		return false;
+	}
+	bool isSigned = operation[0] == 's';
+	operation.remove_prefix(1);
+	if (operation != "add" && operation != "sub" && operation != "mul") {
+		return false;
+	}
+
+	auto members = builder.reverseLookupType(type)->structureMembers;
+	auto valueType = members[0].id;
+	auto overflowType = members[1].id;
+	auto valueInfo = *builder.reverseLookupType(valueType);
+	auto scalarInfo = valueInfo.backingType == Type::BackingType::Vector ? *builder.reverseLookupType(valueInfo.targetType) : valueInfo;
+	if (scalarInfo.backingType != Type::BackingType::Integer) {
+		// i1, a SPIR-V boolean
+		return false;
+	}
+	auto width = scalarInfo.scalarWidth;
+	auto lhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 0));
+	auto rhs = llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, 1));
+	auto zero = integerConstantOfType(builder, valueType, 0);
+
+	ResultID value;
+	ResultID overflow;
+	if (operation == "mul") {
+		// the double-width product: it fits when the high half is zero (unsigned) or the sign extension of the low half (signed)
+		auto operandType = isSigned ? valueType : integerTypeWithSign(builder, valueType, false);
+		auto operandInfo = *builder.reverseLookupType(operandType);
+		auto typed = [&](ResultID id) { return operandType == valueType ? id : builder.encodeBitcast(operandType, id); };
+		LayoutFreeScope layoutFree(true);
+		auto pair = builder.declareType(Type(Type::StructureTag {}, { Type::Member { operandType, 0, {} }, Type::Member { operandType, operandInfo.size, {} } }, valueInfo.size * 2, valueInfo.alignment));
+		auto product = builder.encodeOp(isSigned ? Opcode::SMulExtended : Opcode::UMulExtended, pair, { typed(lhs), typed(rhs) });
+		auto low = builder.encodeCompositeExtract(operandType, product, { 0 });
+		auto high = builder.encodeCompositeExtract(operandType, product, { 1 });
+		value = operandType == valueType ? low : builder.encodeBitcast(valueType, low);
+		auto expected = isSigned ? builder.encodeArithBinop(Opcode::ShiftRightArithmetic, valueType, value, integerConstantOfType(builder, valueType, width - 1)) : zero;
+		overflow = builder.encodeOp(Opcode::INotEqual, overflowType, { operandType == valueType ? high : builder.encodeBitcast(valueType, high), expected });
+	} else if (operation == "add") {
+		value = builder.encodeArithBinop(Opcode::IAdd, valueType, lhs, rhs);
+		if (isSigned) {
+			// the operands have the same sign, and the sum the other one
+			auto both = builder.encodeArithBinop(Opcode::BitwiseAnd, valueType, builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, value), builder.encodeArithBinop(Opcode::BitwiseXor, valueType, rhs, value));
+			overflow = builder.encodeOp(Opcode::SLessThan, overflowType, { both, zero });
+		} else {
+			// the sum wrapped around
+			overflow = builder.encodeOp(Opcode::ULessThan, overflowType, { value, lhs });
+		}
+	} else {
+		value = builder.encodeArithBinop(Opcode::ISub, valueType, lhs, rhs);
+		if (isSigned) {
+			// the operands have different signs, and the difference that of the subtrahend
+			auto both = builder.encodeArithBinop(Opcode::BitwiseAnd, valueType, builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, rhs), builder.encodeArithBinop(Opcode::BitwiseXor, valueType, lhs, value));
+			overflow = builder.encodeOp(Opcode::SLessThan, overflowType, { both, zero });
+		} else {
+			overflow = builder.encodeOp(Opcode::ULessThan, overflowType, { lhs, rhs });
+		}
+	}
+
+	resID = builder.encodeOp(Opcode::CompositeConstruct, type, { value, overflow });
+	return true;
+}
+
 // Converts a texel from the type an image is accessed with to the type the shader uses: half textures
 // are accessed as float ones (see the texture argument declarations), and the sign of integer texels can
 // differ.
@@ -2021,6 +2463,41 @@ static Iridium::SPIRV::ResultID convertTexel(Iridium::SPIRV::Builder& builder, I
 	auto target = *builder.reverseLookupType(toType);
 	auto component = *builder.reverseLookupType(target.backingType == Type::BackingType::Vector ? target.targetType : toType);
 	return component.backingType == Type::BackingType::FloatingPoint ? builder.encodeFConvert(toType, value) : builder.encodeBitcast(toType, value);
+}
+
+// llvm.fshl(a, b, n) and llvm.fshr(a, b, n): concatenate a and b (a holding the upper bits), shift left or right by
+// n modulo the width, and return the upper or the lower half. A rotation is a funnel shift of a value with itself.
+static bool translateFunnelShift(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
+	using namespace Iridium::SPIRV;
+	bool left = name.substr(0, 10) == "llvm.fshl.";
+	if (!left && name.substr(0, 10) != "llvm.fshr.") {
+		return false;
+	}
+	auto operand = [&](unsigned index) {
+		return llvmValueToResultID(builder, DynamicLLVM::LLVMGetOperand(inst, index));
+	};
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	auto scalar = vector ? *builder.reverseLookupType(info.targetType) : info;
+	if (scalar.backingType != Type::BackingType::Integer) {
+		// i1, which is a boolean here
+		return false;
+	}
+	auto width = scalar.scalarWidth;
+	auto mask = integerConstantOfType(builder, type, width - 1);
+	auto high = operand(0), low = operand(1);
+	auto amount = builder.encodeArithBinop(Opcode::BitwiseAnd, type, operand(2), mask);
+	// masked too, so that no lane shifts by the full width, which is undefined
+	auto complement = builder.encodeArithBinop(Opcode::BitwiseAnd, type, builder.encodeArithBinop(Opcode::ISub, type, integerConstantOfType(builder, type, width), amount), mask);
+	auto shiftedHigh = builder.encodeArithBinop(Opcode::ShiftLeftLogical, type, high, left ? amount : complement);
+	auto shiftedLow = builder.encodeArithBinop(Opcode::ShiftRightLogical, type, low, left ? complement : amount);
+	resID = builder.encodeArithBinop(Opcode::BitwiseOr, type, shiftedHigh, shiftedLow);
+	// a shift by a multiple of the width returns one operand unshifted
+	auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+	auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+	auto none = builder.encodeOp(Opcode::IEqual, boolType, { amount, integerConstantOfType(builder, type, 0) });
+	resID = builder.encodeOp(Opcode::Select, type, { none, left ? high : low, resID });
+	return true;
 }
 
 // Reads the components of an integer scalar or vector whose value is fixed when the shader is translated: a
@@ -2662,6 +3139,8 @@ static std::optional<Iridium::ArgumentInfo> airArgumentInfo(LLVMValueRef paramet
 // firstFunctionConstantSpecializationID + N, and its "defined" flag the SpecId one range further.
 static constexpr uint32_t firstFunctionConstantSpecializationID = 3;
 static constexpr size_t maxFunctionConstantIndex = 65535;
+// The stage-in region of a kernel, the origin and then the size, follows the function constants.
+static constexpr uint32_t firstStageInRegionSpecializationID = firstFunctionConstantSpecializationID + 2 * (maxFunctionConstantIndex + 1);
 
 void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& outputInfo) {
 	//auto tmp = DynamicLLVM::LLVMPrintModuleToString(_module.get());
@@ -2703,6 +3182,14 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.referenceGlobalVariable(it->second);
 		}
 		return builder.encodeLoad(valueType, it->second);
+	};
+	// a 32-bit built-in as the integer type of a parameter, which may be narrower or wider. OpUConvert's result is
+	// unsigned, while the parameter's type, like every integer type from LLVM, is signed.
+	auto asParameterType = [&](SPIRV::ResultID value, SPIRV::ResultID type) {
+		if (builder.reverseLookupType(type)->scalarWidth != 32) {
+			value = builder.encodeUConvert(type, value);
+		}
+		return builder.lookupResultType(value) == type ? value : builder.encodeBitcast(type, value);
 	};
 
 	auto firstLabelID = builder.beginFunction(funcID.id);
@@ -3253,32 +3740,50 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_simdgroup" || kind == "air.threads_per_simdgroup" || kind == "air.simdgroup_index_in_threadgroup"
-				|| kind == "air.simdgroups_per_threadgroup") {
-			// the subgroup of the invocation, as the number the parameter's integer type holds
+				|| kind == "air.simdgroups_per_threadgroup" || kind == "air.dispatch_simdgroups_per_threadgroup") {
+			// the subgroup of the invocation, as the number the parameter's integer type holds. A threadgroup has the
+			// size given at dispatch (see air.threads_per_threadgroup), so the dispatch_ variant is the same.
 			builder.requireCapability(SPIRV::Capability::GroupNonUniform);
 			auto builtin = kind == "air.thread_index_in_simdgroup" ? SPIRV::BuiltinID::SubgroupLocalInvocationId
 				: (kind == "air.threads_per_simdgroup" ? SPIRV::BuiltinID::SubgroupSize
 				: (kind == "air.simdgroup_index_in_threadgroup" ? SPIRV::BuiltinID::SubgroupId : SPIRV::BuiltinID::NumSubgroups));
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			auto load = computeInput(builtin, u32Type);
-			if (type != u32Type) {
-				// a 32-bit integer of the other signedness, or a narrower or wider one
-				auto parameterType = *builder.reverseLookupType(type);
-				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
+			auto load = asParameterType(computeInput(builtin, u32Type), type);
+			builder.associateExistingResultID(load, llparamVal);
+			builder.setResultType(load, type);
+		} else if (kind == "air.thread_index_in_quadgroup" || kind == "air.quadgroup_index_in_threadgroup" || kind == "air.quadgroups_per_threadgroup"
+				|| kind == "air.dispatch_quadgroups_per_threadgroup") {
+			// the quad-groups are the groups of four consecutive lanes of a subgroup, and there are as many in a
+			// threadgroup as its threads fill
+			SPIRV::ResultID load;
+			auto two = builder.declareConstantScalar<uint32_t>(2);
+			if (kind == "air.thread_index_in_quadgroup" || kind == "air.quadgroup_index_in_threadgroup") {
+				builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+				auto lane = computeInput(SPIRV::BuiltinID::SubgroupLocalInvocationId, u32Type);
+				if (kind == "air.thread_index_in_quadgroup") {
+					load = builder.encodeArithBinop(SPIRV::Opcode::BitwiseAnd, u32Type, lane, builder.declareConstantScalar<uint32_t>(3));
+				} else {
+					auto quadgroupsPerSubgroup = builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, computeInput(SPIRV::BuiltinID::SubgroupSize, u32Type), two);
+					auto firstQuadgroup = builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, computeInput(SPIRV::BuiltinID::SubgroupId, u32Type), quadgroupsPerSubgroup);
+					load = builder.encodeArithBinop(SPIRV::Opcode::IAdd, u32Type, firstQuadgroup, builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, lane, two));
+				}
+			} else {
+				// the threadgroup size is the specialization constants the dispatch sets (see air.threads_per_threadgroup)
+				auto threads = builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, builder.encodeArithBinop(SPIRV::Opcode::IMul, u32Type, computeLocalSizeX, computeLocalSizeY), computeLocalSizeZ);
+				load = builder.encodeArithBinop(SPIRV::Opcode::ShiftRightLogical, u32Type, builder.encodeArithBinop(SPIRV::Opcode::IAdd, u32Type, threads, builder.declareConstantScalar<uint32_t>(3)), two);
 			}
+			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
+			load = asParameterType(load, type);
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_index_in_threadgroup") {
-			auto load = computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type);
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
-			if (type != u32Type) {
-				auto parameterType = *builder.reverseLookupType(type);
-				load = parameterType.backingType == SPIRV::Type::BackingType::Integer && parameterType.scalarWidth == 32 ? builder.encodeBitcast(type, load) : builder.encodeUConvert(type, load);
-			}
+			auto load = asParameterType(computeInput(SPIRV::BuiltinID::LocalInvocationIndex, u32Type), type);
 			builder.associateExistingResultID(load, llparamVal);
 			builder.setResultType(load, type);
 		} else if (kind == "air.thread_position_in_grid" || kind == "air.thread_position_in_threadgroup" || kind == "air.threadgroup_position_in_grid"
-				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.threads_per_grid") {
+				|| kind == "air.threadgroups_per_grid" || kind == "air.threads_per_threadgroup" || kind == "air.dispatch_threads_per_threadgroup"
+				|| kind == "air.threads_per_grid" || kind == "air.stage_in_grid_origin" || kind == "air.stage_in_grid_size") {
 			auto type = llvmTypeToSPIRVType(builder, funcParamTypes[i]);
 			SPIRV::ResultID load;
 			if (kind == "air.thread_position_in_grid") {
@@ -3289,8 +3794,23 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 				load = computeInput(SPIRV::BuiltinID::WorkgroupId, uvec3Type);
 			} else if (kind == "air.threadgroups_per_grid") {
 				load = computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type);
+			} else if (kind == "air.stage_in_grid_origin" || kind == "air.stage_in_grid_size") {
+				// the stage-in region the encoder was given (MSL's grid_origin and grid_size) is specialization constants
+				// the dispatch sets
+				std::array<uint32_t, 6> ids;
+				for (uint32_t id = 0; id < ids.size(); ++id) {
+					ids[id] = firstStageInRegionSpecializationID + id;
+				}
+				funcInfo.stageInRegionSpecializationIDs = ids;
+				auto first = kind == "air.stage_in_grid_origin" ? 0 : 3;
+				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, {
+					builder.declareConstantScalar<uint32_t>(0, ids[first]),
+					builder.declareConstantScalar<uint32_t>(0, ids[first + 1]),
+					builder.declareConstantScalar<uint32_t>(0, ids[first + 2]),
+				});
 			} else {
-				// the threadgroup size is the specialization constants the dispatch sets
+				// the threadgroup size is the specialization constants the dispatch sets. A threadgroup that the edge of the
+				// grid cuts has that size too, so the size given at dispatch is the same.
 				load = builder.encodeOp(SPIRV::Opcode::CompositeConstruct, uvec3Type, { computeLocalSizeX, computeLocalSizeY, computeLocalSizeZ });
 				if (kind == "air.threads_per_grid") {
 					load = builder.encodeArithBinop(SPIRV::Opcode::IMul, uvec3Type, load, computeInput(SPIRV::BuiltinID::NumWorkgroups, uvec3Type));
@@ -4345,11 +4865,7 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("threadgroup barrier without constant memory flags");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
-						// SPIR-V memory semantics: AcquireRelease 0x8, UniformMemory 0x40, WorkgroupMemory 0x100, ImageMemory 0x800
-						uint32_t semantics = 0x8;
-						semantics |= (memFlags & 1) ? 0x40 : 0;
-						semantics |= (memFlags & 2) ? 0x100 : 0;
-						semantics |= (memFlags & 4) ? 0x800 : 0;
+						uint32_t semantics = barrierSemantics(memFlags);
 						// scopes: Device 1, Workgroup 2
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(2),
@@ -4368,22 +4884,24 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("atomic fence with a flags, order or scope that is not constant");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
+						// AIR's scopes: thread 0, threadgroup 1, device 2, simdgroup 4; SPIR-V's: Device 1, Workgroup 2, Subgroup 3
 						auto airScope = DynamicLLVM::LLVMConstIntGetZExtValue(scope);
-						if (airScope != 1 && airScope != 2) {
-							throw ImpossibleResultID("atomic fence with a scope other than threadgroup or device");
+						if (airScope != 0 && airScope != 1 && airScope != 2 && airScope != 4) {
+							throw ImpossibleResultID("atomic fence with an unknown scope " + std::to_string(airScope));
 						}
-						// the same memory classes as a threadgroup barrier (see air.wg.barrier); a relaxed fence orders nothing
-						uint32_t semantics = DynamicLLVM::LLVMConstIntGetZExtValue(order) == 0 ? 0 : 0x8;
-						if (semantics) {
-							semantics |= (memFlags & 1) ? 0x40 : 0;
-							semantics |= (memFlags & 2) ? 0x100 : 0;
-							semantics |= (memFlags & 4) ? 0x800 : 0;
+						// a relaxed fence orders nothing, and neither does one of no memory Vulkan has or one for the thread alone,
+						// whose accesses are in order anyway
+						uint32_t semantics = barrierSemantics(memFlags);
+						if (DynamicLLVM::LLVMConstIntGetZExtValue(order) != 0 && airScope != 0 && semantics != 0) {
+							if (airScope == 4) {
+								// Vulkan allows the subgroup scope with subgroup operations only
+								builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+							}
+							builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
+								builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : (airScope == 1 ? 2 : 3)),
+								builder.declareConstantScalar<uint32_t>(semantics),
+							});
 						}
-						// SPIR-V scopes: Device 1, Workgroup 2
-						builder.encodeOpWithoutResult(SPIRV::Opcode::MemoryBarrier, {
-							builder.declareConstantScalar<uint32_t>(airScope == 2 ? 1 : 2),
-							builder.declareConstantScalar<uint32_t>(semantics),
-						});
 					} else if (name == "air.simdgroup.barrier") {
 						// simdgroup_barrier(flags, ...): the threads of the subgroup arrive before any continues; the memory
 						// the flags name is made visible to them
@@ -4392,20 +4910,22 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 							throw ImpossibleResultID("simdgroup barrier without constant memory flags");
 						}
 						auto memFlags = DynamicLLVM::LLVMConstIntGetZExtValue(flags);
-						// the memory classes of a threadgroup barrier (see air.wg.barrier); no flags order no memory
-						uint32_t semantics = memFlags ? 0x8 : 0;
-						semantics |= (memFlags & 1) ? 0x40 : 0;
-						semantics |= (memFlags & 2) ? 0x100 : 0;
-						semantics |= (memFlags & 4) ? 0x800 : 0;
-						// scope: Subgroup 3
+						uint32_t semantics = barrierSemantics(memFlags);
+						// scope: Subgroup 3, which Vulkan allows with subgroup operations only
+						builder.requireCapability(SPIRV::Capability::GroupNonUniform);
 						builder.encodeOpWithoutResult(SPIRV::Opcode::ControlBarrier, {
 							builder.declareConstantScalar<uint32_t>(3),
 							builder.declareConstantScalar<uint32_t>(3),
 							builder.declareConstantScalar<uint32_t>(semantics),
 						});
-					} else if (translateAirSimd(builder, inst, name, type, resID)) {
+					} else if (translateAirSimd(builder, inst, name, type, [&](SPIRV::BuiltinID builtin) {
+						builder.requireCapability(SPIRV::Capability::GroupNonUniform);
+						return computeInput(builtin, u32Type);
+					}, resID)) {
 						// handled
 					} else if (translateAirAtomic(builder, inst, name, type, resID)) {
+						// handled
+					} else if (translateFunnelShift(builder, inst, name, type, resID)) {
 						// handled
 					} else if (name == "air.discard_fragment") {
 						builder.encodeOpWithoutResult(SPIRV::Opcode::Kill, {});
@@ -4416,6 +4936,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					}, [&](LLVMValueRef sampler) {
 						return readSamplerCalls.count(sampler) != 0;
 					}, resID)) {
+						// handled
+					} else if (translateCopysign(builder, inst, name, type, resID)) {
 						// handled
 					} else if (isFloatWidthConversion(name)) {
 						auto arg = DynamicLLVM::LLVMGetOperand(inst, 0);
@@ -4449,6 +4971,8 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 
 						resID = builder.encodeFMax(type, llvmValueToResultID(builder, operand1), llvmValueToResultID(builder, operand2));
 					} else if (translateAirIntrinsic(builder, inst, name, type, resID)) {
+						// handled
+					} else if (translateOverflowIntrinsic(builder, inst, name, type, resID)) {
 						// handled
 					} else {
 						 throw std::runtime_error(std::string("Unsupported function call (name = ") + std::string(name) + ")");

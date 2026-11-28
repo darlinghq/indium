@@ -258,10 +258,16 @@ namespace Indium {
 		 * opposite of the source overload above, which receives a buffer that
 		 * Iridium allocated and therefore frees.
 		 *
+		 * A library with no functions, which Metal makes of a source with no
+		 * entry point, has no module, since Vulkan has none without an entry
+		 * point: it is created from a null `spirv`, a `length` of 0 and a
+		 * `reflection` that describes no function.
+		 *
 		 * @returns `nullptr`, with a description of the problem in
 		 *          `errorMessage` when it is not null and empty when it is not,
 		 *          if:
-		 *          - `spirv` is null, shorter than a SPIR-V header, not a whole
+		 *          - `spirv` is null (except for a library with no functions),
+		 *            shorter than a SPIR-V header, not a whole
 		 *            number of words, or does not start with the SPIR-V magic
 		 *            number;
 		 *          - `reflection` describes no function, describes a function
@@ -270,7 +276,11 @@ namespace Indium {
 		 *          - two bindings of one function claim the same descriptor
 		 *            binding number;
 		 *          - a binding or an embedded sampler field holds a value
-		 *            outside its enumeration.
+		 *            outside its enumeration;
+		 *          - the module asks, with OpExecutionMode SignedZeroInfNanPreserve,
+		 *            for a floating-point width (16, 32 or 64 bits) for which the
+		 *            device reports no shaderSignedZeroInfNanPreserveFloat<width>
+		 *            support, so a pipeline of it could not be made on this device.
 		 *
 		 * A `nullptr` return means nothing was created, so a caller never has
 		 * to cope with a library whose bindings were dropped or defaulted.

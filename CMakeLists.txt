@@ -72,6 +72,7 @@ set(indium_sources
 	src/indium/render-command-encoder.cpp
 	src/indium/render-pipeline.cpp
 	src/indium/spirv-stencil-export.cpp
+	src/indium/spirv-float-controls.cpp
 	src/indium/resource.cpp
 	src/indium/sampler.cpp
 	src/indium/extended-range-kernel.cpp

@@ -1,0 +1,11 @@
+; A compute entry point with no float controls: what a module that asks for none looks like.
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main"
+               OpExecutionMode %main LocalSize 1 1 1
+       %void = OpTypeVoid
+     %voidfn = OpTypeFunction %void
+       %main = OpFunction %void None %voidfn
+      %entry = OpLabel
+               OpReturn
+               OpFunctionEnd

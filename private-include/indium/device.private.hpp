@@ -89,6 +89,8 @@ namespace Indium {
 		std::mutex _shadowMutex;
 		std::vector<PrivateBuffer*> _shadowBuffers;
 		std::atomic<bool> _bufferNoCopyImportDisabled { false };
+		// the SignedZeroInfNanPreserveWidth bits of the widths the device reports (VkPhysicalDeviceFloatControlsProperties)
+		uint32_t _signedZeroInfNanPreserve = 0;
 		std::mutex _fallbackMutex;
 		std::shared_ptr<Buffer> _fallbackBuffer;
 		std::shared_ptr<SamplerState> _fallbackSampler;

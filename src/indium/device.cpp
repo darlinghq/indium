@@ -125,6 +125,8 @@ namespace {
 				functionInfo.arguments.push_back(argumentInfoFromIridium(argument));
 			}
 
+			functionInfo.stageInRegionSpecializationIDs = info.stageInRegionSpecializationIDs;
+
 			for (const auto& constant: info.functionConstants) {
 				Indium::FunctionConstantInfo converted;
 				converted.name = constant.name;
@@ -233,6 +235,18 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 	_physicalDevice(physicalDevice)
 {
 	DynamicVK::vkGetPhysicalDeviceProperties(_physicalDevice, &_properties);
+
+	{
+		VkPhysicalDeviceFloatControlsProperties floatControls {};
+		floatControls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+		VkPhysicalDeviceProperties2 properties2 {};
+		properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		properties2.pNext = &floatControls;
+		DynamicVK::vkGetPhysicalDeviceProperties2(_physicalDevice, &properties2);
+		_signedZeroInfNanPreserve = (floatControls.shaderSignedZeroInfNanPreserveFloat16 ? SignedZeroInfNanPreserve16 : 0)
+			| (floatControls.shaderSignedZeroInfNanPreserveFloat32 ? SignedZeroInfNanPreserve32 : 0)
+			| (floatControls.shaderSignedZeroInfNanPreserveFloat64 ? SignedZeroInfNanPreserve64 : 0);
+	}
 
 	std::vector<VkQueueFamilyProperties> queueFamilies;
 	uint32_t count = 0;
@@ -1255,6 +1269,13 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 		return nullptr;
 	};
 
+	// Metal makes a library with no functions of a source with no entry point, and Vulkan has no module
+	// without one, so such a library comes with no module.
+	if (!spirv && length == 0 && reflection.functions.empty()) {
+		*errorMessage = "";
+		return std::make_shared<PrivateLibrary>(shared_from_this(), nullptr, 0, PrivateLibrary::FunctionInfoMap {});
+	}
+
 	// PrivateLibrary abort()s if vkCreateShaderModule rejects the module, so
 	// everything that would make it do so gets rejected here instead, where the
 	// reason can still name the module. A producer that hands over something
@@ -1384,7 +1405,7 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 			std::unordered_set<std::string> names;
 			std::unordered_set<uint32_t> specializationIDs;
 			for (const auto& constant: functionReflection.functionConstants) {
-				if (static_cast<size_t>(constant.type) > static_cast<size_t>(FunctionConstantType::Float)) {
+				if (static_cast<size_t>(constant.type) > static_cast<size_t>(FunctionConstantType::ULong)) {
 					return fail("function '" + name + "' has a function constant of an unknown type");
 				}
 				if (!indices.insert(constant.index).second || !names.insert(constant.name).second) {
@@ -1474,6 +1495,18 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 					return fail("function '" + name + "' embedded sampler " + std::to_string(i) + " has an out-of-range " + samplerEnum.field);
 				}
 			}
+		}
+	}
+
+	// A module may ask for float controls (mslc does, on its entry points) that the device cannot give. Vulkan refuses
+	// the pipeline of such an entry point, so the library is refused here, where the module is known. Judged by the
+	// module's own execution modes: Iridium never sets this one, so libraries made from AIR are not affected.
+	{
+		std::vector<uint32_t> words(length / sizeof(uint32_t));
+		memcpy(words.data(), spirv, length);
+		auto unsupported = unsupportedSignedZeroInfNanPreserve(words.data(), words.size(), _signedZeroInfNanPreserve);
+		if (!unsupported.empty()) {
+			return fail(unsupported);
 		}
 	}
 

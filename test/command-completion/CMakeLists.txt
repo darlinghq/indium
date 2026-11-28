@@ -1,0 +1,5 @@
+add_executable(indium-test-command-completion command-completion.cpp)
+target_link_libraries(indium-test-command-completion PRIVATE indium)
+set_target_properties(indium-test-command-completion PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+add_test(NAME command-completion COMMAND indium-test-command-completion)
+set_tests_properties(command-completion PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)

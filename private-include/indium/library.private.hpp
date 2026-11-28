@@ -85,6 +85,8 @@ namespace Indium {
 		// The function writes the stencil reference ([[stencil]]) and the device cannot: it has no
 		// VK_EXT_shader_stencil_export. A render pipeline with it as its fragment function is refused.
 		bool writesStencilUnsupported = false;
+		// the SpecIds of the stage-in region's origin and size (x, y, z each), for a kernel that reads them
+		std::optional<std::array<uint32_t, 6>> stageInRegionSpecializationIDs;
 	};
 
 	/**
@@ -100,6 +102,27 @@ namespace Indium {
 	 * device as it is, as it was before this rewrite existed.
 	 */
 	bool spirvWithoutStencilExport(std::vector<uint32_t>& words, std::unordered_set<std::string>& writers);
+
+	/**
+	 * The floating-point widths for which a module's entry points carry the SignedZeroInfNanPreserve execution mode
+	 * (OpExecutionMode, SPV_KHR_float_controls), as a set of SignedZeroInfNanPreserveWidth bits. Vulkan allows a pipeline
+	 * of such an entry point only where the device reports shaderSignedZeroInfNanPreserveFloat16, ...32 or ...64 for that
+	 * width (VUID-RuntimeSpirv-shaderSignedZeroInfNanPreserveFloat16-06293, ...32-06294 and ...64-06295). A module that
+	 * has no such execution mode, as every module Iridium translates, gives 0. The scan stops at an instruction
+	 * whose length is wrong; Vulkan rejects such a module itself.
+	 */
+	enum SignedZeroInfNanPreserveWidth: uint32_t {
+		SignedZeroInfNanPreserve16 = 1 << 0,
+		SignedZeroInfNanPreserve32 = 1 << 1,
+		SignedZeroInfNanPreserve64 = 1 << 2,
+	};
+	uint32_t spirvSignedZeroInfNanPreserveWidths(const uint32_t* words, size_t wordCount);
+
+	/**
+	 * Why a module of `words` cannot be a library on a device that supports the SignedZeroInfNanPreserveWidth bits of
+	 * `supported`: empty if the device supports every width the module asks for, otherwise the reason.
+	 */
+	std::string unsupportedSignedZeroInfNanPreserve(const uint32_t* words, size_t wordCount, uint32_t supported);
 
 	/**
 	 * Whether `texture` can be what the function reads or writes at the texture binding `binding`. Metal lets several
@@ -140,6 +163,8 @@ namespace Indium {
 		INDIUM_PROPERTY_READONLY(const FunctionInfo&, f, F,unctionInfo);
 
 	private:
+		void addSpecialization(uint32_t id, FunctionConstantType type, uint64_t bits);
+
 		std::vector<VkSpecializationMapEntry> _specializationEntries;
 		std::vector<uint32_t> _specializationData;
 		VkSpecializationInfo _specializationInfo {};
@@ -163,6 +188,7 @@ namespace Indium {
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) override;
 		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Device> device() override;
+		virtual std::vector<std::string> functionNames() const override;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
