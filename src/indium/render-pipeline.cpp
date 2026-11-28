@@ -125,12 +125,14 @@ struct Indium::PrivateRenderPipelineState::PipelineRecipe {
 
 Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 	std::unique_lock lock(_mutex);
-	destroyVariantsLocked();
+	for (auto& passClass: _passClasses) {
+		destroyVariantsLocked(passClass);
 
-	if (_pipelines[0]) {
-		for (auto& pipeline: _pipelines) {
-			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
-			pipeline = VK_NULL_HANDLE;
+		if (passClass.pipelines[0]) {
+			for (auto& pipeline: passClass.pipelines) {
+				DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
+				pipeline = VK_NULL_HANDLE;
+			}
 		}
 	}
 
@@ -140,18 +142,19 @@ Indium::PrivateRenderPipelineState::~PrivateRenderPipelineState() {
 	}
 };
 
-void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibleRenderPass, bool force) {
+void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibleRenderPass, bool force, bool inputAttachments) {
 	std::unique_lock lock(_mutex);
+	auto& passClass = _passClasses[inputAttachments ? 1 : 0];
 
-	if (!force && _pipelines[0]) {
+	if (!force && passClass.pipelines[0]) {
 		// assumes that the current pipeline is compatible with the given render pass
 		return;
 	}
 
-	destroyVariantsLocked();
+	destroyVariantsLocked(passClass);
 
-	if (_pipelines[0]) {
-		for (auto& pipeline: _pipelines) {
+	if (passClass.pipelines[0]) {
+		for (auto& pipeline: passClass.pipelines) {
 			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 			pipeline = VK_NULL_HANDLE;
 		}
@@ -340,8 +343,8 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		}
 	}
 
-	_recipe = std::move(recipe);
-	_pipelines = pipelines;
+	passClass.recipe = std::move(recipe);
+	passClass.pipelines = pipelines;
 };
 
 std::string Indium::PrivateRenderPipelineState::timingName() const {
@@ -360,35 +363,36 @@ const Indium::FunctionInfo& Indium::PrivateRenderPipelineState::fragmentFunction
 	return _fragmentFunction->functionInfo();
 };
 
-void Indium::PrivateRenderPipelineState::destroyVariantsLocked() {
-	for (auto& [key, pipeline]: _variants) {
+void Indium::PrivateRenderPipelineState::destroyVariantsLocked(PassClass& passClass) {
+	for (auto& [key, pipeline]: passClass.variants) {
 		if (pipeline != VK_NULL_HANDLE) {
 			DynamicVK::vkDestroyPipeline(_privateDevice->device(), pipeline, nullptr);
 		}
 	}
-	_variants.clear();
+	passClass.variants.clear();
 };
 
-VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass, bool lines, bool clamp) {
+VkPipeline Indium::PrivateRenderPipelineState::pipelineFor(size_t topologyClass, bool lines, bool clamp, bool inputAttachments) {
 	std::unique_lock lock(_mutex);
+	auto& passClass = _passClasses[inputAttachments ? 1 : 0];
 
 	// a mode the device cannot do is ignored, and so are the ones that mean nothing for the topology
 	lines = lines && topologyClass == 2 && _privateDevice->fillModeNonSolidEnabled();
 	clamp = clamp && _privateDevice->depthClampEnabled();
 
 	if (!lines && !clamp) {
-		return _pipelines[topologyClass];
+		return passClass.pipelines[topologyClass];
 	}
 
 	uint32_t key = static_cast<uint32_t>(topologyClass) | (lines ? 4u : 0u) | (clamp ? 8u : 0u);
 
-	auto found = _variants.find(key);
-	if (found != _variants.end()) {
-		return found->second != VK_NULL_HANDLE ? found->second : _pipelines[topologyClass];
+	auto found = passClass.variants.find(key);
+	if (found != passClass.variants.end()) {
+		return found->second != VK_NULL_HANDLE ? found->second : passClass.pipelines[topologyClass];
 	}
 
 	// a variant that cannot be made is remembered as such, and the draw uses the default pipeline
-	VkPipeline variant = _recipe->create(*_privateDevice, topologyClass, lines, clamp);
-	_variants.emplace(key, variant);
-	return variant != VK_NULL_HANDLE ? variant : _pipelines[topologyClass];
+	VkPipeline variant = passClass.recipe->create(*_privateDevice, topologyClass, lines, clamp);
+	passClass.variants.emplace(key, variant);
+	return variant != VK_NULL_HANDLE ? variant : passClass.pipelines[topologyClass];
 };

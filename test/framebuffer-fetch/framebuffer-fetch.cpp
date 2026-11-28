@@ -17,6 +17,9 @@
 //    usage (not shader-only, multisample or depth textures);
 //  - a render pass that no pipeline of the fetch kind is set in has no input attachment references and its
 //    self-dependency has no input attachment access; one that is gets them.
+// And that every pipeline bound is one made for a render pass of the class of the pass it is bound in (with or
+// without input attachment references: render pass compatibility counts them): plain and fetching draws in
+// either order in one pass, and in two.
 // And the refusals: reading an attachment the pass does not have, or a multisample one, and reflection that cannot
 // be a fragment function's input attachment. Prints SKIP and exits 0 without a Vulkan device.
 
@@ -31,6 +34,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -58,6 +62,16 @@ std::vector<PassRecord> passRecords;
 std::vector<VkImageUsageFlags> imageUsages;
 PFN_vkCreateRenderPass originalCreateRenderPass = nullptr;
 PFN_vkCreateImage originalCreateImage = nullptr;
+PFN_vkCreateGraphicsPipelines originalCreateGraphicsPipelines = nullptr;
+PFN_vkCmdBindPipeline originalCmdBindPipeline = nullptr;
+PFN_vkCmdBeginRenderPass originalCmdBeginRenderPass = nullptr;
+
+// the class of a render pass is whether it has input attachment references
+std::map<VkRenderPass, bool> passHasInput;
+std::map<VkPipeline, bool> pipelineMadeForInput;
+bool currentPassHasInput = false;
+unsigned graphicsBinds = 0;
+unsigned classMismatches = 0;
 
 VKAPI_ATTR VkResult VKAPI_CALL recordRenderPass(VkDevice device, const VkRenderPassCreateInfo* info, const VkAllocationCallbacks* allocator, VkRenderPass* renderPass) {
 	PassRecord record {};
@@ -71,7 +85,35 @@ VKAPI_ATTR VkResult VKAPI_CALL recordRenderPass(VkDevice device, const VkRenderP
 		}
 	}
 	passRecords.push_back(record);
-	return originalCreateRenderPass(device, info, allocator, renderPass);
+	auto result = originalCreateRenderPass(device, info, allocator, renderPass);
+	if (result == VK_SUCCESS) {
+		passHasInput[*renderPass] = record.inputAttachments != 0;
+	}
+	return result;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL recordPipelines(VkDevice device, VkPipelineCache cache, uint32_t count, const VkGraphicsPipelineCreateInfo* infos, const VkAllocationCallbacks* allocator, VkPipeline* pipelines) {
+	auto result = originalCreateGraphicsPipelines(device, cache, count, infos, allocator, pipelines);
+	for (uint32_t i = 0; result == VK_SUCCESS && i < count; ++i) {
+		pipelineMadeForInput[pipelines[i]] = passHasInput[infos[i].renderPass];
+	}
+	return result;
+}
+
+VKAPI_ATTR void VKAPI_CALL recordBeginRenderPass(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo* info, VkSubpassContents contents) {
+	currentPassHasInput = passHasInput[info->renderPass];
+	originalCmdBeginRenderPass(commandBuffer, info, contents);
+}
+
+VKAPI_ATTR void VKAPI_CALL recordBindPipeline(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint, VkPipeline pipeline) {
+	if (bindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS) {
+		++graphicsBinds;
+		auto found = pipelineMadeForInput.find(pipeline);
+		if (found == pipelineMadeForInput.end() || found->second != currentPassHasInput) {
+			++classMismatches;
+		}
+	}
+	originalCmdBindPipeline(commandBuffer, bindPoint, pipeline);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL recordImage(VkDevice device, const VkImageCreateInfo* info, const VkAllocationCallbacks* allocator, VkImage* image) {
@@ -319,7 +361,7 @@ void checkModule(Context& context, const Module& module) {
 }
 
 int main() {
-	Indium::init(nullptr, 0, false);
+	Indium::init(nullptr, 0, !!getenv("INDIUM_TEST_VALIDATION"));
 
 	{
 		if (Indium::copyAllDevices().empty()) {
@@ -337,6 +379,15 @@ int main() {
 		Indium::DynamicVK::vkCreateRenderPass.pointer = reinterpret_cast<void*>(recordRenderPass);
 		originalCreateImage = reinterpret_cast<PFN_vkCreateImage>(Indium::DynamicVK::vkCreateImage.pointer);
 		Indium::DynamicVK::vkCreateImage.pointer = reinterpret_cast<void*>(recordImage);
+		if (!Indium::DynamicVK::vkCreateGraphicsPipelines.resolve() || !Indium::DynamicVK::vkCmdBindPipeline.resolve() || !Indium::DynamicVK::vkCmdBeginRenderPass.resolve()) {
+			return 3;
+		}
+		originalCreateGraphicsPipelines = reinterpret_cast<PFN_vkCreateGraphicsPipelines>(Indium::DynamicVK::vkCreateGraphicsPipelines.pointer);
+		Indium::DynamicVK::vkCreateGraphicsPipelines.pointer = reinterpret_cast<void*>(recordPipelines);
+		originalCmdBindPipeline = reinterpret_cast<PFN_vkCmdBindPipeline>(Indium::DynamicVK::vkCmdBindPipeline.pointer);
+		Indium::DynamicVK::vkCmdBindPipeline.pointer = reinterpret_cast<void*>(recordBindPipeline);
+		originalCmdBeginRenderPass = reinterpret_cast<PFN_vkCmdBeginRenderPass>(Indium::DynamicVK::vkCmdBeginRenderPass.pointer);
+		Indium::DynamicVK::vkCmdBeginRenderPass.pointer = reinterpret_cast<void*>(recordBeginRenderPass);
 		std::printf("device: %s\n", context.device->name().c_str());
 
 		bool keepPollingDevice = true;
@@ -419,6 +470,33 @@ int main() {
 			float pixel[4] {};
 			floatTarget->getBytes(Indium::Region::make2D(0, 0, 1, 1), 0, pixel, sizeof(pixel));
 			report(std::fabs(pixel[0] - 0.75f) < 1e-6f && std::fabs(pixel[1] - 0.5f) < 1e-6f && std::fabs(pixel[2] - 0.25f) < 1e-6f && pixel[3] == 1.0f, "a 32-bit float attachment is read without loss");
+		}
+
+		// pipelines and the class of the pass they are bound in
+		if (context.library) {
+			auto fetching = pipelineFor(context, "invert_fs", { PixelFormat::RGBA8Unorm });
+			auto plain = pipelineFor(context, "constant_fs", { PixelFormat::RGBA8Unorm });
+			auto bound = [&](const std::vector<std::shared_ptr<Indium::RenderPipelineState>>& order, uint32_t& pixel) {
+				auto target = makeTarget(context, PixelFormat::RGBA8Unorm);
+				Indium::RenderPassDescriptor pass {};
+				pass.colorAttachments.push_back(clearTo(target, 0.2, 0.4, 0.6, 0.8));
+				graphicsBinds = classMismatches = 0;
+				submit(context, pass, [&](auto& encoder) { for (const auto& pipeline: order) draw(encoder, pipeline); });
+				pixel = texel(target, 3, 3);
+			};
+			uint32_t pixel = 0;
+			bound({ plain, fetching, plain, fetching }, pixel);
+			report(graphicsBinds == 4 && classMismatches == 0, "plain, fetching, plain, fetching in one pass: every pipeline bound was made for a pass of the class of the pass it is bound in");
+			report(near(pixel, 191, 128, 64, 255), "and the last draw read what the one before it wrote, got " + hex(pixel));
+			bound({ fetching, plain }, pixel);
+			report(graphicsBinds == 2 && classMismatches == 0, "a plain draw after a fetching one is bound with a pipeline of its pass's class");
+			bound({ plain, plain }, pixel);
+			report(graphicsBinds == 2 && classMismatches == 0, "plain draws only: the pipelines are made for the plain class");
+			bound({ plain, fetching }, pixel);
+			report(graphicsBinds == 2 && classMismatches == 0, "a fetching draw after a plain one is bound with a pipeline of its pass's class");
+			// the same pipeline objects in a second pass, in the other order
+			bound({ fetching, plain }, pixel);
+			report(graphicsBinds == 2 && classMismatches == 0, "pipelines used before are bound again in a new pass with those of the right class");
 		}
 
 		// refusals

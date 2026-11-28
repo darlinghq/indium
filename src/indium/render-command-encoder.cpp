@@ -502,7 +502,7 @@ void Indium::PrivateRenderCommandEncoder::setRenderPipelineState(const std::shar
 	}
 	_privatePSO = pipeline;
 	if (_privatePSO) {
-		_privatePSO->recreatePipeline(_renderPass, false);
+		_privatePSO->recreatePipeline(_renderPass, false, _inputAttachmentPass);
 		if (_privateDevice->pipelineTimingEnabled()) {
 			// the draws up to the next pipeline change or the end of the pass are timed as this pipeline's
 			if (!_timer) {
@@ -768,7 +768,7 @@ void Indium::PrivateRenderCommandEncoder::bindPipeline(VkCommandBuffer commandBu
 		default:
 			throw BadEnumValue();
 	}
-	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp);
+	VkPipeline pipeline = _privatePSO->pipelineFor(topologyClass, _triangleFillMode == TriangleFillMode::Lines, _depthClipMode == DepthClipMode::Clamp, _inputAttachmentPass);
 	DynamicVK::vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
 	DynamicVK::vkCmdSetPrimitiveTopology(commandBuffer, primitiveTypeToVkPrimitiveTopology(primitiveType));
