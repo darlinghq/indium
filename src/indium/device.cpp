@@ -1381,7 +1381,7 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 			std::unordered_set<std::string> names;
 			std::unordered_set<uint32_t> specializationIDs;
 			for (const auto& constant: functionReflection.functionConstants) {
-				if (static_cast<size_t>(constant.type) > static_cast<size_t>(FunctionConstantType::Float)) {
+				if (static_cast<size_t>(constant.type) > static_cast<size_t>(FunctionConstantType::ULong)) {
 					return fail("function '" + name + "' has a function constant of an unknown type");
 				}
 				if (!indices.insert(constant.index).second || !names.insert(constant.name).second) {
