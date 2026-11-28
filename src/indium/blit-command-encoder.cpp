@@ -109,6 +109,9 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Buffer>& sour
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateDest->pixelFormat());
+	// the level and slice of the destination's image, which for a view are not the view's own numbers
+	destinationLevel += privateDest->imageBaseLevel();
+	destinationSlice += privateDest->imageBaseLayer();
 
 	useBuffer(*cmdbuf, privateSource, sourceOffset, SIZE_MAX, false);
 	useTexture(*cmdbuf, privateDest, true);
@@ -180,6 +183,9 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateSource->pixelFormat());
+	// the level and slice of the source's image, which for a view are not the view's own numbers
+	sourceLevel += privateSource->imageBaseLevel();
+	sourceSlice += privateSource->imageBaseLayer();
 
 	useTexture(*cmdbuf, privateSource, false);
 	useBuffer(*cmdbuf, privateDest, destinationOffset, SIZE_MAX, true);
@@ -245,6 +251,11 @@ void Indium::PrivateBlitCommandEncoder::copy(const std::shared_ptr<Texture>& sou
 	}
 
 	auto aspect = pixelFormatToVkImageAspectFlags(privateSource->pixelFormat());
+	// the levels and slices of the images, which for a view are not the view's own numbers
+	sourceLevel += privateSource->imageBaseLevel();
+	sourceSlice += privateSource->imageBaseLayer();
+	destinationLevel += privateDest->imageBaseLevel();
+	destinationSlice += privateDest->imageBaseLayer();
 
 	useTexture(*cmdbuf, privateSource, false);
 	useTexture(*cmdbuf, privateDest, true);
@@ -478,6 +489,10 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	bool is2D = texType == TextureType::e2D || texType == TextureType::e2DArray || texType == TextureType::e2DMultisample || texType == TextureType::e2DMultisampleArray || texType == TextureType::eCube || texType == TextureType::eCubeArray;
 	bool is3D = texType == TextureType::e3D;
 
+	// the texture's levels and slices start at these in its image (a view's are a range of its texture's)
+	const size_t baseLevel = privateTexture->imageBaseLevel();
+	const size_t baseLayer = privateTexture->imageBaseLayer();
+
 	useTexture(*cmdbuf, privateTexture, true);
 	flushUses(*cmdbuf);
 
@@ -498,9 +513,9 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	barrier.image = privateTexture->image();
 	barrier.subresourceRange.aspectMask = aspect;
-	barrier.subresourceRange.baseMipLevel = 0;
+	barrier.subresourceRange.baseMipLevel = baseLevel;
 	barrier.subresourceRange.levelCount = privateTexture->mipmapLevelCount();
-	barrier.subresourceRange.baseArrayLayer = 0;
+	barrier.subresourceRange.baseArrayLayer = baseLayer;
 	barrier.subresourceRange.layerCount = privateTexture->vulkanArrayLength();
 
 	DynamicVK::vkCmdPipelineBarrier(cmdbuf->commandBuffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
@@ -516,7 +531,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 		// first, transition the source layer into transfer_src_optimal
 		//
 
-		barrier.subresourceRange.baseMipLevel = i - 1;
+		barrier.subresourceRange.baseMipLevel = baseLevel + i - 1;
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -533,8 +548,8 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 		blit.srcOffsets[0] = { 0, 0, 0 };
 		blit.srcOffsets[1] = { mipWidth, mipHeight, mipDepth };
 		blit.srcSubresource.aspectMask = aspect;
-		blit.srcSubresource.mipLevel = i - 1;
-		blit.srcSubresource.baseArrayLayer = 0;
+		blit.srcSubresource.mipLevel = baseLevel + i - 1;
+		blit.srcSubresource.baseArrayLayer = baseLayer;
 		blit.srcSubresource.layerCount = privateTexture->vulkanArrayLength();
 
 		if (mipWidth > 1) {
@@ -563,8 +578,8 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 		blit.dstOffsets[0] = { 0, 0, 0 };
 		blit.dstOffsets[1] = { mipWidth, mipHeight, mipDepth };
 		blit.dstSubresource.aspectMask = aspect;
-		blit.dstSubresource.mipLevel = i;
-		blit.dstSubresource.baseArrayLayer = 0;
+		blit.dstSubresource.mipLevel = baseLevel + i;
+		blit.dstSubresource.baseArrayLayer = baseLayer;
 		blit.dstSubresource.layerCount = privateTexture->vulkanArrayLength();
 
 		// now blit the image
@@ -573,7 +588,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 		DynamicVK::vkCmdBlitImage(cmdbuf->commandBuffer(), privateTexture->image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, privateTexture->image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
 		// now transition the source level into the image's original layout
-		barrier.subresourceRange.baseMipLevel = i - 1;
+		barrier.subresourceRange.baseMipLevel = baseLevel + i - 1;
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		// TODO: relax dstAccessMask
 		barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -584,7 +599,7 @@ void Indium::PrivateBlitCommandEncoder::generateMipmapsForTexture(const std::sha
 	}
 
 	// finally, transition the last level into the image's original layout
-	barrier.subresourceRange.baseMipLevel = privateTexture->mipmapLevelCount() - 1;
+	barrier.subresourceRange.baseMipLevel = baseLevel + privateTexture->mipmapLevelCount() - 1;
 	barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 	// TODO: relax dstAccessMask
 	barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
