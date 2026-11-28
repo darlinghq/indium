@@ -1600,6 +1600,70 @@ static bool airTypeTokenIsFloat(std::string_view token) {
 	return !token.empty() && token[0] == 'f';
 }
 
+// popcount, clz, ctz or reverse_bits of `value`, whose type is the unsigned integer scalar or vector type
+// `type`. Vulkan allows OpBitCount and OpBitReverse, and GLSL.std.450 allows FindUMsb and FindILsb, only on
+// 32-bit integers, so a narrower integer is zero-extended to 32 bits and a 64-bit one split into two halves.
+static Iridium::SPIRV::ResultID encodeBitCount(Iridium::SPIRV::Builder& builder, std::string_view fn, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID value) {
+	using namespace Iridium::SPIRV;
+
+	auto info = *builder.reverseLookupType(type);
+	bool vector = info.backingType == Type::BackingType::Vector;
+	unsigned width = (vector ? *builder.reverseLookupType(info.targetType) : info).scalarWidth;
+	auto u32Type = builder.declareType(Type(Type::IntegerTag {}, 32, false));
+	auto wordType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, u32Type)) : u32Type;
+	auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
+	auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
+	auto word = [&](int64_t constant) {
+		return integerConstantOfType(builder, wordType, constant);
+	};
+	auto isZero = [&](ResultID w) {
+		return builder.encodeOp(Opcode::IEqual, boolType, { w, word(0) });
+	};
+
+	// the count for the low `bits` bits of a word, whose other bits are zero
+	auto count = [&](ResultID w, unsigned bits) {
+		if (fn == "popcount") {
+			return builder.encodeOp(Opcode::BitCount, wordType, { w });
+		}
+		if (fn == "reverse_bits") {
+			auto reversed = builder.encodeOp(Opcode::BitReverse, wordType, { w });
+			return bits == 32 ? reversed : builder.encodeArithBinop(Opcode::ShiftRightLogical, wordType, reversed, word(32 - bits));
+		}
+		if (fn == "clz") {
+			// FindUMsb is the index of the highest set bit, -1 for zero: bits - 1 minus that is the number of
+			// leading zeros, and `bits` for zero
+			return builder.encodeArithBinop(Opcode::ISub, wordType, word(bits - 1), builder.encodeGLSLOp(GLSLOpcode::FindUMsb, wordType, { w }));
+		}
+		// FindILsb is the index of the lowest set bit, -1 for zero, where the number of trailing zeros is `bits`
+		return builder.encodeOp(Opcode::Select, wordType, { isZero(w), word(bits), builder.encodeGLSLOp(GLSLOpcode::FindILsb, wordType, { w }) });
+	};
+
+	if (width == 32) {
+		return count(value, 32);
+	}
+	if (width < 32) {
+		return builder.encodeUConvert(type, count(builder.encodeUConvert(wordType, value), width));
+	}
+
+	auto low = builder.encodeUConvert(wordType, value);
+	auto high = builder.encodeUConvert(wordType, builder.encodeArithBinop(Opcode::ShiftRightLogical, type, value, integerConstantOfType(builder, type, 32)));
+	if (fn == "reverse_bits") {
+		// the reversed low half is the high half of the result
+		auto top = builder.encodeArithBinop(Opcode::ShiftLeftLogical, type, builder.encodeUConvert(type, count(low, 32)), integerConstantOfType(builder, type, 32));
+		return builder.encodeArithBinop(Opcode::BitwiseOr, type, top, builder.encodeUConvert(type, count(high, 32)));
+	}
+	ResultID result;
+	if (fn == "popcount") {
+		result = builder.encodeArithBinop(Opcode::IAdd, wordType, count(low, 32), count(high, 32));
+	} else if (fn == "clz") {
+		// the leading zeros of the high half, and all of them and those of the low half when it is zero
+		result = builder.encodeOp(Opcode::Select, wordType, { isZero(high), builder.encodeArithBinop(Opcode::IAdd, wordType, word(32), count(low, 32)), count(high, 32) });
+	} else {
+		result = builder.encodeOp(Opcode::Select, wordType, { isZero(low), builder.encodeArithBinop(Opcode::IAdd, wordType, word(32), count(high, 32)), count(low, 32) });
+	}
+	return builder.encodeUConvert(type, result);
+}
+
 // Translates the AIR math, relational, conversion and derivative intrinsics that map directly onto a
 // SPIR-V or GLSL.std.450 instruction. Returns false when `name` is not one of them.
 static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef inst, std::string_view name, Iridium::SPIRV::ResultID type, Iridium::SPIRV::ResultID& resID) {
@@ -1691,11 +1755,7 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			return unsignedType == type ? value : builder.encodeBitcast(type, value);
 		};
 		auto argument = operand(0);
-		if (fn == "popcount") {
-			resID = builder.encodeOp(Opcode::BitCount, type, { argument });
-		} else if (fn == "reverse_bits") {
-			resID = builder.encodeOp(Opcode::BitReverse, type, { argument });
-		} else if (fn == "rotate") {
+		if (fn == "rotate") {
 			// rotate left by n (modulo the width): the bits shifted out come back in on the right
 			auto mask = integerConstantOfType(builder, type, scalar.scalarWidth - 1);
 			auto width = integerConstantOfType(builder, type, scalar.scalarWidth);
@@ -1708,19 +1768,8 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
 			auto none = builder.encodeOp(Opcode::IEqual, boolType, { left, integerConstantOfType(builder, type, 0) });
 			resID = builder.encodeOp(Opcode::Select, type, { none, argument, resID });
-		} else if (fn == "clz") {
-			// FindUMsb is the index of the highest set bit, -1 for zero: width - 1 minus that is the number of
-			// leading zeros, and the width for zero
-			auto highest = builder.encodeGLSLOp(GLSLOpcode::FindUMsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
-			auto count = builder.encodeArithBinop(Opcode::ISub, unsignedType, integerConstantOfType(builder, unsignedType, scalar.scalarWidth - 1), highest);
-			resID = fromUnsigned(count);
 		} else {
-			// FindILsb is the index of the lowest set bit, -1 for zero, where the number of trailing zeros is the width
-			auto lowest = builder.encodeGLSLOp(GLSLOpcode::FindILsb, unsignedType, { builder.encodeBitcast(unsignedType, argument) });
-			auto boolScalar = builder.declareType(Type(Type::BooleanTag {}));
-			auto boolType = vector ? builder.declareType(Type(Type::VectorTag {}, info.entryCount, boolScalar)) : boolScalar;
-			auto isZero = builder.encodeOp(Opcode::IEqual, boolType, { argument, integerConstantOfType(builder, type, 0) });
-			resID = fromUnsigned(builder.encodeOp(Opcode::Select, unsignedType, { isZero, integerConstantOfType(builder, unsignedType, scalar.scalarWidth), lowest }));
+			resID = fromUnsigned(encodeBitCount(builder, fn, unsignedType, builder.encodeBitcast(unsignedType, argument)));
 		}
 		return true;
 	}
