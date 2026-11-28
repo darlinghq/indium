@@ -2,11 +2,17 @@
 #include <indium/device.private.hpp>
 #include <indium/sampler.hpp>
 #include <indium/dynamic-vk.hpp>
+#include <indium/texture.hpp>
 
 #include <algorithm>
 #include <set>
 #include <map>
 #include <cstring>
+
+namespace {
+	using ImageShapes = std::unordered_map<std::string, std::unordered_map<uint32_t, Indium::ImageShape>>;
+	ImageShapes spirvImageShapes(const std::vector<uint32_t>& words);
+};
 
 Indium::Function::~Function() {};
 Indium::Library::~Library() {};
@@ -111,6 +117,30 @@ Indium::PrivateLibrary::PrivateLibrary(std::shared_ptr<PrivateDevice> device, co
 	if (DynamicVK::vkCreateShaderModule(_privateDevice->device(), &createInfo, nullptr, &_shaderModule) != VK_SUCCESS) {
 		// TODO
 		abort();
+	}
+
+	// the image type of each texture binding, which tells which of several arguments at one texture index a texture can be
+	bool hasTextures = false;
+	for (const auto& [name, funcInfo]: _functionInfos) {
+		for (const auto& binding: funcInfo.bindings) {
+			hasTextures = hasTextures || binding.type == BindingType::Texture;
+		}
+	}
+	if (hasTextures) {
+		const auto* words = reinterpret_cast<const uint32_t*>(data);
+		auto shapes = spirvImageShapes(std::vector<uint32_t>(words, words + dataLength / sizeof(uint32_t)));
+		for (auto& [name, funcInfo]: _functionInfos) {
+			auto entry = shapes.find(name);
+			if (entry == shapes.end()) {
+				continue;
+			}
+			for (const auto& binding: funcInfo.bindings) {
+				auto shape = binding.type == BindingType::Texture ? entry->second.find(static_cast<uint32_t>(binding.internalIndex)) : entry->second.end();
+				if (shape != entry->second.end()) {
+					funcInfo.imageShapes[binding.internalIndex] = shape->second;
+				}
+			}
+		}
 	}
 
 	// create sampler states for embedded samplers
@@ -253,6 +283,102 @@ namespace {
 		end = at;
 		return text;
 	}
+};
+
+namespace {
+	// The image type of each variable with a Binding that an entry point lists in its interface, by the entry point's name
+	// and the binding number. From SPIR-V 1.4 an entry point lists every global variable it uses; an older module lists
+	// only its inputs and outputs, so nothing is found for it. A binding two entry points of one name declare with
+	// different image types is left out.
+	ImageShapes spirvImageShapes(const std::vector<uint32_t>& words) {
+		constexpr uint32_t opTypeImage = 25, opTypeSampledImage = 27, opTypePointer = 32, decorationBinding = 33;
+		std::vector<std::pair<std::string, std::vector<uint32_t>>> entryPoints;
+		std::unordered_map<uint32_t, uint32_t> bindingOf, pointeeOf, typeOf, imageOfSampledImage;
+		std::unordered_map<uint32_t, Indium::ImageShape> images;
+		for (size_t at = spirvHeaderWords; at < words.size();) {
+			uint32_t count = words[at] >> 16;
+			uint32_t opcode = words[at] & 0xffff;
+			if (count == 0 || at + count > words.size()) {
+				return {};
+			}
+			switch (opcode) {
+				case spirvOpEntryPoint:
+					if (count >= 4) {
+						size_t nameEnd = 0;
+						auto name = spirvLiteralString(words, at + 3, at + count, nameEnd);
+						entryPoints.emplace_back(name, std::vector<uint32_t>(words.begin() + nameEnd, words.begin() + at + count));
+					}
+					break;
+				case spirvOpDecorate: if (count == 4 && words[at + 2] == decorationBinding) { bindingOf[words[at + 1]] = words[at + 3]; } break;
+				case opTypeImage: if (count >= 9) { images[words[at + 1]] = { words[at + 3], words[at + 5] == 1, words[at + 6] == 1 }; } break;
+				case opTypeSampledImage: if (count == 3) { imageOfSampledImage[words[at + 1]] = words[at + 2]; } break;
+				case opTypePointer: if (count == 4) { pointeeOf[words[at + 1]] = words[at + 3]; } break;
+				case spirvOpVariable: if (count >= 4) { typeOf[words[at + 2]] = words[at + 1]; } break;
+			}
+			at += count;
+		}
+
+		ImageShapes result;
+		std::set<std::pair<std::string, uint32_t>> conflicting;
+		for (const auto& [name, interface]: entryPoints) {
+			auto& shapes = result[name];
+			for (uint32_t variable: interface) {
+				auto binding = bindingOf.find(variable);
+				auto type = typeOf.find(variable);
+				if (binding == bindingOf.end() || type == typeOf.end()) {
+					continue;
+				}
+				auto pointee = pointeeOf.find(type->second);
+				if (pointee == pointeeOf.end()) {
+					continue;
+				}
+				uint32_t imageType = pointee->second;
+				if (auto sampled = imageOfSampledImage.find(imageType); sampled != imageOfSampledImage.end()) {
+					imageType = sampled->second;
+				}
+				auto image = images.find(imageType);
+				if (image == images.end()) {
+					continue;
+				}
+				auto [known, inserted] = shapes.emplace(binding->second, image->second);
+				const auto& shape = known->second;
+				if (!inserted && (shape.dim != image->second.dim || shape.arrayed != image->second.arrayed || shape.multisampled != image->second.multisampled)) {
+					conflicting.emplace(name, binding->second);
+				}
+			}
+		}
+		for (const auto& [name, binding]: conflicting) {
+			result[name].erase(binding);
+		}
+		return result;
+	}
+};
+
+bool Indium::textureFitsBinding(const FunctionInfo& info, const BindingDescriptor& binding, const Texture& texture) {
+	auto declared = info.imageShapes.find(binding.internalIndex);
+	if (binding.texelBuffer || declared == info.imageShapes.end()) {
+		return true;
+	}
+
+	// the image type each texture type is bound as (SPIR-V Dim: 0 is 1D, 1 is 2D, 2 is 3D, 3 is Cube)
+	constexpr uint32_t dim1D = 0, dim2D = 1, dim3D = 2, dimCube = 3;
+	// a binding that fetches from a cube reads the 2D array of its faces (PrivateTexture::fetchImageView)
+	bool fetch = binding.textureAccessType == TextureAccessType::Fetch;
+	ImageShape expected;
+	switch (texture.textureType()) {
+		case TextureType::e1D:                 expected = { dim1D, false, false }; break;
+		case TextureType::e1DArray:            expected = { dim1D, true, false }; break;
+		case TextureType::e2D:                 expected = { dim2D, false, false }; break;
+		case TextureType::e2DArray:            expected = { dim2D, true, false }; break;
+		case TextureType::e2DMultisample:      expected = { dim2D, false, true }; break;
+		case TextureType::e2DMultisampleArray: expected = { dim2D, true, true }; break;
+		case TextureType::eCube:               expected = fetch ? ImageShape { dim2D, true, false } : ImageShape { dimCube, false, false }; break;
+		case TextureType::eCubeArray:          expected = fetch ? ImageShape { dim2D, true, false } : ImageShape { dimCube, true, false }; break;
+		case TextureType::e3D:                 expected = { dim3D, false, false }; break;
+		case TextureType::eTextureBuffer:      return true;
+	}
+	const auto& shape = declared->second;
+	return shape.dim == expected.dim && shape.arrayed == expected.arrayed && shape.multisampled == expected.multisampled;
 };
 
 namespace {

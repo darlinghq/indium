@@ -29,6 +29,14 @@ namespace Indium {
 	class PrivateLibrary;
 	class PrivateDevice;
 	class SamplerState;
+	class Texture;
+
+	/** The image type a module declares for a texture: the Dim operand of its OpTypeImage, and whether it is arrayed and multisampled. */
+	struct ImageShape {
+		uint32_t dim = 0;
+		bool arrayed = false;
+		bool multisampled = false;
+	};
 
 	/** The Vulkan descriptor type a texture binding is written as. */
 	inline VkDescriptorType textureDescriptorType(const BindingDescriptor& binding) {
@@ -48,6 +56,9 @@ namespace Indium {
 		std::vector<BindingDescriptor> bindings;
 		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
+		// The image type the module declares at each texture binding, by internalIndex (see textureFitsBinding). Only
+		// known for a module whose entry points list their resources (SPIR-V 1.4 and later).
+		std::unordered_map<size_t, ImageShape> imageShapes;
 		std::vector<ArgumentInfo> arguments;
 		std::vector<FunctionConstantInfo> functionConstants;
 		// see FunctionReflection::stageInterface
@@ -61,6 +72,16 @@ namespace Indium {
 		// see FunctionReflection::maxTotalThreadsPerThreadgroup
 		size_t maxTotalThreadsPerThreadgroup = 0;
 	};
+
+	/**
+	 * Whether `texture` can be what the function reads or writes at the texture binding `binding`. Metal lets several
+	 * arguments of a function take one texture index when function constants leave at most one of them in it (such as a
+	 * texture2d and a texture3d at texture(0), only one of which a specialization has); the module has a binding for each.
+	 * A texture whose type is not the image type a binding declares cannot be that binding's argument, so it is not
+	 * bound there: Vulkan does not allow an image view at a binding of another image type.
+	 * True where the image type of the binding is not known.
+	 */
+	bool textureFitsBinding(const FunctionInfo& info, const BindingDescriptor& binding, const Texture& texture);
 
 	class PrivateFunction: public Function {
 	public:
