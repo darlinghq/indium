@@ -267,10 +267,12 @@ static bool testManyDispatches(Indium::Device* device) {
 static bool testReflection(Indium::Device* device) {
 	auto library = device->newLibrary(air_ops_metallib, air_ops_metallib_len);
 	auto kernels = library->functionNames();
-	std::sort(kernels.begin(), kernels.end());
-	if (kernels != std::vector<std::string> { "control_flow", "float_ops", "int_ops", "table_lookup" }) {
-		std::cerr << "reflection: the library does not list its four kernels" << std::endl;
-		return false;
+	// at least these kernels: other tests add kernels to the library
+	for (const char* name: { "control_flow", "float_ops", "int_ops", "table_lookup" }) {
+		if (std::find(kernels.begin(), kernels.end(), name) == kernels.end()) {
+			std::cerr << "reflection: the library does not list the kernel " << name << std::endl;
+			return false;
+		}
 	}
 
 	auto function = library->newFunction("int_ops");
