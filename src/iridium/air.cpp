@@ -1921,6 +1921,19 @@ static bool translateAirIntrinsic(Iridium::SPIRV::Builder& builder, LLVMValueRef
 			resID = builder.encodeGLSLOp(isSigned ? GLSLOpcode::SClamp : GLSLOpcode::UClamp, type, { operand(0), operand(1), operand(2) });
 			return true;
 		}
+		if (fn == "min3" || fn == "max3" || fn == "median3") {
+			auto min = [&](ResultID a, ResultID b) { return builder.encodeGLSLOp(isSigned ? GLSLOpcode::SMin : GLSLOpcode::UMin, type, { a, b }); };
+			auto max = [&](ResultID a, ResultID b) { return builder.encodeGLSLOp(isSigned ? GLSLOpcode::SMax : GLSLOpcode::UMax, type, { a, b }); };
+			auto x = operand(0), y = operand(1), z = operand(2);
+			if (fn == "min3") {
+				resID = min(x, min(y, z));
+			} else if (fn == "max3") {
+				resID = max(x, max(y, z));
+			} else {
+				resID = max(min(x, y), min(max(x, y), z));
+			}
+			return true;
+		}
 		if (fn == "insert_bits") {
 			// (base, insert, offset, count)
 			resID = builder.encodeOp(Opcode::BitFieldInsert, type, { operand(0), operand(1), operand(2), operand(3) });
