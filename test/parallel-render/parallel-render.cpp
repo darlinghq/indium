@@ -251,6 +251,127 @@ void run() {
 		});
 		report(late == nullptr && allEqual(pixels, rgba(255, 0, 0)), "after the pass ended no encoder is made and ending again does nothing");
 	}
+
+	// --- concurrent first-use of a newly created RenderPipelineState across 8 threads
+	{
+		auto library = loadLibrary();
+		RenderPipelineDescriptor desc {};
+		desc.vertexFunction = library->newFunction("triangleVertex");
+		desc.fragmentFunction = library->newFunction("redFragment");
+		desc.colorAttachments.emplace_back();
+		desc.colorAttachments[0].pixelFormat = PixelFormat::RGBA8Unorm;
+
+		constexpr size_t iterations = 24;
+		constexpr size_t threadCount = 8;
+		std::atomic<bool> allOk { true };
+		for (size_t iter = 0; iter < iterations; ++iter) {
+			auto freshPipeline = device->newRenderPipelineState(desc);
+			if (!freshPipeline) {
+				allOk = false;
+				break;
+			}
+			std::vector<Target> targets;
+			targets.reserve(threadCount);
+			for (size_t t = 0; t < threadCount; ++t) {
+				targets.push_back(makeTarget());
+			}
+			std::atomic<size_t> ready { 0 };
+			std::atomic<bool> go { false };
+			std::vector<std::thread> threads;
+			threads.reserve(threadCount);
+			for (size_t t = 0; t < threadCount; ++t) {
+				threads.emplace_back([&, t] {
+					auto commands = queue->commandBuffer();
+					auto encoder = commands->renderCommandEncoder(targets[t].pass);
+					ready.fetch_add(1, std::memory_order_release);
+					while (!go.load(std::memory_order_acquire)) {
+					}
+					encoder->setRenderPipelineState(freshPipeline);
+					if (t % 2 == 1) {
+						encoder->setTriangleFillMode(TriangleFillMode::Lines);
+						encoder->setDepthClipMode(DepthClipMode::Clamp);
+					}
+					encoder->drawPrimitives(PrimitiveType::Triangle, 0, 3);
+					encoder->endEncoding();
+					std::shared_ptr<Buffer> readback;
+					if (iter + 1 == iterations && (t % 2 == 0)) {
+						readback = device->newBuffer(sizeof(Pixels), ResourceOptions::StorageModeShared);
+						auto blit = commands->blitCommandEncoder();
+						blit->copy(targets[t].texture, 0, 0, Origin { 0, 0, 0 }, Size { size, size, 1 }, readback, 0, size * 4, sizeof(Pixels));
+						blit->endEncoding();
+					}
+					commands->commit();
+					commands->waitUntilCompleted();
+					if (readback) {
+						Pixels pixels;
+						std::memcpy(pixels.data(), readback->contents(), sizeof(Pixels));
+						if (!allEqual(pixels, rgba(255, 0, 0))) {
+							allOk = false;
+						}
+					}
+				});
+			}
+			while (ready.load(std::memory_order_acquire) < threadCount) {
+			}
+			go.store(true, std::memory_order_release);
+			for (auto& thread: threads) {
+				thread.join();
+			}
+		}
+		report(allOk, "concurrent first use of a new RenderPipelineState on 8 threads");
+	}
+
+	// --- depth-only RenderPipelineState (fragmentFunction == nullptr)
+	{
+		auto library = loadLibrary();
+		RenderPipelineDescriptor desc {};
+		desc.vertexFunction = library->newFunction("triangleVertex");
+		desc.fragmentFunction = nullptr;
+		desc.depthAttachmentPixelFormat = PixelFormat::Depth32Float;
+		auto depthOnly = device->newRenderPipelineState(desc);
+
+		DepthStencilDescriptor dsDesc {};
+		dsDesc.depthWriteEnabled = true;
+		dsDesc.depthCompareFunction = CompareFunction::Always;
+		auto depthStencil = device->newDepthStencilState(dsDesc);
+
+		auto texDesc = TextureDescriptor::texture2DDescriptor(PixelFormat::Depth32Float, size, size, false);
+		texDesc.usage = TextureUsage::RenderTarget;
+		auto depthTex = device->newTexture(texDesc);
+
+		RenderPassDescriptor pass {};
+		pass.depthAttachment.emplace();
+		pass.depthAttachment->texture = depthTex;
+		pass.depthAttachment->loadAction = LoadAction::Clear;
+		pass.depthAttachment->storeAction = StoreAction::Store;
+		pass.depthAttachment->clearDepth = 1.0;
+
+		bool ok = depthOnly && depthStencil && depthTex;
+		if (ok) {
+			auto readback = device->newBuffer(sizeof(float) * size * size, ResourceOptions::StorageModeShared);
+			auto commands = queue->commandBuffer();
+			auto encoder = commands->renderCommandEncoder(pass);
+			encoder->setRenderPipelineState(depthOnly);
+			encoder->setDepthStencilState(depthStencil);
+			encoder->drawPrimitives(PrimitiveType::Triangle, 0, 3);
+			encoder->endEncoding();
+			auto blit = commands->blitCommandEncoder();
+			blit->copy(depthTex, 0, 0, Origin { 0, 0, 0 }, Size { size, size, 1 }, readback, 0, size * sizeof(float), sizeof(float) * size * size);
+			blit->endEncoding();
+			commands->commit();
+			commands->waitUntilCompleted();
+
+			std::array<float, size * size> depths {};
+			std::memcpy(depths.data(), readback->contents(), sizeof(depths));
+			for (float d: depths) {
+				if (d != 0.0f) {
+					ok = false;
+					break;
+				}
+			}
+		}
+		report(ok, "depth-only RenderPipelineState with null fragmentFunction");
+	}
 }
 
 } // namespace

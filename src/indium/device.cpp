@@ -600,6 +600,14 @@ void Indium::PrivateDevice::createLogicalDevice() {
 	VkSemaphoreTypeCreateInfo semaphoreTypeInfo {};
 	semaphoreTypeInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
 	semaphoreTypeInfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+	// a wakeup that came before the device, while no poll was waiting for it, is counted, so the next poll ends
+	// (wakeupEventLoop() sets the flag under _logicalDeviceMutex, which is held here, and no wakeup is signalled before
+	// the device exists)
+	if (_wakeupBeforeCreation) {
+		_wakeupBeforeCreation = false;
+		_wakeupsSignaled = 1;
+		semaphoreTypeInfo.initialValue = 1;
+	}
 
 	VkSemaphoreCreateInfo semaphoreCreateInfo {};
 	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -614,7 +622,8 @@ void Indium::PrivateDevice::createLogicalDevice() {
 	{
 		std::unique_lock lock(_eventLoopMutex);
 		_eventLoopSemaphores.push_back(wakeupSemaphore);
-		_eventLoopWaitValues.push_back(1);
+		// unused: a poll waits for the wakeup after the ones it has seen (_wakeupsSeen)
+		_eventLoopWaitValues.push_back(0);
 		_eventLoopCallbacks.push_back(nullptr);
 	}
 
@@ -731,6 +740,101 @@ bool Indium::PrivateDevice::supportsPixelFormatSampling(PixelFormat format, bool
 		required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
 	}
 	return (properties.optimalTilingFeatures & required) == required;
+};
+
+bool Indium::PrivateDevice::supportsPixelFormatMSAA(PixelFormat format, uint32_t sampleCount) const {
+	if (sampleCount == 0 || (sampleCount & (sampleCount - 1)) != 0) {
+		return false;
+	}
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	try {
+		vkFormat = textureVkFormat(format);
+	} catch (const BadEnumValue&) {
+		return false;
+	}
+	if (vkFormat == VK_FORMAT_UNDEFINED) {
+		return false;
+	}
+	VkImageFormatProperties properties {};
+	VkResult res = DynamicVK::vkGetPhysicalDeviceImageFormatProperties(
+		_physicalDevice,
+		vkFormat,
+		VK_IMAGE_TYPE_2D,
+		VK_IMAGE_TILING_OPTIMAL,
+		VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		0,
+		&properties
+	);
+	if (res != VK_SUCCESS) {
+		return false;
+	}
+	return (properties.sampleCounts & sampleCount) != 0;
+};
+
+uint32_t Indium::PrivateDevice::maxPerStageDescriptorSamplers() const {
+	return _properties.limits.maxPerStageDescriptorSamplers;
+};
+
+Indium::Size Indium::PrivateDevice::sparseTileSize(TextureType textureType, PixelFormat pixelFormat, uint32_t sampleCount, size_t tileSizeInBytes) const {
+	if (sampleCount == 0 || tileSizeInBytes == 0 || pixelFormat == PixelFormat::Invalid) {
+		return { 0, 0, 0 };
+	}
+	VkFormat vkFormat = VK_FORMAT_UNDEFINED;
+	try {
+		vkFormat = textureVkFormat(pixelFormat);
+	} catch (const BadEnumValue&) {
+		return { 0, 0, 0 };
+	}
+	size_t bytesPerPixel = pixelFormatToByteCount(pixelFormat);
+	if (vkFormat == VK_FORMAT_UNDEFINED || bytesPerPixel == 0) {
+		return { 0, 0, 0 };
+	}
+	size_t texelsPerTile = tileSizeInBytes / (bytesPerPixel * sampleCount);
+	if (texelsPerTile == 0) {
+		return { 0, 0, 0 };
+	}
+	switch (textureType) {
+		case TextureType::e1D:
+		case TextureType::e1DArray:
+			return { texelsPerTile, 1, 1 };
+		case TextureType::e2D:
+		case TextureType::e2DArray:
+		case TextureType::e2DMultisample:
+		case TextureType::eCube:
+		case TextureType::eCubeArray:
+		case TextureType::e2DMultisampleArray: {
+			size_t w = 1;
+			size_t h = 1;
+			bool growWidth = true;
+			while (w * h * 2 <= texelsPerTile) {
+				if (growWidth) {
+					w *= 2;
+				} else {
+					h *= 2;
+				}
+				growWidth = !growWidth;
+			}
+			return { w, h, 1 };
+		}
+		case TextureType::e3D: {
+			size_t w = 1;
+			size_t h = 1;
+			size_t d = 1;
+			while (w * h * d * 2 <= texelsPerTile) {
+				if (w <= h && w <= d) {
+					w *= 2;
+				} else if (h <= d) {
+					h *= 2;
+				} else {
+					d *= 2;
+				}
+			}
+			return { w, h, d };
+		}
+		case TextureType::eTextureBuffer:
+		default:
+			return { 0, 0, 0 };
+	}
 };
 
 size_t Indium::PrivateDevice::minimumLinearTextureAlignment(PixelFormat format) const {
@@ -1606,7 +1710,8 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	std::unique_lock lock(_eventLoopMutex);
 
 	const std::vector<VkSemaphore> semaphores = _eventLoopSemaphores;
-	const std::vector<uint64_t> values = _eventLoopWaitValues;
+	std::vector<uint64_t> values = _eventLoopWaitValues;
+	values[0] = _wakeupsSeen + 1;
 	const std::vector<std::function<void()>> callbacks = _eventLoopCallbacks;
 	const uint64_t registrations = _eventLoopRegistrations.load(std::memory_order_seq_cst);
 
@@ -1639,6 +1744,11 @@ void Indium::PrivateDevice::pollEvents(uint64_t timeoutNanoseconds) {
 	if (result == VK_TIMEOUT) {
 		// timed out with no semaphores ready
 		return;
+	}
+
+	uint64_t wakeups = 0;
+	if (DynamicVK::vkGetSemaphoreCounterValue(_device, semaphores[0], &wakeups) == VK_SUCCESS && wakeups > _wakeupsSeen) {
+		_wakeupsSeen = wakeups;
 	}
 
 	std::vector<size_t> readyIndices;
@@ -1699,12 +1809,10 @@ void Indium::PrivateDevice::wakeupEventLoop() {
 
 	std::unique_lock lock(_eventLoopMutex);
 
-	auto oldVal = _eventLoopWaitValues[0]++;
-
 	VkSemaphoreSignalInfo info {};
 	info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
 	info.semaphore = _eventLoopSemaphores[0];
-	info.value = oldVal;
+	info.value = ++_wakeupsSignaled;
 	DynamicVK::vkSignalSemaphore(_device, &info);
 };
 

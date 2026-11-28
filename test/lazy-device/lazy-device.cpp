@@ -2,7 +2,8 @@
 //
 // Listing devices and reading their properties creates no Vulkan device; the first queue or
 // resource does. An event loop polled before that waits without creating the device, can be woken,
-// and delivers completions once the device exists.
+// and delivers completions once the device exists. A wakeup that comes while no poll is waiting ends the
+// next poll.
 
 #include <indium/indium.hpp>
 #include <indium/device.private.hpp>
@@ -122,6 +123,37 @@ int main() {
 		keepPolling = false;
 		device->wakeupEventLoop();
 		loop.join();
+
+		// a wakeup that comes before the poll waits, as when the loop is told to stop while it is between polls
+		device->wakeupEventLoop();
+		std::atomic<bool> early { false };
+		std::thread late([&]() {
+			device->pollEvents(UINT64_MAX);
+			early = true;
+		});
+		bool ended = waitFor(early);
+		report(ended, "a wakeup before a poll waits ends that poll");
+		if (!ended) {
+			device->wakeupEventLoop();
+		}
+		late.join();
+
+		// the same for a wakeup before the device exists, with no poll waiting for it: a second device of the same
+		// physical device, which has no Vulkan device yet
+		auto second = std::make_shared<Indium::PrivateDevice>(std::static_pointer_cast<Indium::PrivateDevice>(device)->physicalDevice());
+		second->wakeupEventLoop();
+		auto secondQueue = second->newCommandQueue();
+		std::atomic<bool> afterCreation { false };
+		std::thread poll([&]() {
+			second->pollEvents(UINT64_MAX);
+			afterCreation = true;
+		});
+		ended = waitFor(afterCreation);
+		report(created(second) && ended, "a wakeup before the device exists and before a poll ends the first poll after the device is created");
+		if (!ended) {
+			second->wakeupEventLoop();
+		}
+		poll.join();
 	}
 
 	Indium::finit();

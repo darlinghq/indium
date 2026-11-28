@@ -34,36 +34,37 @@ namespace Indium {
 		};
 
 		void processFunction(std::shared_ptr<PrivateFunction> function, size_t layoutIndex) {
-			size_t index = 0;
 			std::vector<VkDescriptorSetLayoutBinding> bindings;
 
-			bool needUBO = false;
+			if (function) {
+				bool needUBO = false;
 
-			for (const auto bindingInfo: function->functionInfo().bindings) {
-				if (bindingInfo.type == BindingType::Buffer) {
-					needUBO = true;
-				} else if (bindingInfo.type == BindingType::Texture) {
+				for (const auto bindingInfo: function->functionInfo().bindings) {
+					if (bindingInfo.type == BindingType::Buffer) {
+						needUBO = true;
+					} else if (bindingInfo.type == BindingType::Texture) {
+						auto& binding = bindings.emplace_back();
+						binding.binding = bindingInfo.internalIndex;
+						binding.descriptorType = textureDescriptorType(bindingInfo);
+						binding.descriptorCount = 1;
+						binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
+					} else if (bindingInfo.type == BindingType::Sampler) {
+						auto& binding = bindings.emplace_back();
+						binding.binding = bindingInfo.internalIndex;
+						binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+						binding.descriptorCount = 1;
+						binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
+					}
+				}
+
+				if (needUBO) {
+					// we need a UBO to store the buffer addresses
 					auto& binding = bindings.emplace_back();
-					binding.binding = bindingInfo.internalIndex;
-					binding.descriptorType = textureDescriptorType(bindingInfo);
-					binding.descriptorCount = 1;
-					binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
-				} else if (bindingInfo.type == BindingType::Sampler) {
-					auto& binding = bindings.emplace_back();
-					binding.binding = bindingInfo.internalIndex;
-					binding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+					binding.binding = 0;
+					binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 					binding.descriptorCount = 1;
 					binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
 				}
-			}
-
-			if (needUBO) {
-				// we need a UBO to store the buffer addresses
-				auto& binding = bindings.emplace_back();
-				binding.binding = 0;
-				binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-				binding.descriptorCount = 1;
-				binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
 			}
 
 			VkDescriptorSetLayoutCreateInfo layoutInfo {};

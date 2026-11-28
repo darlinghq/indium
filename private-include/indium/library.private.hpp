@@ -11,6 +11,7 @@
 #include <set>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,14 @@ namespace Indium {
 	class PrivateLibrary;
 	class PrivateDevice;
 	class SamplerState;
+	class Texture;
+
+	/** The image type a module declares for a texture: the Dim operand of its OpTypeImage, and whether it is arrayed and multisampled. */
+	struct ImageShape {
+		uint32_t dim = 0;
+		bool arrayed = false;
+		bool multisampled = false;
+	};
 
 	/** The Vulkan descriptor type a texture binding is written as. */
 	inline VkDescriptorType textureDescriptorType(const BindingDescriptor& binding) {
@@ -49,6 +58,9 @@ namespace Indium {
 		std::vector<BindingDescriptor> bindings;
 		std::vector<EmbeddedSamplerDescriptor> embeddedSamplers;
 		std::vector<std::shared_ptr<SamplerState>> embeddedSamplerStates;
+		// The image type the module declares at each texture binding, by internalIndex (see textureFitsBinding). Only
+		// known for a module whose entry points list their resources (SPIR-V 1.4 and later).
+		std::unordered_map<size_t, ImageShape> imageShapes;
 		std::vector<ArgumentInfo> arguments;
 		std::vector<FunctionConstantInfo> functionConstants;
 		// see FunctionReflection::stageInterface
@@ -70,7 +82,34 @@ namespace Indium {
 		// Set when PrivateLibrary could not follow every comparison of the function back to its sampler. Each sampler
 		// state whose compare function is not Never is then bound as its comparison sampler, at every binding.
 		bool comparisonSamplersUntraced = false;
+		// The function writes the stencil reference ([[stencil]]) and the device cannot: it has no
+		// VK_EXT_shader_stencil_export. A render pipeline with it as its fragment function is refused.
+		bool writesStencilUnsupported = false;
 	};
+
+	/**
+	 * Rewrites a module that declares the StencilExportEXT capability for a device without VK_EXT_shader_stencil_export,
+	 * which may not be given such a module at all: the capability, the extension, the StencilRefReplacingEXT execution
+	 * modes and the stencil reference variables' decorations are removed, and the variables become private variables,
+	 * which the functions that write them still may but which go nowhere. The names of the entry points that
+	 * use such a variable are added to `writers`, as they cannot be what they are on this device.
+	 *
+	 * Returns false and leaves `words` as they are for a module that does not declare the capability, or one whose
+	 * stencil reference this cannot make private: a member of an output block, or a variable that a function uses other
+	 * than by loading, storing or copying memory (such as through an access chain). Such a module is given to the
+	 * device as it is, as it was before this rewrite existed.
+	 */
+	bool spirvWithoutStencilExport(std::vector<uint32_t>& words, std::unordered_set<std::string>& writers);
+
+	/**
+	 * Whether `texture` can be what the function reads or writes at the texture binding `binding`. Metal lets several
+	 * arguments of a function take one texture index when function constants leave at most one of them in it (such as a
+	 * texture2d and a texture3d at texture(0), only one of which a specialization has); the module has a binding for each.
+	 * A texture whose type is not the image type a binding declares cannot be that binding's argument, so it is not
+	 * bound there: Vulkan does not allow an image view at a binding of another image type.
+	 * True where the image type of the binding is not known.
+	 */
+	bool textureFitsBinding(const FunctionInfo& info, const BindingDescriptor& binding, const Texture& texture);
 
 	class PrivateFunction: public Function {
 	public:
