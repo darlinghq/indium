@@ -104,6 +104,15 @@ namespace Indium {
 
 		virtual size_t vulkanArrayLength() const;
 
+		/**
+		 * The level and the layer of `image()` that are the texture's level 0 and slice 0. A view's levels and slices
+		 * are a range of those of the image it was made from, so commands that name subresources of `image()`
+		 * (copies, blits and their barriers) add these to the levels and slices they are given for the texture.
+		 * They are 0 for a texture that owns its image.
+		 */
+		virtual size_t imageBaseLevel() const { return 0; }
+		virtual size_t imageBaseLayer() const { return 0; }
+
 		// TODO: figure out how to allow simultaneous reads and properly synchronize them with writes.
 		//       the problem is that we need to signal the timeline semaphore once the final read is done
 		//       because timeline semaphores only allow the counter to increase, but we can't know which
@@ -202,6 +211,8 @@ namespace Indium {
 		virtual std::shared_ptr<Texture> parentTexture() const override;
 		virtual size_t parentRelativeLevel() const override;
 		virtual size_t parentRelativeSlice() const override;
+		virtual size_t imageBaseLevel() const override { return _rootLevel; }
+		virtual size_t imageBaseLayer() const override { return _rootLayer; }
 
 		virtual VkImageView imageView() override;
 		virtual VkImageView sampledImageView() override;

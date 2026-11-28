@@ -817,6 +817,11 @@ void Indium::PrivateRenderCommandEncoder::resolveLateColorAttachments(VkCommandB
 			barrier.subresourceRange.levelCount = 1;
 			barrier.subresourceRange.layerCount = 1;
 		}
+		// the level and slice each texture's level 0 and slice 0 are in its image (a view's start in its texture)
+		barriers[0].subresourceRange.baseMipLevel = source->imageBaseLevel();
+		barriers[0].subresourceRange.baseArrayLayer = source->imageBaseLayer();
+		barriers[1].subresourceRange.baseMipLevel = destination->imageBaseLevel();
+		barriers[1].subresourceRange.baseArrayLayer = destination->imageBaseLayer();
 		barriers[0].image = source->image();
 		barriers[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -831,8 +836,12 @@ void Indium::PrivateRenderCommandEncoder::resolveLateColorAttachments(VkCommandB
 
 		VkImageResolve region {};
 		region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.srcSubresource.mipLevel = source->imageBaseLevel();
+		region.srcSubresource.baseArrayLayer = source->imageBaseLayer();
 		region.srcSubresource.layerCount = 1;
 		region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.dstSubresource.mipLevel = destination->imageBaseLevel();
+		region.dstSubresource.baseArrayLayer = destination->imageBaseLayer();
 		region.dstSubresource.layerCount = 1;
 		region.extent.width = color.texture->width();
 		region.extent.height = color.texture->height();

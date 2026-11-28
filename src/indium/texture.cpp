@@ -44,8 +44,9 @@ std::shared_ptr<Indium::Texture> Indium::PrivateTexture::newTextureView(PixelFor
 	return newTextureView(
 		pixelFormat,
 		textureType(),
-		Range<size_t> { parentRelativeLevel(), mipmapLevelCount() },
-		Range<size_t> { parentRelativeSlice(), arrayLength() }
+		// every level and slice of this texture: the ranges of a view are relative to what it is made from
+		Range<size_t> { 0, mipmapLevelCount() },
+		Range<size_t> { 0, vulkanArrayLength() }
 	);
 };
 
