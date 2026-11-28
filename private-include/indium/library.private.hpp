@@ -104,6 +104,27 @@ namespace Indium {
 	bool spirvWithoutStencilExport(std::vector<uint32_t>& words, std::unordered_set<std::string>& writers);
 
 	/**
+	 * The floating-point widths for which a module's entry points carry the SignedZeroInfNanPreserve execution mode
+	 * (OpExecutionMode, SPV_KHR_float_controls), as a set of SignedZeroInfNanPreserveWidth bits. Vulkan allows a pipeline
+	 * of such an entry point only where the device reports shaderSignedZeroInfNanPreserveFloat16, ...32 or ...64 for that
+	 * width (VUID-RuntimeSpirv-shaderSignedZeroInfNanPreserveFloat16-06293, ...32-06294 and ...64-06295). A module that
+	 * has no such execution mode, as every module Iridium translates, gives 0. The scan stops at an instruction
+	 * whose length is wrong; Vulkan rejects such a module itself.
+	 */
+	enum SignedZeroInfNanPreserveWidth: uint32_t {
+		SignedZeroInfNanPreserve16 = 1 << 0,
+		SignedZeroInfNanPreserve32 = 1 << 1,
+		SignedZeroInfNanPreserve64 = 1 << 2,
+	};
+	uint32_t spirvSignedZeroInfNanPreserveWidths(const uint32_t* words, size_t wordCount);
+
+	/**
+	 * Why a module of `words` cannot be a library on a device that supports the SignedZeroInfNanPreserveWidth bits of
+	 * `supported`: empty if the device supports every width the module asks for, otherwise the reason.
+	 */
+	std::string unsupportedSignedZeroInfNanPreserve(const uint32_t* words, size_t wordCount, uint32_t supported);
+
+	/**
 	 * Whether `texture` can be what the function reads or writes at the texture binding `binding`. Metal lets several
 	 * arguments of a function take one texture index when function constants leave at most one of them in it (such as a
 	 * texture2d and a texture3d at texture(0), only one of which a specialization has); the module has a binding for each.

@@ -1,0 +1,31 @@
+; Entry points that keep signed zeros, infinities and NaNs for 16-bit, 32-bit and 64-bit floats: one entry
+; point per width, and a second 32-bit one, as a module of several functions has.
+               OpCapability Shader
+               OpCapability Float16
+               OpCapability Float64
+               OpCapability SignedZeroInfNanPreserve
+               OpExtension "SPV_KHR_float_controls"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %half_main "half_main"
+               OpEntryPoint GLCompute %float_main "float_main"
+               OpEntryPoint GLCompute %double_main "double_main"
+               OpExecutionMode %half_main LocalSize 1 1 1
+               OpExecutionMode %float_main LocalSize 1 1 1
+               OpExecutionMode %double_main LocalSize 1 1 1
+               OpExecutionMode %half_main SignedZeroInfNanPreserve 16
+               OpExecutionMode %float_main SignedZeroInfNanPreserve 32
+               OpExecutionMode %double_main SignedZeroInfNanPreserve 64
+       %void = OpTypeVoid
+     %voidfn = OpTypeFunction %void
+  %half_main = OpFunction %void None %voidfn
+     %entry1 = OpLabel
+               OpReturn
+               OpFunctionEnd
+ %float_main = OpFunction %void None %voidfn
+     %entry2 = OpLabel
+               OpReturn
+               OpFunctionEnd
+%double_main = OpFunction %void None %voidfn
+     %entry3 = OpLabel
+               OpReturn
+               OpFunctionEnd

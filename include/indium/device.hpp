@@ -276,7 +276,11 @@ namespace Indium {
 		 *          - two bindings of one function claim the same descriptor
 		 *            binding number;
 		 *          - a binding or an embedded sampler field holds a value
-		 *            outside its enumeration.
+		 *            outside its enumeration;
+		 *          - the module asks, with OpExecutionMode SignedZeroInfNanPreserve,
+		 *            for a floating-point width (16, 32 or 64 bits) for which the
+		 *            device reports no shaderSignedZeroInfNanPreserveFloat<width>
+		 *            support, so a pipeline of it could not be made on this device.
 		 *
 		 * A `nullptr` return means nothing was created, so a caller never has
 		 * to cope with a library whose bindings were dropped or defaulted.
