@@ -8,6 +8,9 @@
 
 Indium::ComputePipelineState::~ComputePipelineState() {};
 
+// the width of the SIMD-groups of Apple GPUs, which Metal code relies on
+static constexpr uint32_t simdgroupWidth = 32;
+
 Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr<PrivateDevice> device, const ComputePipelineDescriptor& descriptor):
 	_privateDevice(device),
 	_descriptor(descriptor),
@@ -22,12 +25,21 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 		throw std::runtime_error("TODO: support stage-in parameters in compute shaders");
 	}
 
+	VkPhysicalDeviceVulkan13Properties vk13Props {};
+	vk13Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES;
 	VkPhysicalDeviceVulkan11Properties vk11Props {};
 	vk11Props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
+	vk11Props.pNext = &vk13Props;
 	VkPhysicalDeviceProperties2 props {};
 	props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 	props.pNext = &vk11Props;
 	DynamicVK::vkGetPhysicalDeviceProperties2(_privateDevice->physicalDevice(), &props);
+
+	// Run at simdgroupWidth where the device can require it for every threadgroup size it allows, up to Metal's 1024 threads.
+	// Vulkan 1.3 has subgroupSizeControl, which createLogicalDevice() enables.
+	_requireSimdgroupWidth = vk13Props.minSubgroupSize <= simdgroupWidth && simdgroupWidth <= vk13Props.maxSubgroupSize &&
+		(vk13Props.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) &&
+		uint64_t { simdgroupWidth } * vk13Props.maxComputeWorkgroupSubgroups >= std::min<uint32_t>(props.properties.limits.maxComputeWorkGroupInvocations, 1024);
 
 	// 1024 is Metal's limit
 	const size_t deviceLimit = std::min<size_t>(props.properties.limits.maxComputeWorkGroupInvocations, 1024);
@@ -57,8 +69,9 @@ Indium::PrivateComputePipelineState::PrivateComputePipelineState(std::shared_ptr
 		_requiredThreadsPerThreadgroup = required;
 		_maxTotalThreadsPerThreadgroup = required.width * required.height * required.depth;
 	}
-	// a SPIR-V 1.5 module, created without a required subgroup size or stage flags, runs at the default size
-	_threadExecutionWidth = vk11Props.subgroupSize;
+	// where the width cannot be required, a SPIR-V 1.5 module, created without a required subgroup size or stage flags,
+	// runs at the default size
+	_threadExecutionWidth = _requireSimdgroupWidth ? simdgroupWidth : vk11Props.subgroupSize;
 	// Iridium does not report the threadgroup memory a kernel declares, so _staticThreadgroupMemoryLength stays 0
 
 	_descriptorSetLayouts.processFunction(std::dynamic_pointer_cast<PrivateFunction>(_descriptor.computeFunction), 0);
@@ -154,6 +167,18 @@ VkPipeline Indium::PrivateComputePipelineState::createPipeline(Size threadsPerTh
 	info.stage.pName = funcName.c_str();
 	info.stage.pSpecializationInfo = &specInfo;
 	info.layout = _layout;
+
+	VkPipelineShaderStageRequiredSubgroupSizeCreateInfo requiredSubgroupSize {};
+	if (_requireSimdgroupWidth) {
+		requiredSubgroupSize.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+		requiredSubgroupSize.requiredSubgroupSize = simdgroupWidth;
+		info.stage.pNext = &requiredSubgroupSize;
+		// Without the flag, a SPIR-V 1.5 module may get partial subgroups anywhere; Metal's SIMD-groups are full but
+		// for a threadgroup's last. The flag needs the threadgroup's X size to be a multiple of the width.
+		if (threadsPerThreadgroup.width % simdgroupWidth == 0) {
+			info.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+		}
+	}
 
 	if (_privateDevice->createComputePipeline(info, &pipeline) != VK_SUCCESS) {
 		// TODO

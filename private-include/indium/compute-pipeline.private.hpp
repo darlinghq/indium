@@ -10,6 +10,7 @@ namespace Indium {
 	private:
 		std::shared_ptr<PrivateDevice> _privateDevice;
 		ComputePipelineDescriptor _descriptor;
+		bool _requireSimdgroupWidth = false;
 
 	public:
 		PrivateComputePipelineState(std::shared_ptr<PrivateDevice> device, const ComputePipelineDescriptor& descriptor);
