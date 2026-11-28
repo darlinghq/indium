@@ -265,6 +265,12 @@ void Indium::PrivateRenderPipelineState::recreatePipeline(VkRenderPass compatibl
 		}
 		colorBlendStates.push_back(tmp);
 	}
+	// as many attachments as the subpass of a render pass this pipeline draws in, which leaves out the slots
+	// after its last one with a texture (see PrivateRenderCommandEncoder): the slots after the last one with a
+	// pixel format, since a pipeline draws only in a pass whose textures have its formats
+	for (size_t slot = _colorAttachments.size(); slot > 0 && _colorAttachments[slot - 1].pixelFormat == PixelFormat::Invalid; --slot) {
+		colorBlendStates.pop_back();
+	}
 	auto& colorBlendState = recipe.colorBlendState;
 	colorBlendState.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlendState.attachmentCount = colorBlendStates.size();
