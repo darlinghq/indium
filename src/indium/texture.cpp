@@ -314,6 +314,10 @@ bool Indium::TextureView::imageIsMutableFormat() {
 	return _original->imageIsMutableFormat();
 };
 
+bool Indium::TextureView::canBeInputAttachment() {
+	return _original->canBeInputAttachment();
+};
+
 const Indium::TimelineSemaphore& Indium::TextureView::acquire(uint64_t& waitValue, std::shared_ptr<BinarySemaphore>& extraWaitSemaphore, uint64_t& signalValue) {
 	return _original->acquire(waitValue, extraWaitSemaphore, signalValue);
 };
@@ -686,6 +690,21 @@ Indium::ConcreteTexture::ConcreteTexture(std::shared_ptr<PrivateDevice> device, 
 	if (((descriptor.usage & TextureUsage::RenderTarget) != TextureUsage::Unknown || unknownUsage) && !compressedFormat && (_descriptor.pixelFormat != PixelFormat::A8Unorm || _device->nativeA8UnormEnabled())) {
 		if (isColor && (!unknownUsage || (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))) {
 			info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+			// A render target that a pass reads while it writes it (framebuffer fetch, [[color(n)]]) is an input
+			// attachment. The bit is given to the single-sample color render targets that can have it, and not to
+			// every texture: a view of an image the device made without it cannot be read that way, which the
+			// render pass reports. It changes neither the size nor the alignment of the image on the drivers
+			// it was measured on (llvmpipe, NVIDIA). Extended-range targets are rounded by a compute pass
+			// after rendering and their codes are not what a function would read; images with a fixed layout
+			// (linear, imported) are left as they are.
+			if (_descriptor.sampleCount == 1 && !extendedRange && !import && !direct && info.tiling == VK_IMAGE_TILING_OPTIMAL) {
+				VkImageFormatProperties inputProperties {};
+				if (DynamicVK::vkGetPhysicalDeviceImageFormatProperties(_device->physicalDevice(), info.format, info.imageType, info.tiling,
+					info.usage | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT, info.flags, &inputProperties) == VK_SUCCESS) {
+					info.usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+					_inputAttachment = true;
+				}
+			}
 		} else if (isDepthStencil && (!unknownUsage || (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
 			info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 		}
@@ -1169,6 +1188,10 @@ VkFormat Indium::ConcreteTexture::imageFormat() {
 
 bool Indium::ConcreteTexture::imageIsMutableFormat() {
 	return _mutableFormat;
+};
+
+bool Indium::ConcreteTexture::canBeInputAttachment() {
+	return _inputAttachment;
 };
 
 bool Indium::ConcreteTexture::isBufferShadow() {

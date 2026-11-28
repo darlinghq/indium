@@ -88,6 +88,36 @@ namespace Indium {
 		size_t _defaultWidth = 0;
 		size_t _defaultHeight = 0;
 
+		// what beginRenderPass() builds the pass from
+		std::shared_ptr<Texture> _depthStencilTexture;
+		std::shared_ptr<Texture> _firstTexture;
+		std::vector<VkClearValue> _clearValues;
+		// the pass was made with input attachment references (see enableInputAttachments())
+		bool _inputAttachmentPass = false;
+		// the passes and framebuffers that a restarted pass replaced; they are destroyed with the encoder
+		std::vector<VkRenderPass> _retiredRenderPasses;
+		std::vector<VkFramebuffer> _retiredFramebuffers;
+		// the current visibility result mode, to continue it in a restarted pass
+		VisibilityResultMode _visibilityMode = VisibilityResultMode::Disabled;
+		size_t _visibilityOffset = 0;
+
+		/**
+		 * Creates the render pass and framebuffer for the descriptor and begins the pass. `withInputAttachments`
+		 * gives the subpass references to the color attachments a fragment function can read; `resume` begins a
+		 * pass that carries on from the one the encoder ended: every attachment is loaded.
+		 */
+		void beginRenderPass(bool withInputAttachments, bool resume);
+
+		/**
+		 * Makes the pass one that a fragment function that reads color attachments (framebuffer fetch) can run in,
+		 * ending the pass and beginning an equal one with input attachment references where it has none. Throws
+		 * std::runtime_error if an attachment the function reads is not there or cannot be read.
+		 */
+		void enableInputAttachments(const FunctionInfo& fragment);
+
+		/** Whether the current pipeline's fragment function reads color attachments. */
+		bool readsInputAttachments() const;
+
 		/** Sets the state Metal gives a new encoder (all of it that this encoder tracks or sets in the command buffer). */
 		void applyDefaultState();
 

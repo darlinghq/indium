@@ -48,6 +48,12 @@ namespace Indium {
 						binding.descriptorType = textureDescriptorType(bindingInfo);
 						binding.descriptorCount = 1;
 						binding.stageFlags = functionTypeToVkShaderStageFlags(function->functionInfo().functionType);
+					} else if (bindingInfo.type == BindingType::InputAttachment) {
+						auto& binding = bindings.emplace_back();
+						binding.binding = bindingInfo.internalIndex;
+						binding.descriptorType = VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+						binding.descriptorCount = 1;
+						binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 					} else if (bindingInfo.type == BindingType::Sampler) {
 						auto& binding = bindings.emplace_back();
 						binding.binding = bindingInfo.internalIndex;

@@ -59,6 +59,14 @@ namespace Indium {
 		Texture = 1,
 		Sampler = 2,
 		VertexInput = 3,
+		/**
+		 * A fragment function's framebuffer fetch input, `[[color(n)]]` in Metal: the function reads what the
+		 * color attachment `index` of the render pass holds at the fragment's position. `internalIndex` is the
+		 * descriptor binding of the input attachment (a subpass input in the module, whose InputAttachmentIndex
+		 * is `index`). It has no argument to set: indium takes the texture from the render pass. A fragment
+		 * function only.
+		 */
+		InputAttachment = 4,
 	};
 
 	/**
