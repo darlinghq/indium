@@ -1560,6 +1560,14 @@ static Iridium::SPIRV::ResultID floatConstantOfType(Iridium::SPIRV::Builder& bui
 	}
 }
 
+// Whether an LLVM type is i1 or a vector of i1, which translate to SPIR-V booleans.
+static bool isLLVMBoolean(LLVMTypeRef type) {
+	if (DynamicLLVM::LLVMGetTypeKind(type) == LLVMVectorTypeKind) {
+		type = DynamicLLVM::LLVMGetElementType(type);
+	}
+	return DynamicLLVM::LLVMGetTypeKind(type) == LLVMIntegerTypeKind && DynamicLLVM::LLVMGetIntTypeWidth(type) == 1;
+}
+
 // Emits `opcode` with an unsigned result type, as SPIR-V requires for UConvert, UDiv, UMod and
 // ConvertFToU, and reinterprets the result as `typeID`.
 static Iridium::SPIRV::ResultID encodeUnsignedResultOp(Iridium::SPIRV::Builder& builder, Iridium::SPIRV::Opcode opcode, Iridium::SPIRV::ResultID typeID, const std::vector<uint32_t>& operands) {
@@ -3875,14 +3883,31 @@ void Iridium::AIR::Function::analyze(SPIRV::Builder& builder, OutputInfo& output
 					auto argument = llvmValueToResultID(builder, source);
 					auto type = llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(inst));
 					SPIRV::ResultID resID = SPIRV::ResultIDInvalid;
+					// AIR's i1 is a SPIR-V boolean, which OpSConvert, OpConvertSToF and OpConvertUToF do not take
+					bool fromBoolean = isLLVMBoolean(DynamicLLVM::LLVMTypeOf(source));
+					auto selectBoolean = [&](SPIRV::ResultID ifTrue, SPIRV::ResultID ifFalse) {
+						return builder.encodeOp(SPIRV::Opcode::Select, type, { argument, ifTrue, ifFalse });
+					};
 
 					switch (opcode) {
-						case LLVMSExt: resID = builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument }); break;
+						case LLVMSExt:
+							resID = fromBoolean
+								? selectBoolean(integerConstantOfType(builder, type, -1), integerConstantOfType(builder, type, 0))
+								: builder.encodeOp(SPIRV::Opcode::SConvert, type, { argument });
+							break;
 						case LLVMFPExt: resID = builder.encodeFConvert(type, argument); break;
 						case LLVMFPToSI: resID = builder.encodeOp(SPIRV::Opcode::ConvertFToS, type, { argument }); break;
 						case LLVMFPToUI: resID = encodeUnsignedResultOp(builder, SPIRV::Opcode::ConvertFToU, type, { argument }); break;
-						case LLVMSIToFP: resID = builder.encodeOp(SPIRV::Opcode::ConvertSToF, type, { argument }); break;
+						case LLVMSIToFP:
+							resID = fromBoolean
+								? selectBoolean(floatConstantOfType(builder, type, -1), floatConstantOfType(builder, type, 0))
+								: builder.encodeOp(SPIRV::Opcode::ConvertSToF, type, { argument });
+							break;
 						case LLVMUIToFP: {
+							if (fromBoolean) {
+								resID = selectBoolean(floatConstantOfType(builder, type, 1), floatConstantOfType(builder, type, 0));
+								break;
+							}
 							auto unsignedType = integerTypeWithSign(builder, llvmTypeToSPIRVType(builder, DynamicLLVM::LLVMTypeOf(source)), false);
 							resID = builder.encodeOp(SPIRV::Opcode::ConvertUToF, type, { builder.encodeBitcast(unsignedType, argument) });
 						} break;
