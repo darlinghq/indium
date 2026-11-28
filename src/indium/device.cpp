@@ -234,6 +234,18 @@ Indium::PrivateDevice::PrivateDevice(VkPhysicalDevice physicalDevice):
 {
 	DynamicVK::vkGetPhysicalDeviceProperties(_physicalDevice, &_properties);
 
+	{
+		VkPhysicalDeviceFloatControlsProperties floatControls {};
+		floatControls.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
+		VkPhysicalDeviceProperties2 properties2 {};
+		properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+		properties2.pNext = &floatControls;
+		DynamicVK::vkGetPhysicalDeviceProperties2(_physicalDevice, &properties2);
+		_signedZeroInfNanPreserve = (floatControls.shaderSignedZeroInfNanPreserveFloat16 ? SignedZeroInfNanPreserve16 : 0)
+			| (floatControls.shaderSignedZeroInfNanPreserveFloat32 ? SignedZeroInfNanPreserve32 : 0)
+			| (floatControls.shaderSignedZeroInfNanPreserveFloat64 ? SignedZeroInfNanPreserve64 : 0);
+	}
+
 	std::vector<VkQueueFamilyProperties> queueFamilies;
 	uint32_t count = 0;
 
@@ -1464,6 +1476,18 @@ std::shared_ptr<Indium::Library> Indium::PrivateDevice::newLibrary(const void* s
 					return fail("function '" + name + "' embedded sampler " + std::to_string(i) + " has an out-of-range " + samplerEnum.field);
 				}
 			}
+		}
+	}
+
+	// A module may ask for float controls (mslc does, on its entry points) that the device cannot give. Vulkan refuses
+	// the pipeline of such an entry point, so the library is refused here, where the module is known. Judged by the
+	// module's own execution modes: Iridium never sets this one, so libraries made from AIR are not affected.
+	{
+		std::vector<uint32_t> words(length / sizeof(uint32_t));
+		memcpy(words.data(), spirv, length);
+		auto unsupported = unsupportedSignedZeroInfNanPreserve(words.data(), words.size(), _signedZeroInfNanPreserve);
+		if (!unsupported.empty()) {
+			return fail(unsupported);
 		}
 	}
 
