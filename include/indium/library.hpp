@@ -390,9 +390,6 @@ namespace Indium {
 	public:
 		virtual ~Library() = 0;
 
-		/** The names of the functions newFunction can make, in no particular order. */
-		virtual std::vector<std::string> functionNames() const = 0;
-
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) = 0;
 
 		/**
@@ -408,5 +405,8 @@ namespace Indium {
 		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) = 0;
 
 		virtual std::shared_ptr<Device> device() = 0;
+
+		/** The names of the functions newFunction can make, in no particular order. */
+		virtual std::vector<std::string> functionNames() const = 0;
 	};
 };

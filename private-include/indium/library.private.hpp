@@ -164,10 +164,10 @@ namespace Indium {
 		PrivateLibrary(std::shared_ptr<PrivateDevice> device, const char* data, size_t dataLength, FunctionInfoMap functionInfos);
 		~PrivateLibrary();
 
-		virtual std::vector<std::string> functionNames() const override;
 		virtual std::shared_ptr<Function> newFunction(const std::string& name) override;
 		virtual std::shared_ptr<Function> newFunction(const std::string& name, const FunctionConstantValues& values, std::string* errorMessage = nullptr) override;
 		virtual std::shared_ptr<Device> device() override;
+		virtual std::vector<std::string> functionNames() const override;
 
 		INDIUM_PROPERTY_READONLY_OBJECT(PrivateDevice, p, P,rivateDevice);
 
